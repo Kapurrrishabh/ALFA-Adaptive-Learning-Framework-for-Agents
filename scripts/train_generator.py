@@ -81,6 +81,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifacts", default="artifacts")
     parser.add_argument("--dataset", default="generator", help="prefix of the .npy split files")
+    parser.add_argument("--run-name", default="",
+                        help="names the checkpoints, so one arm of an ablation cannot overwrite another")
     parser.add_argument("--extra-split", default="", help="a third split to report separately")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -117,8 +119,8 @@ def main():
     if args.freeze_encoder:
         model.freeze_encoder()
 
-    checkpoint = f"{args.dataset}.npz"
-    best_checkpoint = f"{args.dataset}.best.npz"
+    checkpoint = f"{args.run_name or args.dataset}.npz"
+    best_checkpoint = f"{args.run_name or args.dataset}.best.npz"
     optimizer = AdamW(model.trainable_parameters(), lr=args.learning_rate)
     steps_per_epoch = len(source) // args.batch_size
     print(

@@ -20,6 +20,10 @@ Three splits come out, not two. Train and validation differ by date; the third, 
 phrasings of each question that training never saw, and the gap between the last two is the only
 honest measure of whether the model learned the task or the templates.
 
+With --casual a fourth joins them, asking a trained phrasing the way somebody types it — no full stop,
+words contracted, a letter in the wrong place. Every frame here is clean prose and nobody writes that
+way, so unseen and casual pull the two kinds of unfamiliarity apart: the wording, and the typing.
+
 Snapshots read no bar after the one they are taken at, and rows are split by date, so neither the
 facts nor the split can carry the future backwards.
 """
@@ -41,8 +45,13 @@ from selfagent.tokenizer.vocab import CLS_ID, PAD_ID, SEP_ID  # noqa: E402
 from selfagent.tokenizer.wordpiece import WordPiece  # noqa: E402
 
 # Advisory questions are one short sentence, unlike the Stack Exchange ones, so the evidence gets the
-# rest of the window: a full snapshot is 78 tokens and truncating it would cut a figure in half.
-QUESTION_TOKENS = 16
+# rest of the window: a full snapshot is 78 tokens and truncating it would cut a figure in half. A
+# clean question reaches 15 tokens and a misspelling costs two more, measured at 19 over every frame.
+QUESTION_TOKENS = 24
+
+# How often a training question arrives in chat register. Provisional: what settles it is whether the
+# casual split closes on validation without validation itself getting worse.
+CASUAL_SHARE = 0.5
 
 # A split-adjusted price below a dollar formats to "0.07" and its average range to "0.00", which is a
 # figure the answer would be copying for nothing.
@@ -54,12 +63,16 @@ MIN_PRICE = 1.0
 OUTLOOK_CONCENTRATION = 4.0
 
 
-def snapshot_rows(ticker, bars, end, probabilities, split, rng, slots):
+def snapshot_rows(ticker, bars, end, probabilities, split, rng, slots, messy):
     """(split, question, evidence, answer) for one snapshot, one row per intent.
 
     A training snapshot draws a trained phrasing per intent; a validation one emits the same intent
     twice, once at a trained phrasing and once at a held-out one, so the two are compared on
     identical facts and differ only in wording.
+
+    With `messy` a third held-out row joins them, asking the *trained* phrasing in chat register. That
+    separates the two ways a real question is unfamiliar: unseen tells us about the wording, casual
+    about the typing, and they are different problems with different fixes.
     """
     facts = advisory.snapshot(bars, end)
     shown = advisory.as_text(facts)
@@ -71,17 +84,22 @@ def snapshot_rows(ticker, bars, end, probabilities, split, rng, slots):
     rows = []
     for intent in advisory.INTENTS:
         trained = [p for p in range(advisory.phrasings(intent)) if not advisory.is_held_out(intent, p)]
-        question, answer = advisory.row(intent, ticker, facts, spoken, rng.choice(trained))
+        phrasing = rng.choice(trained)
+        typed = rng if messy and split == "train" and rng.random() < CASUAL_SHARE else None
+        question, answer = advisory.row(intent, ticker, facts, spoken, phrasing, typed)
         rows.append((split, question, evidence, answer))
         if split == "train":
             continue
         unseen = [p for p in range(advisory.phrasings(intent)) if advisory.is_held_out(intent, p)]
         question, answer = advisory.row(intent, ticker, facts, spoken, rng.choice(unseen))
         rows.append(("unseen", question, evidence, answer))
+        if messy:
+            question, answer = advisory.row(intent, ticker, facts, spoken, phrasing, rng)
+            rows.append(("casual", question, evidence, answer))
     return rows
 
 
-def collect(price_dir, stride, cutoff, rng, limit, slots):
+def collect(price_dir, stride, cutoff, rng, limit, slots, messy):
     """Every row of every snapshot of every ticker, each tagged with the split it belongs to."""
     collected = []
     snapshots = 0
@@ -98,7 +116,9 @@ def collect(price_dir, stride, cutoff, rng, limit, slots):
                 continue
             probabilities = rng.dirichlet([OUTLOOK_CONCENTRATION] * 3)
             split = "train" if dates[end] < cutoff else "validation"
-            collected.extend(snapshot_rows(ticker, bars, end, probabilities, split, rng, slots))
+            collected.extend(
+                snapshot_rows(ticker, bars, end, probabilities, split, rng, slots, messy)
+            )
             snapshots += 1
             if limit and snapshots >= limit:
                 break
@@ -115,8 +135,10 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="cap the snapshots, for a smoke run")
     parser.add_argument("--slots", action="store_true",
                         help="answers name each fact instead of quoting its figure, and serving fills them")
+    parser.add_argument("--casual", action="store_true",
+                        help="half the training questions arrive in chat register, and a casual split measures it")
     args = parser.parse_args()
-    dataset = "advisory_slots" if args.slots else "advisory"
+    dataset = "advisory" + ("_slots" if args.slots else "") + ("_casual" if args.casual else "")
 
     artifacts = Path(args.artifacts)
     tokenizer = WordPiece.load(artifacts / "tokenizer.json")
@@ -124,7 +146,7 @@ def main():
     answer_budget = ModelConfig.max_answer_length
 
     rng = np.random.default_rng(ModelConfig.seed)
-    rows = collect(args.prices, args.stride, args.cutoff, rng, args.limit, args.slots)
+    rows = collect(args.prices, args.stride, args.cutoff, rng, args.limit, args.slots, args.casual)
     refusals = sum(answer == advisory.UNSUPPORTED for _, _, _, answer in rows)
     asked = len({question for _, question, _, _ in rows})
     print(f"{dataset}: {len(rows):,} rows, {refusals / len(rows):.1%} refusals, "
@@ -158,7 +180,7 @@ def main():
             f"{length - QUESTION_TOKENS - 3} tokens; a cut passage drops a figure the answer quotes"
         )
 
-    for name in ("train", "validation", "unseen"):
+    for name in ("train", "validation", "unseen") + (("casual",) if args.casual else ()):
         picked = np.flatnonzero(splits == name)
         np.save(artifacts / f"{dataset}_{name}_source.npy", sources[picked])
         np.save(artifacts / f"{dataset}_{name}_keep.npy", keeps[picked])

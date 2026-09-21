@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ablate_generator import evidence_starts  # noqa: E402
 from selfagent import pretrained  # noqa: E402
 from selfagent.agent import guardrails  # noqa: E402
+from selfagent.autograd import no_grad  # noqa: E402
 from selfagent.data import advisory  # noqa: E402
 from selfagent.models import GroundedGenerator  # noqa: E402
 from selfagent.models.generator import ANSWER_TEMPERATURE, ANSWER_TOP_P  # noqa: E402
@@ -48,6 +49,56 @@ def repeated_fraction(text, size=4):
     return 0.0 if not grams else 1.0 - len(set(grams)) / len(grams)
 
 
+def self_confidence(model, source, keep, produced, budget):
+    """The model's own mean token probability on the answer it just wrote, one number per row.
+
+    An abstention threshold has to run on something available at serving time, when the right answer
+    is not. This is the cheapest such signal — one extra forward pass and no new parameters — and it is
+    only worth building on if it separates the rows the model got right from the ones it got wrong.
+    """
+    target = np.full((len(produced), budget), PAD_ID, dtype=np.int64)
+    for row, ids in enumerate(produced):
+        whole = [CLS_ID] + list(ids)[: budget - 2] + [SEP_ID]
+        target[row, : len(whole)] = whole
+    with no_grad():
+        logits = model(source, target[:, :-1], keep).data
+    logits = logits - logits.max(axis=-1, keepdims=True)
+    log_probabilities = logits - np.log(np.exp(logits).sum(axis=-1, keepdims=True))
+    wanted = target[:, 1:]
+    taken = np.take_along_axis(log_probabilities, wanted[:, :, None], axis=-1)[:, :, 0]
+    counted = wanted != PAD_ID
+    return np.exp((taken * counted).sum(axis=-1) / np.maximum(counted.sum(axis=-1), 1))
+
+
+def report_confidence(sure, right, threshold):
+    """Does the model know when it is wrong? The question an abstention threshold rests on.
+
+    Reported as accuracy and coverage together, because a gap between two means can be real and still
+    useless for deciding one row at a time. Without --threshold the cut is chosen on these same rows,
+    which is an upper bound and not a result; fit it on one split and quote it on another.
+    """
+    if right.all() or not right.any():
+        print(f"  self-confidence      {sure.mean():.3f}, nothing to separate")
+        return
+    print(f"  self-confidence      {sure[right].mean():.3f} when right, "
+          f"{sure[~right].mean():.3f} when wrong")
+    if threshold:
+        answered = sure >= threshold
+        accuracy = right[answered].mean() if answered.any() else float("nan")
+        print(f"  answer-or-abstain    {accuracy:.1%} correct on the {answered.mean():.1%} it answers, "
+              f"at the given {threshold:.4f} (answering everything: {right.mean():.1%})")
+        return
+    best = max(
+        ((right[sure >= cut].mean(), (sure >= cut).mean(), cut)
+         for cut in np.unique(sure) if (sure >= cut).mean() >= 0.2),
+        default=None,
+    )
+    if best:
+        print(f"  answer-or-abstain    {best[0]:.1%} correct on the {best[1]:.1%} it would answer, at "
+              f"a cut of {best[2]:.4f} fitted here, so an upper bound "
+              f"(answering everything: {right.mean():.1%})")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifacts", default="artifacts")
@@ -59,6 +110,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--greedy", action="store_true", help="decode greedily instead of sampling")
     parser.add_argument("--show", type=int, default=4, help="answers to print in full")
+    parser.add_argument("--threshold", type=float, default=0.0,
+                        help="abstain below this self-confidence; fit it on one split, quote it on another")
     args = parser.parse_args()
 
     artifacts = Path(args.artifacts)
@@ -79,6 +132,7 @@ def main():
     for start in range(0, len(chosen), args.batch_size):
         rows = chosen[start : start + args.batch_size]
         produced = model.generate(source[rows], keep[rows], temperature, top_p, rng)
+        sure = self_confidence(model, source[rows], keep[rows], produced, target.shape[1])
         for offset, ids in enumerate(produced):
             row = rows[offset]
             whole = source[row, 0]
@@ -89,17 +143,18 @@ def main():
             # generate() already strips. They never appear inside an answer, so dropping them is safe.
             wanted = tokenizer.decode([i for i in target[row] if i not in (PAD_ID, CLS_ID, SEP_ID)])
             answer = tokenizer.decode(list(ids))
-            scored.append((question, evidence, wanted, answer))
+            scored.append((question, evidence, wanted, answer, float(sure[offset])))
 
     refusals = [row for row in scored if _REFUSAL_OPENING in row[2]]
     answerable = [row for row in scored if _REFUSAL_OPENING not in row[2]]
-    unsupported = [guardrails.unsupported_figures(a, e) for _, e, _, a in answerable]
-    stated = sum(len(guardrails.figures(a)) for _, _, _, a in answerable)
+    unsupported = [guardrails.unsupported_figures(a, e) for _, e, _, a, _ in answerable]
+    stated = sum(len(guardrails.figures(a)) for _, _, _, a, _ in answerable)
     missing = sum(len(u) for u in unsupported)
-    refused = sum(_REFUSAL_OPENING in a for _, _, _, a in refusals)
-    wrongly_refused = sum(_REFUSAL_OPENING in a for _, _, _, a in answerable)
+    refused = sum(_REFUSAL_OPENING in a for _, _, _, a, _ in refusals)
+    wrongly_refused = sum(_REFUSAL_OPENING in a for _, _, _, a, _ in answerable)
 
-    matched = sum(w.split() == a.split() for _, _, w, a in scored)
+    right = [w.split() == a.split() for _, _, w, a, _ in scored]
+    matched = sum(right)
 
     print(f"{len(scored)} rows: {len(answerable)} answerable, {len(refusals)} refusals")
     print(f"  exact match          {matched}/{len(scored)} ({matched / max(len(scored), 1):.1%})")
@@ -111,11 +166,12 @@ def main():
     print(f"  false refusal        {wrongly_refused}/{len(answerable)} "
           f"({wrongly_refused / max(len(answerable), 1):.1%})")
     print(f"  repeated 4-grams     "
-          f"{np.mean([repeated_fraction(a) for _, _, _, a in scored]):.1%} "
+          f"{np.mean([repeated_fraction(a) for _, _, _, a, _ in scored]):.1%} "
           f"(reference: the answers themselves are "
-          f"{np.mean([repeated_fraction(w) for _, _, w, _ in scored]):.1%})")
+          f"{np.mean([repeated_fraction(w) for _, _, w, _, _ in scored]):.1%})")
+    report_confidence(np.array([c for *_, c in scored]), np.array(right), args.threshold)
 
-    for question, evidence, wanted, answer in scored[: args.show]:
+    for question, evidence, wanted, answer, _ in scored[: args.show]:
         print(f"\nQ {question}\nE {evidence}\nwanted   {wanted}\nproduced {answer}")
         bad = guardrails.unsupported_figures(answer, evidence)
         if bad:

@@ -132,6 +132,39 @@ def test_the_held_out_phrasing_reuses_an_answer_form_training_saw():
                 assert answer in trained, f"{intent} phrasing {phrasing} brings an unseen answer"
 
 
+def test_chat_register_never_touches_the_ticker():
+    """The corruption that would teach invention: the answer quotes the ticker back, so a question
+    asking about a symbol with a letter dropped would train the model to copy one nobody holds. The
+    ticker must be five letters here — a four letter one is too short for the misspeller to pick, so
+    AAPL passes this test whether the code is right or not, and 53 tickers in the data are longer."""
+    rng = np.random.default_rng(0)
+    for intent in advisory.INTENTS:
+        for phrasing in range(advisory.phrasings(intent)):
+            for _ in range(20):
+                assert "GOOGL" in advisory.ask(intent, "GOOGL", phrasing, rng)
+
+
+def test_chat_register_adds_no_digit_to_a_question():
+    """Every integer in a question has to be one the evidence carries. A stray digit from a typo is an
+    unsupported figure in the prompt itself, and the guardrail only ever reads the answer."""
+    rng = np.random.default_rng(1)
+    for intent in advisory.INTENTS:
+        for phrasing in range(advisory.phrasings(intent)):
+            clean = set(re.findall(r"\d", advisory.ask(intent, "AAPL", phrasing)))
+            for _ in range(20):
+                messy = advisory.ask(intent, "AAPL", phrasing, rng)
+                assert set(re.findall(r"\d", messy)) <= clean, messy
+
+
+def test_chat_register_actually_rewrites_most_questions():
+    """A no-op augmentation would train and measure nothing while every number still moved, which is
+    the failure that looks like a result. Not all: leaving some untouched is the point of a share."""
+    rng = np.random.default_rng(2)
+    asked = [advisory.ask("performance", "AAPL", 0, rng) for _ in range(100)]
+    clean = advisory.ask("performance", "AAPL", 0)
+    assert sum(one != clean for one in asked) > 60
+
+
 def test_filling_a_slot_answer_reproduces_the_figure_answer_exactly():
     """What makes the slot path safe to swap in: it is lossless. If filling ever drifted from the
     answer it replaces, the model would be trained to name facts that serving renders differently."""
