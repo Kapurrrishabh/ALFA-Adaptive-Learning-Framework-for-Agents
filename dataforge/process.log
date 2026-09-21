@@ -1,0 +1,181 @@
+/Users/rishabkk/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+
+processing
+  gutenberg: kept 11 of 12 documents (1 near-duplicate, 0 too short, 0 repeated paragraphs removed)
+  ncert: kept 68 of 68 documents (0 near-duplicate, 0 too short, 9 repeated paragraphs removed)
+  news_rss: kept 4 of 4 documents (0 near-duplicate, 0 too short, 0 repeated paragraphs removed)
+  openstax: kept 22 of 29 documents (7 near-duplicate, 0 too short, 7182 repeated paragraphs removed)
+  rbi: kept 51 of 121 documents (42 near-duplicate, 28 too short, 210 repeated paragraphs removed)
+  sebi: kept 69 of 70 documents (0 near-duplicate, 1 too short, 97 repeated paragraphs removed)
+    stackexchange: 500/74017 read, 469 kept
+    stackexchange: 1000/74017 read, 928 kept
+    stackexchange: 1500/74017 read, 1390 kept
+    stackexchange: 2000/74017 read, 1833 kept
+    stackexchange: 2500/74017 read, 2298 kept
+    stackexchange: 3500/74017 read, 3223 kept
+    stackexchange: 4000/74017 read, 3688 kept
+    stackexchange: 4500/74017 read, 4157 kept
+    stackexchange: 5000/74017 read, 4613 kept
+    stackexchange: 5500/74017 read, 5074 kept
+    stackexchange: 6000/74017 read, 5530 kept
+    stackexchange: 6500/74017 read, 5981 kept
+    stackexchange: 7000/74017 read, 6433 kept
+    stackexchange: 7500/74017 read, 6880 kept
+    stackexchange: 8000/74017 read, 7325 kept
+    stackexchange: 8500/74017 read, 7793 kept
+    stackexchange: 9000/74017 read, 8247 kept
+    stackexchange: 9500/74017 read, 8700 kept
+    stackexchange: 10000/74017 read, 9161 kept
+    stackexchange: 10500/74017 read, 9608 kept
+    stackexchange: 11000/74017 read, 10060 kept
+    stackexchange: 11500/74017 read, 10516 kept
+    stackexchange: 12000/74017 read, 10970 kept
+    stackexchange: 12500/74017 read, 11422 kept
+    stackexchange: 13000/74017 read, 11871 kept
+    stackexchange: 13500/74017 read, 12331 kept
+    stackexchange: 14000/74017 read, 12778 kept
+    stackexchange: 14500/74017 read, 13225 kept
+    stackexchange: 15000/74017 read, 13676 kept
+    stackexchange: 15500/74017 read, 14130 kept
+    stackexchange: 16000/74017 read, 14591 kept
+    stackexchange: 17000/74017 read, 15493 kept
+    stackexchange: 17500/74017 read, 15944 kept
+    stackexchange: 18000/74017 read, 16392 kept
+    stackexchange: 18500/74017 read, 16863 kept
+    stackexchange: 19000/74017 read, 17335 kept
+    stackexchange: 19500/74017 read, 17811 kept
+    stackexchange: 20000/74017 read, 18279 kept
+    stackexchange: 20500/74017 read, 18746 kept
+    stackexchange: 21000/74017 read, 19211 kept
+    stackexchange: 21500/74017 read, 19686 kept
+    stackexchange: 22000/74017 read, 20154 kept
+    stackexchange: 22500/74017 read, 20620 kept
+    stackexchange: 23000/74017 read, 21085 kept
+    stackexchange: 23500/74017 read, 21552 kept
+    stackexchange: 24000/74017 read, 22020 kept
+    stackexchange: 24500/74017 read, 22487 kept
+    stackexchange: 25000/74017 read, 22954 kept
+    stackexchange: 25500/74017 read, 23410 kept
+    stackexchange: 26500/74017 read, 24333 kept
+    stackexchange: 27000/74017 read, 24801 kept
+    stackexchange: 27500/74017 read, 25259 kept
+    stackexchange: 28000/74017 read, 25721 kept
+    stackexchange: 28500/74017 read, 26184 kept
+    stackexchange: 29000/74017 read, 26660 kept
+    stackexchange: 29500/74017 read, 27124 kept
+    stackexchange: 30000/74017 read, 27597 kept
+    stackexchange: 30500/74017 read, 28066 kept
+    stackexchange: 31000/74017 read, 28526 kept
+    stackexchange: 32500/74017 read, 29919 kept
+    stackexchange: 33000/74017 read, 30382 kept
+    stackexchange: 33500/74017 read, 30845 kept
+    stackexchange: 34000/74017 read, 31310 kept
+    stackexchange: 34500/74017 read, 31768 kept
+    stackexchange: 35000/74017 read, 32229 kept
+    stackexchange: 35500/74017 read, 32683 kept
+    stackexchange: 36000/74017 read, 33144 kept
+    stackexchange: 36500/74017 read, 33606 kept
+    stackexchange: 37000/74017 read, 34068 kept
+    stackexchange: 38000/74017 read, 34993 kept
+    stackexchange: 38500/74017 read, 35425 kept
+    stackexchange: 39000/74017 read, 35862 kept
+    stackexchange: 39500/74017 read, 36292 kept
+    stackexchange: 40500/74017 read, 37153 kept
+    stackexchange: 41000/74017 read, 37558 kept
+    stackexchange: 42000/74017 read, 38413 kept
+    stackexchange: 42500/74017 read, 38839 kept
+    stackexchange: 43500/74017 read, 39666 kept
+    stackexchange: 44000/74017 read, 40079 kept
+    stackexchange: 44500/74017 read, 40499 kept
+    stackexchange: 45000/74017 read, 40935 kept
+    stackexchange: 45500/74017 read, 41354 kept
+    stackexchange: 46000/74017 read, 41779 kept
+    stackexchange: 46500/74017 read, 42198 kept
+    stackexchange: 47000/74017 read, 42628 kept
+    stackexchange: 47500/74017 read, 43023 kept
+    stackexchange: 48000/74017 read, 43380 kept
+    stackexchange: 48500/74017 read, 43730 kept
+    stackexchange: 49000/74017 read, 44115 kept
+    stackexchange: 49500/74017 read, 44504 kept
+    stackexchange: 50000/74017 read, 44874 kept
+    stackexchange: 50500/74017 read, 45251 kept
+    stackexchange: 52000/74017 read, 46400 kept
+    stackexchange: 52500/74017 read, 46777 kept
+    stackexchange: 53000/74017 read, 47164 kept
+    stackexchange: 53500/74017 read, 47536 kept
+    stackexchange: 54500/74017 read, 48266 kept
+    stackexchange: 55500/74017 read, 49008 kept
+    stackexchange: 56000/74017 read, 49388 kept
+    stackexchange: 56500/74017 read, 49757 kept
+    stackexchange: 57000/74017 read, 50149 kept
+    stackexchange: 58000/74017 read, 50895 kept
+    stackexchange: 58500/74017 read, 51311 kept
+    stackexchange: 59500/74017 read, 52185 kept
+    stackexchange: 60000/74017 read, 52630 kept
+    stackexchange: 60500/74017 read, 53076 kept
+    stackexchange: 61000/74017 read, 53530 kept
+    stackexchange: 61500/74017 read, 53998 kept
+    stackexchange: 62000/74017 read, 54451 kept
+    stackexchange: 62500/74017 read, 54901 kept
+    stackexchange: 63000/74017 read, 55340 kept
+    stackexchange: 63500/74017 read, 55750 kept
+    stackexchange: 64000/74017 read, 56127 kept
+    stackexchange: 64500/74017 read, 56543 kept
+    stackexchange: 65000/74017 read, 56963 kept
+    stackexchange: 65500/74017 read, 57356 kept
+    stackexchange: 66500/74017 read, 58183 kept
+    stackexchange: 67000/74017 read, 58614 kept
+    stackexchange: 67500/74017 read, 59014 kept
+    stackexchange: 68500/74017 read, 59822 kept
+    stackexchange: 70500/74017 read, 61395 kept
+    stackexchange: 71000/74017 read, 61782 kept
+    stackexchange: 71500/74017 read, 62190 kept
+    stackexchange: 72000/74017 read, 62582 kept
+    stackexchange: 72500/74017 read, 62941 kept
+    stackexchange: 73000/74017 read, 63314 kept
+    stackexchange: 73500/74017 read, 63766 kept
+    stackexchange: 74000/74017 read, 64218 kept
+  stackexchange: kept 64234 of 74017 documents (33 near-duplicate, 9750 too short, 4803 repeated paragraphs removed)
+    wikipedia: 500/10385 read, 451 kept
+    wikipedia: 1000/10385 read, 908 kept
+    wikipedia: 1500/10385 read, 1336 kept
+    wikipedia: 2500/10385 read, 2082 kept
+    wikipedia: 3000/10385 read, 2537 kept
+    wikipedia: 3500/10385 read, 3002 kept
+    wikipedia: 4000/10385 read, 3446 kept
+    wikipedia: 4500/10385 read, 3882 kept
+    wikipedia: 5000/10385 read, 4284 kept
+    wikipedia: 5500/10385 read, 4742 kept
+    wikipedia: 6000/10385 read, 5169 kept
+    wikipedia: 6500/10385 read, 5602 kept
+    wikipedia: 7500/10385 read, 6480 kept
+    wikipedia: 8000/10385 read, 6904 kept
+    wikipedia: 8500/10385 read, 7347 kept
+    wikipedia: 9000/10385 read, 7792 kept
+    wikipedia: 9500/10385 read, 8230 kept
+    wikipedia: 10000/10385 read, 8641 kept
+  wikipedia: kept 8957 of 10385 documents (309 near-duplicate, 1119 too short, 5023 repeated paragraphs removed)
+  sec_edgar: capped to 50% of the corpus — 1976 of 13728 documents (243 MB budget)
+    sec_edgar: 500/1976 read, 473 kept
+    sec_edgar: 1000/1976 read, 950 kept
+    sec_edgar: 1500/1976 read, 1429 kept
+  sec_edgar: kept 1891 of 1976 documents (48 near-duplicate, 37 too short, 38682 repeated paragraphs removed)
+
+source              files    raw MB   corpus MB   est. tokens
+-------------------------------------------------------------
+gutenberg              12      10.5         7.2     1,793,836
+ncert                  68     177.9         3.0       747,390
+news_rss                4       0.0         0.0         3,654
+openstax               29   1,515.3        28.4     7,094,538
+rbi                   121       2.1         0.8       212,016
+sebi                   70      59.5         5.8     1,460,884
+sec_edgar          13,728   2,410.8       231.5    57,882,429
+stackexchange      74,017     191.8       145.2    36,289,851
+wikipedia          10,385     137.0        53.8    13,445,539
+yahoo_prices          101      89.2         0.0             0
+-------------------------------------------------------------
+total              98,535   4,594.1       475.7   118,930,139
+
+prices: 101 tickers, 874,851 ticker-days
+text: ~118.9M estimated tokens (BabyLM tracks are 10M and 100M; BERT-base used 3,300M)

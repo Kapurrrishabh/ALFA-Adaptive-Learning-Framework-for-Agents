@@ -1,0 +1,213 @@
+
+gutenberg (at 1.0/s)
+  1232: 280 KB
+  33310: 677 KB
+  4341: 563 KB
+  15776: 422 KB
+  1653: 346 KB
+  34081: 805 KB
+  16960: 1281 KB
+  38194: 2462 KB
+  14268: 160 KB
+  26217: 564 KB
+  23755: 273 KB
+  11 new files in 12s
+
+ncert (at 1.0/s)
+  keac1: 7 chapters
+  keac2: 2 chapters
+  leac1: 4 chapters
+  leac2: 6 chapters
+  kebs1: 11 chapters
+  lebs1: 8 chapters
+  lebs2: 3 chapters
+  keec1: 8 chapters
+  leec1: 6 chapters
+  leec2: 5 chapters
+  kest1: 8 chapters
+  0 new files in 11s
+
+rbi (at 0.5/s)
+  121 documents listed
+  0 skipped as too short (under 1500 characters)
+  116 new files in 431s
+
+stackexchange (at 0.5/s)
+  money.stackexchange.com: already held, skipping the dump download
+  quant.stackexchange.com: 52 MB archive, extracting Posts.xml
+  quant.stackexchange.com: 20969 threads kept, 1208 too short
+  economics.stackexchange.com: 41 MB archive, extracting Posts.xml
+  economics.stackexchange.com: 15150 threads kept, 670 too short
+  36119 new files in 75s
+
+yahoo_prices (at 0.5/s)
+  AAPL: 11533 days 1980-12-12..2026-09-17
+  MSFT: 10207 days 1986-03-13..2026-09-17
+  NVDA: 6956 days 1999-01-22..2026-09-17
+  GOOGL: 5555 days 2004-08-19..2026-09-17
+  AMZN: 7381 days 1997-05-15..2026-09-17
+  META: 3603 days 2012-05-18..2026-09-17
+  TSLA: 4080 days 2010-06-29..2026-09-17
+  BRK-B: 7638 days 1996-05-09..2026-09-17
+  JPM: 11721 days 1980-03-17..2026-09-17
+  V: 4654 days 2008-03-19..2026-09-17
+  UNH: 10560 days 1984-10-17..2026-09-17
+  XOM: 16286 days 1962-01-02..2026-09-17
+  JNJ: 16286 days 1962-01-02..2026-09-17
+  WMT: 13627 days 1972-08-25..2026-09-17
+  PG: 16286 days 1962-01-02..2026-09-17
+  MA: 5110 days 2006-05-25..2026-09-17
+  HD: 11338 days 1981-09-22..2026-09-17
+  CVX: 16286 days 1962-01-02..2026-09-17
+  ABBV: 3448 days 2013-01-02..2026-09-17
+  KO: 16286 days 1962-01-02..2026-09-17
+  PEP: 13687 days 1972-06-01..2026-09-17
+  COST: 10126 days 1986-07-09..2026-09-17
+  MRK: 16286 days 1962-01-02..2026-09-17
+  BAC: 13507 days 1973-02-21..2026-09-17
+  AVGO: 4305 days 2009-08-06..2026-09-17
+  PFE: 13687 days 1972-06-01..2026-09-17
+  TMO: 11721 days 1980-03-17..2026-09-17
+  CSCO: 9212 days 1990-02-16..2026-09-17
+  ADBE: 10101 days 1986-08-13..2026-09-17
+  ACN: 6328 days 2001-07-19..2026-09-17
+  MCD: 15151 days 1966-07-05..2026-09-17
+  ABT: 11721 days 1980-03-17..2026-09-17
+  CRM: 5595 days 2004-06-23..2026-09-17
+  LIN: 8623 days 1992-06-17..2026-09-17
+  NFLX: 6119 days 2002-05-23..2026-09-17
+  DHR: 12027 days 1978-12-29..2026-09-17
+  VZ: 10789 days 1983-11-21..2026-09-17
+  TXN: 13687 days 1972-06-01..2026-09-17
+  NKE: 11541 days 1980-12-02..2026-09-17
+  WFC: 13687 days 1972-06-01..2026-09-17
+  PM: 4656 days 2008-03-17..2026-09-17
+  DIS: 16286 days 1962-01-02..2026-09-17
+  INTC: 11721 days 1980-03-17..2026-09-17
+  AMD: 11721 days 1980-03-17..2026-09-17
+  CAT: 16286 days 1962-01-02..2026-09-17
+  GS: 6886 days 1999-05-04..2026-09-17
+  IBM: 16286 days 1962-01-02..2026-09-17
+  BA: 16286 days 1962-01-02..2026-09-17
+  MMM: 16286 days 1962-01-02..2026-09-17
+  GE: 16286 days 1962-01-02..2026-09-17
+  RELIANCE.NS: 7711 days 1996-01-01..2026-09-18
+  TCS.NS: 5987 days 2002-08-12..2026-09-18
+  HDFCBANK.NS: 7714 days 1996-01-01..2026-09-18
+  ICICIBANK.NS: 6016 days 2002-07-01..2026-09-18
+  INFY.NS: 7714 days 1996-01-01..2026-09-18
+  HINDUNILVR.NS: 7713 days 1996-01-01..2026-09-18
+  ITC.NS: 7711 days 1996-01-01..2026-09-18
+  SBIN.NS: 7712 days 1996-01-01..2026-09-18
+  BHARTIARTL.NS: 6016 days 2002-07-01..2026-09-18
+  BAJFINANCE.NS: 6015 days 2002-07-01..2026-09-18
+  KOTAKBANK.NS: 6278 days 2001-07-02..2026-09-18
+  LT.NS: 6019 days 2002-07-01..2026-09-18
+  AXISBANK.NS: 6951 days 1998-11-27..2026-09-18
+  ASIANPAINT.NS: 6016 days 2002-07-01..2026-09-18
+  MARUTI.NS: 5752 days 2003-07-09..2026-09-18
+  TITAN.NS: 7714 days 1996-01-01..2026-09-18
+  SUNPHARMA.NS: 7714 days 1996-01-01..2026-09-18
+  ULTRACEMCO.NS: 5986 days 2002-08-12..2026-09-18
+  NESTLEIND.NS: 5988 days 2002-08-12..2026-09-18
+  WIPRO.NS: 7714 days 1996-01-01..2026-09-18
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: TATAMOTORS.NS"}}}
+$TATAMOTORS.NS: possibly delisted; no timezone found
+
+1 Failed download:
+['TATAMOTORS.NS']: possibly delisted; no timezone found
+  ONGC.NS: 7711 days 1996-01-01..2026-09-18
+  NTPC.NS: 5405 days 2004-11-05..2026-09-18
+  POWERGRID.NS: 4676 days 2007-10-05..2026-09-18
+  TATAMOTORS.NS: no usable rows
+  TATASTEEL.NS: 7714 days 1996-01-01..2026-09-18
+  ADANIENT.NS: 6018 days 2002-07-01..2026-09-18
+  ADANIPORTS.NS: 4641 days 2007-11-27..2026-09-18
+  COALINDIA.NS: 3919 days 2010-11-04..2026-09-18
+  HCLTECH.NS: 5990 days 2002-08-12..2026-09-18
+  TECHM.NS: 4951 days 2006-08-28..2026-09-18
+  GRASIM.NS: 6014 days 2002-07-01..2026-09-18
+  JSWSTEEL.NS: 5795 days 2003-05-08..2026-09-18
+  INDUSINDBK.NS: 6017 days 2002-07-01..2026-09-18
+  BAJAJFINSV.NS: 5984 days 2002-08-12..2026-09-18
+  DRREDDY.NS: 7710 days 1996-01-01..2026-09-18
+  CIPLA.NS: 7711 days 1996-01-01..2026-09-18
+  DIVISLAB.NS: 5836 days 2003-03-12..2026-09-18
+  EICHERMOT.NS: 7710 days 1996-01-01..2026-09-18
+  HEROMOTOCO.NS: 6016 days 2002-07-01..2026-09-18
+  BRITANNIA.NS: 7713 days 1996-01-02..2026-09-18
+  BPCL.NS: 7710 days 1996-01-02..2026-09-18
+  SHREECEM.NS: 6276 days 2001-07-02..2026-09-18
+  HINDALCO.NS: 7712 days 1996-01-01..2026-09-18
+  SBILIFE.NS: 2219 days 2017-10-03..2026-09-18
+  HDFCLIFE.NS: 2187 days 2017-11-17..2026-09-18
+  APOLLOHOSP.NS: 6015 days 2002-07-01..2026-09-18
+  TATACONSUM.NS: 7711 days 1996-01-01..2026-09-18
+  BAJAJ-AUTO.NS: 6018 days 2002-07-01..2026-09-18
+  UPL.NS: 6017 days 2002-07-01..2026-09-18
+  M&M.NS: 7712 days 1996-01-01..2026-09-18
+  ^NSEI: 4663 days 2007-09-17..2026-09-18
+  ^BSESN: 7198 days 1997-07-01..2026-09-18
+  101 new files in 56s
+
+sebi (at 1.0/s)
+  circulars: 25 documents listed
+  regulations: 42 documents listed
+  acts: 6 documents listed
+    Notifications under Finance Act- Merger of FMC with SEBI: gave up on /sebi_data/attachdocs/1441362496725.pdf after 4 attempts: Invalid URL '/sebi_data/attachdocs/1441362496725.pdf': No scheme supplied. Perhaps you meant https:///sebi_data/attachdocs/1441362496725.pdf?
+    The Finance Act.: gave up on /sebi_data/attachdocs/1472194588436.pdf after 4 attempts: Invalid URL '/sebi_data/attachdocs/1472194588436.pdf': No scheme supplied. Perhaps you meant https:///sebi_data/attachdocs/1472194588436.pdf?
+    Securities Laws (Amendment) Act.: gave up on /sebi_data/attachdocs/1409135096979.pdf after 4 attempts: Invalid URL '/sebi_data/attachdocs/1409135096979.pdf': No scheme supplied. Perhaps you meant https:///sebi_data/attachdocs/1409135096979.pdf?
+  58 new files in 182s
+
+wikipedia (at 1.0/s)
+  discovering: 20 categories read, 2351 titles
+  discovering: 40 categories read, 3534 titles
+  discovering: 60 categories read, 4021 titles
+  discovering: 80 categories read, 5126 titles
+  discovering: 100 categories read, 5928 titles
+  discovering: 120 categories read, 6447 titles
+  discovering: 140 categories read, 7143 titles
+  discovering: 160 categories read, 8237 titles
+  discovering: 180 categories read, 8933 titles
+  discovering: 200 categories read, 9336 titles
+  discovering: 220 categories read, 9702 titles
+  discovering: 240 categories read, 10018 titles
+  discovering: 260 categories read, 10353 titles
+  discovering: 280 categories read, 10662 titles
+  discovering: 300 categories read, 10770 titles
+  discovering: 320 categories read, 10882 titles
+  discovering: 340 categories read, 10954 titles
+  discovering: 360 categories read, 11013 titles
+  discovering: 380 categories read, 11114 titles
+  discovering: 400 categories read, 11216 titles
+  9418 distinct articles across 408 categories
+  200 articles saved
+  400 articles saved
+  600 articles saved
+  800 articles saved
+  1000 articles saved
+  1200 articles saved
+  1400 articles saved
+  1600 articles saved
+  1800 articles saved
+  2000 articles saved
+  319 skipped as too short (under 1200 characters)
+  2115 new files in 3187s
+
+source              files    raw MB   corpus MB   est. tokens
+-------------------------------------------------------------
+gutenberg              12      10.5         0.0             0
+ncert                  68     177.9         0.0             0
+news_rss                4       0.0         0.0         3,654
+openstax               29   1,515.3        28.4     7,094,538
+rbi                   121       2.1         0.0             0
+sebi                   70      59.5         0.0             0
+sec_edgar          13,728   2,410.8     1,476.1   369,032,980
+stackexchange      74,017     191.8         0.0             0
+wikipedia          10,385     137.0        44.8    11,195,206
+yahoo_prices          101      89.2         0.0             0
+-------------------------------------------------------------
+total              98,535   4,594.1     1,549.3   387,326,380
+
+prices: 101 tickers, 874,851 ticker-days
+text: ~387.3M estimated tokens (BabyLM tracks are 10M and 100M; BERT-base used 3,300M)

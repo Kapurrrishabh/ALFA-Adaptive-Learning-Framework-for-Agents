@@ -1,0 +1,16 @@
+{
+  "dim": 256,
+  "dropout": 0.1,
+  "ffn_dim": 1024,
+  "max_text_length": 128,
+  "num_classes": 3,
+  "num_heads": 4,
+  "num_layers": 4,
+  "patch_length": 16,
+  "patch_stride": 8,
+  "price_channels": 5,
+  "price_layers": 2,
+  "price_window": 128,
+  "seed": 0,
+  "vocab_size": 8000
+}

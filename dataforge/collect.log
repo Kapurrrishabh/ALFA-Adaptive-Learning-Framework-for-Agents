@@ -1,0 +1,785 @@
+
+news_rss (at 1.0/s)
+  www_sec_gov: 25 in feed, 25 new
+  https://www.federalreserve.gov/feeds/press_all.xml: not parseable as RSS or Atom (not well-formed (invalid token): line 1, column 1)
+  https://www.federalreserve.gov/feeds/speeches.xml: not parseable as RSS or Atom (not well-formed (invalid token): line 1, column 1)
+  feeds_content_dowjones_io: 10 in feed, 10 new
+  feeds_content_dowjones_io: 30 in feed, 30 new
+  www_investing_com: 10 in feed, 10 new
+  75 new files in 7s
+
+openstax (at 2.0/s)
+  31 relevant books
+  Business Ethics (50164 KB)
+  Business Law I Essentials (12603 KB)
+  Business Law I Essentials 2e (12769 KB)
+  Entrepreneurship (126343 KB)
+  introduction-business: no PDF offered
+  Introduction to Business 2e (145354 KB)
+  Introductory Business Statistics (23358 KB)
+  Introductory Business Statistics 2e (22260 KB)
+  Introductory Statistics (25948 KB)
+  Introductory Statistics 2e (22952 KB)
+  marketing-podstawy: no PDF offered
+  Principles of Accounting, Volume 1: Financial Accounting (163103 KB)
+  Principles of Accounting, Volume 2: Managerial Accounting (87717 KB)
+  Principles of Economics (111281 KB)
+  Principles of Economics 2e (50550 KB)
+  Principles of Economics 3e (48285 KB)
+  Principles of Finance (31168 KB)
+  Principles of Finance 2e (30178 KB)
+  Principles of Macroeconomics (80749 KB)
+  Principles of Macroeconomics 2e (38097 KB)
+  Principles of Macroeconomics 3e (32797 KB)
+  Principles of Macroeconomics for AP® Courses (11366 KB)
+  Principles of Macroeconomics for AP® Courses 2e (32626 KB)
+  Principles of Management (64091 KB)
+  Principles of Marketing (61012 KB)
+  Principles of Microeconomics (61544 KB)
+  Principles of Microeconomics 2e (33173 KB)
+  Principles of Microeconomics 3e (28562 KB)
+  Principles of Microeconomics for AP® Courses (10823 KB)
+  Principles of Microeconomics for AP® Courses 2e (30170 KB)
+  Statistics (30714 KB)
+  29 new files in 112s
+
+sec_edgar (at 5.0/s)
+  2015Q1: 26750 matching filings, taking 250
+    Peer to Peer Network: no primary document in the listing
+    Trident Brands Inc: only 1492 characters extracted, skipped
+    RISK GEORGE INDUSTRIES INC: no primary document in the listing
+  2015Q1: 247 stored
+  2015Q2: 29204 matching filings, taking 250
+    ALABAMA POWER CO: only 1719 characters extracted, skipped
+    Earth Science Tech, Inc.: no primary document in the listing
+  2015Q2: 248 stored
+  2015Q3: 25169 matching filings, taking 250
+  2015Q3: 250 stored
+  2015Q4: 25435 matching filings, taking 250
+    JOHNSON & JOHNSON: no primary document in the listing
+    Liberty Global plc: only 1984 characters extracted, skipped
+    Viggle Inc.: only 1187 characters extracted, skipped
+  2015Q4: 247 stored
+  2016Q1: 25323 matching filings, taking 250
+    BAND REP MANAGEMENT, INC.: no primary document in the listing
+    BEAZER HOMES USA INC: no primary document in the listing
+  2016Q1: 248 stored
+  2016Q2: 27793 matching filings, taking 250
+    Hiking Ridge Acquisition Corp: no primary document in the listing
+    TASA PRODUCTS LTD: only 808 characters extracted, skipped
+    Liberty Global plc: only 1984 characters extracted, skipped
+    UNITY GLOBAL HOLDINGS LTD.: no primary document in the listing
+  2016Q2: 246 stored
+  2016Q3: 23916 matching filings, taking 250
+    United Cannabis Corp: no primary document in the listing
+  2016Q3: 249 stored
+  2016Q4: 23787 matching filings, taking 250
+    UNITED ENERGIES DEVELOPMENT Corp: no primary document in the listing
+    IDEX CORP /DE/: no primary document in the listing
+    LEGG MASON, INC.: no primary document in the listing
+    REGI U S INC: only 678 characters extracted, skipped
+    TiVo Corp: no primary document in the listing
+  2016Q4: 245 stored
+  2017Q1: 24733 matching filings, taking 250
+    Indoor Harvest Corp: only 970 characters extracted, skipped
+  2017Q1: 249 stored
+  2017Q2: 26990 matching filings, taking 250
+    FIRST TRUST HIGH INCOME LONG/SHORT FUND: no primary document in the listing
+    FOOTHILLS EXPLORATION, INC.: only 556 characters extracted, skipped
+    MABVAX THERAPEUTICS HOLDINGS, INC.: only 1931 characters extracted, skipped
+    Millennium Investment & Acquisition Co Inc.: only 1601 characters extracted, skipped
+  2017Q2: 246 stored
+  2017Q3: 22488 matching filings, taking 250
+    ORIGINAL SIXTEEN TO ONE MINE INC /CA/: no primary document in the listing
+    AEHR TEST SYSTEMS: no primary document in the listing
+    United Cannabis Corp: no primary document in the listing
+  2017Q3: 247 stored
+  2017Q4: 23632 matching filings, taking 250
+    FIRST TRUST HIGH INCOME LONG/SHORT FUND: no primary document in the listing
+    PAVmed Inc.: only 669 characters extracted, skipped
+    QCR HOLDINGS INC: only 865 characters extracted, skipped
+  2017Q4: 247 stored
+  2018Q1: 23634 matching filings, taking 250
+    APEX 2 INC.: only 1022 characters extracted, skipped
+  2018Q1: 249 stored
+  2018Q2: 26336 matching filings, taking 250
+    American Blockchain Biochar Corp: no primary document in the listing
+    GOVERNMENT PROPERTIES INCOME TRUST: no primary document in the listing
+    LEGG MASON, INC.: no primary document in the listing
+    SOUTHERN POWER CO: no primary document in the listing
+  2018Q2: 246 stored
+  2018Q3: 21860 matching filings, taking 250
+    INDEPENDENT BANK CORP: no primary document in the listing
+  2018Q3: 249 stored
+  2018Q4: 22659 matching filings, taking 250
+    Emerald Expositions Events, Inc.: no primary document in the listing
+    LADENBURG THALMANN FINANCIAL SERVICES INC.: only 1335 characters extracted, skipped
+  2018Q4: 248 stored
+  2019Q1: 22588 matching filings, taking 250
+
+news_rss (at 1.0/s)
+  www_sec_gov: 25 in feed, 0 new
+  https://www.federalreserve.gov/feeds/press_all.xml: not parseable as RSS or Atom (not well-formed (invalid token): line 1, column 1)
+  https://www.federalreserve.gov/feeds/speeches.xml: not parseable as RSS or Atom (not well-formed (invalid token): line 1, column 1)
+  feeds_content_dowjones_io: 10 in feed, 2 new
+  feeds_content_dowjones_io: 30 in feed, 0 new
+  www_investing_com: 10 in feed, 10 new
+  12 new files in 7s
+
+openstax (at 2.0/s)
+  31 relevant books
+  introduction-business: no PDF offered
+  marketing-podstawy: no PDF offered
+  0 new files in 16s
+
+sec_edgar (at 5.0/s)
+  2015Q1: 26750 matching filings, taking 250
+    Perkins Oil & Gas, Inc.: only 1297 characters extracted, skipped
+  2015Q1: 244 stored
+  2015Q2: 29204 matching filings, taking 250
+    American-Swiss Capital, Inc.: no primary document in the listing
+    T.A.G. Acquisitions Ltd.: no primary document in the listing
+    KOSS CORP: no primary document in the listing
+  2015Q2: 244 stored
+  2015Q3: 25169 matching filings, taking 250
+  2015Q3: 248 stored
+  2015Q4: 25435 matching filings, taking 250
+    Liberty Global plc: only 1982 characters extracted, skipped
+  2015Q4: 245 stored
+  2016Q1: 25323 matching filings, taking 250
+  2016Q1: 248 stored
+  2016Q2: 27793 matching filings, taking 250
+    Khang Gia Holding, Inc.: no primary document in the listing
+    Universal Holdings & Consulting, Inc.: no primary document in the listing
+  2016Q2: 244 stored
+  2016Q3: 23916 matching filings, taking 250
+    BCI GROUP, INC.: no primary document in the listing
+    Perry Hill Acquisition Corp: no primary document in the listing
+  2016Q3: 247 stored
+  2016Q4: 23787 matching filings, taking 250
+    NORTH EUROPEAN OIL ROYALTY TRUST: no primary document in the listing
+  2016Q4: 245 stored
+  2017Q1: 24733 matching filings, taking 250
+  2017Q1: 243 stored
+  2017Q2: 26990 matching filings, taking 250
+    FAH MAI HOLDINGS, INC.: no primary document in the listing
+    UNITED ENERGIES DEVELOPMENT Corp: no primary document in the listing
+    NORTH EUROPEAN OIL ROYALTY TRUST: no primary document in the listing
+  2017Q2: 246 stored
+  2017Q3: 22488 matching filings, taking 250
+    Glolex, Inc.: only 1349 characters extracted, skipped
+    ORIGINAL SIXTEEN TO ONE MINE INC /CA/: no primary document in the listing
+  2017Q3: 244 stored
+  2017Q4: 23632 matching filings, taking 250
+    Orexigen Therapeutics, Inc.: no primary document in the listing
+  2017Q4: 245 stored
+  2018Q1: 23634 matching filings, taking 250
+  2018Q1: 246 stored
+  2018Q2: 26336 matching filings, taking 250
+    ACCESS POWER INC: no primary document in the listing
+    ACCESS POWER INC: no primary document in the listing
+    Forest Sound Acquisition Corp: no primary document in the listing
+    Park Sound Acquisition Corp: no primary document in the listing
+    Rough Sound Acquisition Corp: no primary document in the listing
+    UNITED CAPITAL CONSULTANTS INC.: no primary document in the listing
+    ACCESS POWER INC: no primary document in the listing
+  2018Q2: 242 stored
+  2018Q3: 21860 matching filings, taking 250
+  2018Q3: 245 stored
+  2018Q4: 22659 matching filings, taking 250
+  2018Q4: 244 stored
+  2019Q1: 22588 matching filings, taking 250
+    Vortex Blockchain Technologies Inc.: no primary document in the listing
+  2019Q1: 247 stored
+  2019Q2: 25554 matching filings, taking 250
+  2019Q2: 250 stored
+  2019Q3: 21533 matching filings, taking 250
+    AMETEK INC/: only 1086 characters extracted, skipped
+    DEAN FOODS CO: only 1147 characters extracted, skipped
+    OCCIDENTAL PETROLEUM CORP /DE/: only 1183 characters extracted, skipped
+    STANDARD MOTOR PRODUCTS, INC.: only 1155 characters extracted, skipped
+  2019Q3: 246 stored
+  2019Q4: 22160 matching filings, taking 250
+    G III APPAREL GROUP LTD /DE/: only 1169 characters extracted, skipped
+    HUMANA INC: only 1099 characters extracted, skipped
+    NORDSON CORP: only 1118 characters extracted, skipped
+    PUMA BIOTECHNOLOGY, INC.: only 1198 characters extracted, skipped
+  2019Q4: 246 stored
+  2020Q1: 23943 matching filings, taking 250
+    STAR GROUP, L.P.: no primary document in the listing
+    AKORN INC: only 1145 characters extracted, skipped
+    AXIS CAPITAL HOLDINGS LTD: only 1540 characters extracted, skipped
+    Healthcare Trust, Inc.: only 1223 characters extracted, skipped
+    Installed Building Products, Inc.: only 1167 characters extracted, skipped
+    NAVIENT CORP: only 1469 characters extracted, skipped
+    Pure Harvest Cannabis Group, Inc.: no primary document in the listing
+    US Ecology, Inc.: only 1527 characters extracted, skipped
+  2020Q1: 242 stored
+  2020Q2: 27860 matching filings, taking 250
+    Access-Power & Co., Inc.: no primary document in the listing
+    CONDUENT Inc: only 1164 characters extracted, skipped
+    Clear Channel Outdoor Holdings, Inc.: only 1171 characters extracted, skipped
+    McEwen Mining Inc.: only 1169 characters extracted, skipped
+  2020Q2: 246 stored
+  2020Q3: 22366 matching filings, taking 250
+    BIOMARIN PHARMACEUTICAL INC: only 1128 characters extracted, skipped
+    Benefitfocus, Inc.: only 1119 characters extracted, skipped
+    HEALTHEQUITY, INC.: only 1168 characters extracted, skipped
+    Intra-Cellular Therapies, Inc.: only 1114 characters extracted, skipped
+    Live Oak Bancshares, Inc.: only 1162 characters extracted, skipped
+  2020Q3: 245 stored
+  2020Q4: 22908 matching filings, taking 250
+    ALASKA AIR GROUP, INC.: only 1260 characters extracted, skipped
+    Amerant Bancorp Inc.: only 1504 characters extracted, skipped
+    CVS HEALTH Corp: only 1106 characters extracted, skipped
+    ENZO BIOCHEM INC: only 1134 characters extracted, skipped
+    FreightCar America, Inc.: only 1096 characters extracted, skipped
+    GreenSky, Inc.: only 1164 characters extracted, skipped
+    Howmet Aerospace Inc.: only 1522 characters extracted, skipped
+    J2 GLOBAL, INC.: only 1188 characters extracted, skipped
+    NET 1 UEPS TECHNOLOGIES INC: only 1395 characters extracted, skipped
+    SunCoke Energy, Inc.: only 1169 characters extracted, skipped
+    VERTICAL COMPUTER SYSTEMS INC: only 1148 characters extracted, skipped
+  2020Q4: 239 stored
+  2021Q1: 25194 matching filings, taking 250
+    Armstrong Flooring, Inc.: only 1138 characters extracted, skipped
+    Brigham Minerals, Inc.: only 1210 characters extracted, skipped
+    GCP Applied Technologies Inc.: only 1125 characters extracted, skipped
+    Kontoor Brands, Inc.: only 1221 characters extracted, skipped
+    MARTIN MARIETTA MATERIALS INC: only 1448 characters extracted, skipped
+    MSCI Inc.: only 1237 characters extracted, skipped
+    PENN NATIONAL GAMING INC: only 1129 characters extracted, skipped
+    TFS Financial CORP: only 1145 characters extracted, skipped
+    Theravance Biopharma, Inc.: only 1188 characters extracted, skipped
+    Voyager Therapeutics, Inc.: only 1172 characters extracted, skipped
+  2021Q1: 240 stored
+  2021Q2: 27422 matching filings, taking 250
+    1 800 FLOWERS COM INC: only 1173 characters extracted, skipped
+    APPLIED INDUSTRIAL TECHNOLOGIES INC: only 1127 characters extracted, skipped
+    Better Choice Co Inc.: only 972 characters extracted, skipped
+    CytoDyn Inc.: only 1034 characters extracted, skipped
+    HEMISPHERE MEDIA GROUP, INC.: only 1196 characters extracted, skipped
+    NAVISTAR INTERNATIONAL CORP: only 1513 characters extracted, skipped
+    OLD NATIONAL BANCORP /IN/: only 1101 characters extracted, skipped
+    Provention Bio, Inc.: only 1183 characters extracted, skipped
+    WARRIOR MET COAL, INC.: only 1579 characters extracted, skipped
+  2021Q2: 241 stored
+  2021Q3: 24135 matching filings, taking 250
+    ORIGINAL SIXTEEN TO ONE MINE INC /CA/: no primary document in the listing
+    BrightSpire Capital, Inc.: only 1218 characters extracted, skipped
+    Domtar CORP: only 1120 characters extracted, skipped
+    FORUM ENERGY TECHNOLOGIES, INC.: only 1178 characters extracted, skipped
+    Gevo, Inc.: only 1160 characters extracted, skipped
+    HARVEST HEALTH & RECREATION INC.: only 1182 characters extracted, skipped
+    Liberty Latin America Ltd.: only 1494 characters extracted, skipped
+    OCULUS VISIONTECH INC.: only 1075 characters extracted, skipped
+    Predictive Oncology Inc.: only 1111 characters extracted, skipped
+    REATA PHARMACEUTICALS INC: only 1162 characters extracted, skipped
+    Teligent, Inc.: only 1100 characters extracted, skipped
+    Workhorse Group Inc.: only 1080 characters extracted, skipped
+  2021Q3: 238 stored
+  2021Q4: 25386 matching filings, taking 250
+    AIR LEASE CORP: only 1584 characters extracted, skipped
+    APOGEE ENTERPRISES, INC.: only 1141 characters extracted, skipped
+    Booz Allen Hamilton Holding Corp: only 1110 characters extracted, skipped
+    Comstock Mining Inc.: only 1120 characters extracted, skipped
+    DELTA AIR LINES, INC.: only 1111 characters extracted, skipped
+    Essent Group Ltd.: only 1093 characters extracted, skipped
+    Freshpet, Inc.: only 1141 characters extracted, skipped
+    GSI TECHNOLOGY INC: only 1099 characters extracted, skipped
+    InMed Pharmaceuticals Inc.: only 1184 characters extracted, skipped
+    Leet Technology Inc.: only 1049 characters extracted, skipped
+    MARKETWISE, INC.: only 1570 characters extracted, skipped
+    Odonate Therapeutics, Inc.: only 1223 characters extracted, skipped
+    Starco Brands, Inc.: only 1108 characters extracted, skipped
+    Valaris Ltd: only 1443 characters extracted, skipped
+  2021Q4: 236 stored
+  2022Q1: 24414 matching filings, taking 250
+    APPLIED MATERIALS INC /DE: only 1199 characters extracted, skipped
+    Assure Holdings Corp.: only 1222 characters extracted, skipped
+    Baudax Bio, Inc.: only 1152 characters extracted, skipped
+    DYCOM INDUSTRIES INC: only 1170 characters extracted, skipped
+    FULL HOUSE RESORTS INC: only 1241 characters extracted, skipped
+    HEAT BIOLOGICS, INC.: only 1166 characters extracted, skipped
+    INSTEEL INDUSTRIES INC: only 1136 characters extracted, skipped
+    KINDER MORGAN, INC.: only 1697 characters extracted, skipped
+    LiveOne, Inc.: only 1173 characters extracted, skipped
+    MID PENN BANCORP INC: only 1126 characters extracted, skipped
+    NET 1 UEPS TECHNOLOGIES INC: only 1314 characters extracted, skipped
+    PHILLIPS 66 PARTNERS LP: only 1147 characters extracted, skipped
+    Passage BIO, Inc.: only 1256 characters extracted, skipped
+    RGC RESOURCES INC: only 1140 characters extracted, skipped
+    Shell Midstream Partners, L.P.: only 1150 characters extracted, skipped
+    Starco Brands, Inc.: only 1109 characters extracted, skipped
+    URBAN ONE, INC.: only 1520 characters extracted, skipped
+    Vaxart, Inc.: only 1147 characters extracted, skipped
+    Xenia Hotels & Resorts, Inc.: only 1301 characters extracted, skipped
+  2022Q1: 231 stored
+  2022Q2: 26865 matching filings, taking 250
+    1 800 FLOWERS COM INC: only 1153 characters extracted, skipped
+    Ascend Wellness Holdings, Inc.: only 1068 characters extracted, skipped
+    Bowman Consulting Group Ltd.: only 1236 characters extracted, skipped
+    COGNIZANT TECHNOLOGY SOLUTIONS CORP: only 1140 characters extracted, skipped
+    Chicken Soup for the Soul Entertainment, Inc.: only 1929 characters extracted, skipped
+    Everi Holdings Inc.: only 1160 characters extracted, skipped
+    FLUSHING FINANCIAL CORP: only 1105 characters extracted, skipped
+    Federal Home Loan Bank of New York: only 917 characters extracted, skipped
+    FutureFuel Corp.: only 1140 characters extracted, skipped
+    General Motors Co: only 1119 characters extracted, skipped
+    HASBRO, INC.: only 1126 characters extracted, skipped
+    Inrad Optics, Inc.: only 967 characters extracted, skipped
+    LEMAITRE VASCULAR INC: only 1135 characters extracted, skipped
+    Live Current Media Inc.: only 1115 characters extracted, skipped
+    META FINANCIAL GROUP INC: only 1125 characters extracted, skipped
+    NATIONAL RURAL UTILITIES COOPERATIVE FINANCE CORP /DC/: only 1490 characters extracted, skipped
+    Otis Worldwide Corp: only 1861 characters extracted, skipped
+    Ryman Hospitality Properties, Inc.: only 1105 characters extracted, skipped
+    SMITH A O CORP: only 1115 characters extracted, skipped
+    Sun Country Airlines Holdings, Inc.: only 1193 characters extracted, skipped
+  2022Q2: 230 stored
+  2022Q3: 22911 matching filings, taking 250
+    Absci Corp: only 1123 characters extracted, skipped
+    BARNWELL INDUSTRIES INC: only 1180 characters extracted, skipped
+    Blueprint Medicines Corp: only 1122 characters extracted, skipped
+    HAWAIIAN HOLDINGS INC: only 1156 characters extracted, skipped
+    Hawkeye Systems, Inc.: only 1002 characters extracted, skipped
+    IMMUNIC, INC.: only 1196 characters extracted, skipped
+    Inhibikase Therapeutics, Inc.: only 1231 characters extracted, skipped
+    KB HOME: only 1477 characters extracted, skipped
+    LCI INDUSTRIES: only 1098 characters extracted, skipped
+    Marijuana Co of America, Inc.: only 1101 characters extracted, skipped
+    NOCERA, INC.: only 1222 characters extracted, skipped
+    Oncocyte Corp: only 1154 characters extracted, skipped
+    Pacifico Acquisition Corp.: only 1506 characters extracted, skipped
+    RENASANT CORP: only 1102 characters extracted, skipped
+    Richmond Mutual Bancorporation, Inc.: only 1169 characters extracted, skipped
+    Sila Realty Trust, Inc.: only 1117 characters extracted, skipped
+    UNIVERSAL ELECTRONICS INC: only 1144 characters extracted, skipped
+    VOLITIONRX LTD: only 1128 characters extracted, skipped
+    Wingstop Inc.: only 1137 characters extracted, skipped
+  2022Q3: 231 stored
+  2022Q4: 24045 matching filings, taking 250
+    Aclarion, Inc.: only 1439 characters extracted, skipped
+    Artisan Partners Asset Management Inc.: only 1162 characters extracted, skipped
+    Barings BDC, Inc.: only 1173 characters extracted, skipped
+    Braemar Hotels & Resorts Inc.: only 1665 characters extracted, skipped
+    Clipper Realty Inc.: only 1213 characters extracted, skipped
+    Dermata Therapeutics, Inc.: only 1438 characters extracted, skipped
+    FHT Future Technology Ltd: only 1082 characters extracted, skipped
+    MGM Resorts International: only 1134 characters extracted, skipped
+    NATIONAL INSTRUMENTS CORP: only 1145 characters extracted, skipped
+    Peraso Inc.: only 1102 characters extracted, skipped
+    Purple Innovation, Inc.: only 1180 characters extracted, skipped
+    RIGEL PHARMACEUTICALS INC: only 1132 characters extracted, skipped
+    Sintx Technologies, Inc.: only 1135 characters extracted, skipped
+    Torrid Holdings Inc.: only 1116 characters extracted, skipped
+  2022Q4: 236 stored
+  2023Q1: 24983 matching filings, taking 250
+    ALKALINE WATER Co INC: only 1272 characters extracted, skipped
+    ARCH CAPITAL GROUP LTD.: only 1881 characters extracted, skipped
+    American Metals Recovery & Recycling Inc.: only 1133 characters extracted, skipped
+    Artemis Strategic Investment Corp: only 1917 characters extracted, skipped
+    BELDEN INC.: only 1151 characters extracted, skipped
+    CERES ORION L.P.: only 1057 characters extracted, skipped
+    FULLER H B CO: only 1205 characters extracted, skipped
+    GENUINE PARTS CO: only 1124 characters extracted, skipped
+    Hippo Holdings Inc.: only 1493 characters extracted, skipped
+    KINETA, INC./DE: only 1174 characters extracted, skipped
+    MESA LABORATORIES INC /CO/: only 1144 characters extracted, skipped
+    Mawson Infrastructure Group Inc.: only 1148 characters extracted, skipped
+    NOVAGOLD RESOURCES INC: only 1098 characters extracted, skipped
+    Nubia Brand International Corp.: only 1900 characters extracted, skipped
+    ShiftPixy, Inc.: only 1227 characters extracted, skipped
+    Startek, Inc.: only 1201 characters extracted, skipped
+    TEXAS INSTRUMENTS INC: only 1116 characters extracted, skipped
+  2023Q1: 233 stored
+  2023Q2: 27474 matching filings, taking 250
+    Acutus Medical, Inc.: only 1193 characters extracted, skipped
+    American Resources Corp: only 1017 characters extracted, skipped
+    Artisan Partners Asset Management Inc.: only 1162 characters extracted, skipped
+    Bank of Marin Bancorp: only 1230 characters extracted, skipped
+    Blue Water Biotech, Inc.: only 1237 characters extracted, skipped
+    EvoAir Holdings Inc.: only 1174 characters extracted, skipped
+    Fresh Vine Wine, Inc.: only 1188 characters extracted, skipped
+    Harbor Custom Development, Inc.: only 1911 characters extracted, skipped
+    INNOVATE Corp.: only 1504 characters extracted, skipped
+    LEMAITRE VASCULAR INC: only 1139 characters extracted, skipped
+    Lipocine Inc.: only 1166 characters extracted, skipped
+    Novan, Inc.: only 1107 characters extracted, skipped
+    Offerpad Solutions Inc.: only 1487 characters extracted, skipped
+    Predictive Oncology Inc.: only 1156 characters extracted, skipped
+    RECURSION PHARMACEUTICALS, INC.: only 1143 characters extracted, skipped
+    SIGMATRON INTERNATIONAL INC: only 1141 characters extracted, skipped
+    Sila Realty Trust, Inc.: only 1117 characters extracted, skipped
+    Stratim Cloud Acquisition Corp.: only 1958 characters extracted, skipped
+  2023Q2: 232 stored
+  2023Q3: 22677 matching filings, taking 250
+    AIR INDUSTRIES GROUP: only 1103 characters extracted, skipped
+    APPFOLIO INC: only 1104 characters extracted, skipped
+    Ace Global Business Acquisition Ltd: only 1731 characters extracted, skipped
+    Aridis Pharmaceuticals, Inc.: only 1217 characters extracted, skipped
+    Blue Apron Holdings, Inc.: only 1121 characters extracted, skipped
+    CME GROUP INC.: only 1104 characters extracted, skipped
+    Cabaletta Bio, Inc.: only 1228 characters extracted, skipped
+    Earth Science Tech, Inc.: only 1488 characters extracted, skipped
+    Federal Home Loan Bank of New York: only 918 characters extracted, skipped
+    Gyrodyne, LLC: only 1183 characters extracted, skipped
+    INNOVATIVE SOLUTIONS & SUPPORT INC: only 1127 characters extracted, skipped
+    MDU RESOURCES GROUP INC: only 1190 characters extracted, skipped
+    Northfield Bancorp, Inc.: only 1165 characters extracted, skipped
+    Ocugen, Inc.: only 1106 characters extracted, skipped
+    PUGET SOUND ENERGY INC: only 1664 characters extracted, skipped
+    SERA PROGNOSTICS, INC.: only 1227 characters extracted, skipped
+    WisdomTree, Inc.: only 1504 characters extracted, skipped
+  2023Q3: 233 stored
+  2023Q4: 23363 matching filings, taking 250
+    1 800 FLOWERS COM INC: only 1154 characters extracted, skipped
+    ARCH CAPITAL GROUP LTD.: only 1880 characters extracted, skipped
+    Acri Capital Acquisition Corp: only 1913 characters extracted, skipped
+    Bank of Marin Bancorp: only 1231 characters extracted, skipped
+    ENANTA PHARMACEUTICALS INC: only 1135 characters extracted, skipped
+    Finward Bancorp: only 1118 characters extracted, skipped
+    GoDaddy Inc.: only 1358 characters extracted, skipped
+    HF Sinclair Corp: only 1161 characters extracted, skipped
+    Hub Group, Inc.: only 1112 characters extracted, skipped
+    JACOBS SOLUTIONS INC.: only 1132 characters extracted, skipped
+    LQR House Inc.: only 1184 characters extracted, skipped
+    Lumentum Holdings Inc.: only 1139 characters extracted, skipped
+    Merion, Inc.: only 997 characters extracted, skipped
+    NCR VOYIX Corp: only 1229 characters extracted, skipped
+    NanoString Technologies Inc: only 1141 characters extracted, skipped
+    Onconetix, Inc.: only 1228 characters extracted, skipped
+    Presto Automation Inc.: only 1465 characters extracted, skipped
+    RENAISSANCERE HOLDINGS LTD: only 1977 characters extracted, skipped
+    SIEBERT FINANCIAL CORP: only 1103 characters extracted, skipped
+    TERADYNE, INC: only 1120 characters extracted, skipped
+    VMWARE, INC.: only 1100 characters extracted, skipped
+    Worthington Steel, Inc.: only 1128 characters extracted, skipped
+  2023Q4: 228 stored
+  2024Q1: 23049 matching filings, taking 250
+    1 800 FLOWERS COM INC: only 1153 characters extracted, skipped
+    AIR T INC: only 1748 characters extracted, skipped
+    Blue Foundry Bancorp: only 1140 characters extracted, skipped
+    COGNIZANT TECHNOLOGY SOLUTIONS CORP: only 1140 characters extracted, skipped
+    DORCHESTER MINERALS, L.P.: only 1188 characters extracted, skipped
+    Eagle Point Income Co Inc.: only 1636 characters extracted, skipped
+    Evolus, Inc.: only 1132 characters extracted, skipped
+    FRANKLIN RESOURCES INC: only 1148 characters extracted, skipped
+    FutureFuel Corp.: only 1139 characters extracted, skipped
+    Gaucho Group Holdings, Inc.: only 1410 characters extracted, skipped
+    GrowGeneration Corp.: only 1172 characters extracted, skipped
+    Hancock Park Corporate Income, Inc.: only 1083 characters extracted, skipped
+    INPIXON: only 1127 characters extracted, skipped
+    Instil Bio, Inc.: only 1149 characters extracted, skipped
+    KEWAUNEE SCIENTIFIC CORP /DE/: only 1129 characters extracted, skipped
+    LABORATORY CORP OF AMERICA HOLDINGS: only 1144 characters extracted, skipped
+    Murphy USA Inc.: only 1099 characters extracted, skipped
+    NORTHWEST BIOTHERAPEUTICS INC: only 1135 characters extracted, skipped
+    PEGASYSTEMS INC: only 1106 characters extracted, skipped
+    Revelstone Capital Acquisition Corp.: only 1884 characters extracted, skipped
+    STRATUS PROPERTIES INC: only 1426 characters extracted, skipped
+    Sharecare, Inc.: only 1709 characters extracted, skipped
+    VOXX International Corp: only 1147 characters extracted, skipped
+    WAVEDANCER, INC.: only 1162 characters extracted, skipped
+  2024Q1: 221 stored
+  2024Q2: 26240 matching filings, taking 250
+    1 800 FLOWERS COM INC: only 1152 characters extracted, skipped
+    Adaptive Biotechnologies Corp: only 1146 characters extracted, skipped
+    Ascent Solar Technologies, Inc.: only 1089 characters extracted, skipped
+    COMMUNITY BANCORP /VT: only 951 characters extracted, skipped
+    Glimpse Group, Inc.: only 1203 characters extracted, skipped
+    HAWAIIAN ELECTRIC CO INC: only 1782 characters extracted, skipped
+    HeartCore Enterprises, Inc.: only 1202 characters extracted, skipped
+    LIBERTY STAR URANIUM & METALS CORP.: only 1063 characters extracted, skipped
+    MGO Global Inc.: only 1285 characters extracted, skipped
+    Natural Grocers by Vitamin Cottage, Inc.: only 1163 characters extracted, skipped
+    O-I Glass, Inc. /DE/: only 1098 characters extracted, skipped
+    SOLITARIO RESOURCES CORP.: only 1141 characters extracted, skipped
+    Sacks Parente Golf, Inc.: only 1073 characters extracted, skipped
+    US ENERGY CORP: only 1195 characters extracted, skipped
+    Veradigm Inc.: only 1112 characters extracted, skipped
+    WESBANCO INC: only 1543 characters extracted, skipped
+  2024Q2: 234 stored
+  2024Q3: 21685 matching filings, taking 250
+    Incordex Corp.: only 1179 characters extracted, skipped
+    1 800 FLOWERS COM INC: only 1017 characters extracted, skipped
+    ALAMO GROUP INC: only 1092 characters extracted, skipped
+    Adaptimmune Therapeutics PLC: only 1280 characters extracted, skipped
+    Amesite Inc.: only 1228 characters extracted, skipped
+    EPAM Systems, Inc.: only 1166 characters extracted, skipped
+    Energy Services of America CORP: only 1121 characters extracted, skipped
+    GLOBAL PAYMENTS INC: only 1405 characters extracted, skipped
+    Golden Matrix Group, Inc.: only 1153 characters extracted, skipped
+    Hour Loop, Inc: only 1098 characters extracted, skipped
+    Iris Acquisition Corp: only 1956 characters extracted, skipped
+    Mega Matrix Corp.: only 1216 characters extracted, skipped
+    NCR Atleos Corp: only 1152 characters extracted, skipped
+    Nauticus Robotics, Inc.: only 1454 characters extracted, skipped
+    PINTEREST, INC.: only 1114 characters extracted, skipped
+    ROCKWELL MEDICAL, INC.: only 1102 characters extracted, skipped
+    Skillsoft Corp.: only 1234 characters extracted, skipped
+    TRAVELZOO: only 1148 characters extracted, skipped
+    UTG INC: only 983 characters extracted, skipped
+    Veradigm Inc.: only 1112 characters extracted, skipped
+    WESTERN ALLIANCE BANCORPORATION: only 1550 characters extracted, skipped
+  2024Q3: 229 stored
+  2024Q4: 22136 matching filings, taking 250
+    1 800 FLOWERS COM INC: only 1153 characters extracted, skipped
+    ALICO, INC.: only 1141 characters extracted, skipped
+    ARVINAS, INC.: only 1163 characters extracted, skipped
+    BeiGene, Ltd.: only 1166 characters extracted, skipped
+    Braemar Hotels & Resorts Inc.: only 1666 characters extracted, skipped
+    Capri Holdings Ltd: only 1176 characters extracted, skipped
+    ClearSign Technologies Corp: only 1105 characters extracted, skipped
+    DZS INC.: only 1060 characters extracted, skipped
+    FTAI Infrastructure Inc.: only 1259 characters extracted, skipped
+    GALECTIN THERAPEUTICS INC: only 1208 characters extracted, skipped
+    INTELLIGENT BIO SOLUTIONS INC.: only 1238 characters extracted, skipped
+    KINGSTONE COMPANIES, INC.: only 1134 characters extracted, skipped
+    LAMAR ADVERTISING CO/NEW: only 1137 characters extracted, skipped
+    NKGen Biotech, Inc.: only 1543 characters extracted, skipped
+    North Haven Net REIT: only 1058 characters extracted, skipped
+    Portillo's Inc.: only 1166 characters extracted, skipped
+    RDE, Inc.: only 1243 characters extracted, skipped
+    Revance Therapeutics, Inc.: only 1191 characters extracted, skipped
+    Sezzle Inc.: only 1235 characters extracted, skipped
+    Tempest Therapeutics, Inc.: only 1516 characters extracted, skipped
+  2024Q4: 230 stored
+  9604 new files in 12119s
+
+wikipedia (at 1.0/s)
+  FAILED: BlockedByHost: robots.txt disallows https://en.wikipedia.org/w/index.php?title=Category:Financial_markets&pagefrom=Noisy+market+hypothesis#mw-pages
+
+yahoo_prices (at 0.5/s)
+  AAPL: 11533 days 1980-12-12..2026-09-17
+  MSFT: 10207 days 1986-03-13..2026-09-17
+  NVDA: 6956 days 1999-01-22..2026-09-17
+  GOOGL: 5555 days 2004-08-19..2026-09-17
+  AMZN: 7381 days 1997-05-15..2026-09-17
+  META: 3603 days 2012-05-18..2026-09-17
+  TSLA: 4080 days 2010-06-29..2026-09-17
+  BRK-B: 7638 days 1996-05-09..2026-09-17
+  JPM: 11721 days 1980-03-17..2026-09-17
+  V: 4654 days 2008-03-19..2026-09-17
+  UNH: 10560 days 1984-10-17..2026-09-17
+  XOM: 16286 days 1962-01-02..2026-09-17
+  JNJ: 16286 days 1962-01-02..2026-09-17
+  WMT: 13627 days 1972-08-25..2026-09-17
+  PG: 16286 days 1962-01-02..2026-09-17
+  MA: 5110 days 2006-05-25..2026-09-17
+  HD: 11338 days 1981-09-22..2026-09-17
+  CVX: 16286 days 1962-01-02..2026-09-17
+  ABBV: 3448 days 2013-01-02..2026-09-17
+  KO: 16286 days 1962-01-02..2026-09-17
+  PEP: 13687 days 1972-06-01..2026-09-17
+  COST: 10126 days 1986-07-09..2026-09-17
+  MRK: 16286 days 1962-01-02..2026-09-17
+  BAC: 13507 days 1973-02-21..2026-09-17
+  AVGO: 4305 days 2009-08-06..2026-09-17
+  PFE: 13687 days 1972-06-01..2026-09-17
+  TMO: 11721 days 1980-03-17..2026-09-17
+  CSCO: 9212 days 1990-02-16..2026-09-17
+  ADBE: 10101 days 1986-08-13..2026-09-17
+  ACN: 6328 days 2001-07-19..2026-09-17
+  MCD: 15151 days 1966-07-05..2026-09-17
+  ABT: 11721 days 1980-03-17..2026-09-17
+  CRM: 5595 days 2004-06-23..2026-09-17
+  LIN: 8623 days 1992-06-17..2026-09-17
+  NFLX: 6119 days 2002-05-23..2026-09-17
+  DHR: 12027 days 1978-12-29..2026-09-17
+  VZ: 10789 days 1983-11-21..2026-09-17
+  TXN: 13687 days 1972-06-01..2026-09-17
+  NKE: 11541 days 1980-12-02..2026-09-17
+  WFC: 13687 days 1972-06-01..2026-09-17
+  PM: 4656 days 2008-03-17..2026-09-17
+  DIS: 16286 days 1962-01-02..2026-09-17
+  INTC: 11721 days 1980-03-17..2026-09-17
+  AMD: 11721 days 1980-03-17..2026-09-17
+  CAT: 16286 days 1962-01-02..2026-09-17
+  GS: 6886 days 1999-05-04..2026-09-17
+  IBM: 16286 days 1962-01-02..2026-09-17
+  BA: 16286 days 1962-01-02..2026-09-17
+  MMM: 16286 days 1962-01-02..2026-09-17
+  GE: 16286 days 1962-01-02..2026-09-17
+  50 new files in 30s
+
+source              files    raw MB   corpus MB   est. tokens
+-------------------------------------------------------------
+news_rss                4       0.0         0.0             0
+openstax               29   1,515.3         0.0             0
+sec_edgar          13,728   2,410.8         1.3       319,008
+yahoo_prices           50      57.1         0.0             0
+-------------------------------------------------------------
+total              13,811   3,983.3         1.3       319,008
+
+prices: 50 tickers, 549,441 ticker-days
+text: ~0.3M estimated tokens (BabyLM tracks are 10M and 100M; BERT-base used 3,300M)
+
+1 source(s) failed: wikipedia
+
+yahoo_prices (at 0.5/s)
+  AAPL: 11533 days 1980-12-12..2026-09-17
+  MSFT: 10207 days 1986-03-13..2026-09-17
+  NVDA: 6956 days 1999-01-22..2026-09-17
+  GOOGL: 5555 days 2004-08-19..2026-09-17
+  AMZN: 7381 days 1997-05-15..2026-09-17
+  META: 3603 days 2012-05-18..2026-09-17
+  TSLA: 4080 days 2010-06-29..2026-09-17
+  BRK-B: 7638 days 1996-05-09..2026-09-17
+  JPM: 11721 days 1980-03-17..2026-09-17
+  V: 4654 days 2008-03-19..2026-09-17
+  UNH: 10560 days 1984-10-17..2026-09-17
+  XOM: 16286 days 1962-01-02..2026-09-17
+  JNJ: 16286 days 1962-01-02..2026-09-17
+  WMT: 13627 days 1972-08-25..2026-09-17
+  PG: 16286 days 1962-01-02..2026-09-17
+  MA: 5110 days 2006-05-25..2026-09-17
+  HD: 11338 days 1981-09-22..2026-09-17
+  CVX: 16286 days 1962-01-02..2026-09-17
+  ABBV: 3448 days 2013-01-02..2026-09-17
+  KO: 16286 days 1962-01-02..2026-09-17
+  PEP: 13687 days 1972-06-01..2026-09-17
+  COST: 10126 days 1986-07-09..2026-09-17
+  MRK: 16286 days 1962-01-02..2026-09-17
+  BAC: 13507 days 1973-02-21..2026-09-17
+  AVGO: 4305 days 2009-08-06..2026-09-17
+  PFE: 13687 days 1972-06-01..2026-09-17
+  TMO: 11721 days 1980-03-17..2026-09-17
+  CSCO: 9212 days 1990-02-16..2026-09-17
+  ADBE: 10101 days 1986-08-13..2026-09-17
+  ACN: 6328 days 2001-07-19..2026-09-17
+  MCD: 15151 days 1966-07-05..2026-09-17
+  ABT: 11721 days 1980-03-17..2026-09-17
+  CRM: 5595 days 2004-06-23..2026-09-17
+  LIN: 8623 days 1992-06-17..2026-09-17
+  NFLX: 6119 days 2002-05-23..2026-09-17
+  DHR: 12027 days 1978-12-29..2026-09-17
+  VZ: 10789 days 1983-11-21..2026-09-17
+  TXN: 13687 days 1972-06-01..2026-09-17
+  NKE: 11541 days 1980-12-02..2026-09-17
+  WFC: 13687 days 1972-06-01..2026-09-17
+  PM: 4656 days 2008-03-17..2026-09-17
+  DIS: 16286 days 1962-01-02..2026-09-17
+  INTC: 11721 days 1980-03-17..2026-09-17
+  AMD: 11721 days 1980-03-17..2026-09-17
+  CAT: 16286 days 1962-01-02..2026-09-17
+  GS: 6886 days 1999-05-04..2026-09-17
+  IBM: 16286 days 1962-01-02..2026-09-17
+  BA: 16286 days 1962-01-02..2026-09-17
+  MMM: 16286 days 1962-01-02..2026-09-17
+  GE: 16286 days 1962-01-02..2026-09-17
+  50 new files in 32s
+
+wikipedia (at 1.0/s)
+  FAILED: BlockedByHost: robots.txt disallows https://en.wikipedia.org/w/index.php?title=Category:Financial_markets&pagefrom=Noisy+market+hypothesis#mw-pages
+
+source              files    raw MB   corpus MB   est. tokens
+-------------------------------------------------------------
+news_rss                4       0.0         0.0             0
+openstax               29   1,515.3         0.0             0
+sec_edgar          13,728   2,410.8         1.3       319,008
+yahoo_prices           50      57.1         0.0             0
+-------------------------------------------------------------
+total              13,811   3,983.3         1.3       319,008
+
+prices: 50 tickers, 549,441 ticker-days
+text: ~0.3M estimated tokens (BabyLM tracks are 10M and 100M; BERT-base used 3,300M)
+
+1 source(s) failed: wikipedia
+
+wikipedia (at 1.0/s)
+
+wikipedia (at 1.0/s)
+  discovering: 20 categories read, 1519 titles
+  discovering: 40 categories read, 2691 titles
+  discovering: 60 categories read, 3772 titles
+  discovering: 80 categories read, 4636 titles
+  discovering: 100 categories read, 5204 titles
+  discovering: 120 categories read, 5749 titles
+  discovering: 140 categories read, 6714 titles
+  discovering: 160 categories read, 7488 titles
+  discovering: 180 categories read, 8200 titles
+  discovering: 200 categories read, 8253 titles
+  discovering: 220 categories read, 8365 titles
+  discovering: 240 categories read, 8427 titles
+  discovering: 260 categories read, 8514 titles
+  discovering: 280 categories read, 8641 titles
+  discovering: 300 categories read, 9650 titles
+  discovering: 320 categories read, 10237 titles
+  discovering: 340 categories read, 10784 titles
+  discovering: 360 categories read, 11236 titles
+  discovering: 380 categories read, 11749 titles
+  9005 distinct articles across 388 categories
+  Long/short equity: gave up on https://api.wikimedia.org/core/v1/wikipedia/en/page/Long/short_equity/html after 4 attempts: 404 for https://api.wikimedia.org/core/v1/wikipedia/en/page/Long/short_equity/html
+  200 articles saved
+  Accretion/dilution analysis: gave up on https://api.wikimedia.org/core/v1/wikipedia/en/page/Accretion/dilution_analysis/html after 4 attempts: 404 for https://api.wikimedia.org/core/v1/wikipedia/en/page/Accretion/dilution_analysis/html
+  400 articles saved
+  600 articles saved
+  Asset/liability modeling: gave up on https://api.wikimedia.org/core/v1/wikipedia/en/page/Asset/liability_modeling/html after 4 attempts: 404 for https://api.wikimedia.org/core/v1/wikipedia/en/page/Asset/liability_modeling/html
+  800 articles saved
+  Bank failure: gave up on https://api.wikimedia.org/core/v1/wikipedia/en/page/Bank_failure/html after 4 attempts: HTTPSConnectionPool(host='api.wikimedia.org', port=443): Max retries exceeded with url: /core/v1/wikipedia/en/page/Bank_failure/html (Caused by NameResolutionError("HTTPSConnection(host='api.wikimedia.org', port=443): Failed to resolve 'api.wikimedia.org' ([Errno 8] nodename nor servname provided, or not known)"))
+  Bank guarantee: gave up on https://api.wikimedia.org/core/v1/wikipedia/en/page/Bank_guarantee/html after 4 attempts: HTTPSConnectionPool(host='api.wikimedia.org', port=443): Max retries exceeded with url: /core/v1/wikipedia/en/page/Bank_guarantee/html (Caused by NameResolutionError("HTTPSConnection(host='api.wikimedia.org', port=443): Failed to resolve 'api.wikimedia.org' ([Errno 8] nodename nor servname provided, or not known)"))
+  Bank run: gave up on https://api.wikimedia.org/core/v1/wikipedia/en/page/Bank_run/html after 4 attempts: HTTPSConnectionPool(host='api.wikimedia.org', port=443): Max retries exceeded with url: /core/v1/wikipedia/en/page/Bank_run/html (Caused by NameResolutionError("HTTPSConnection(host='api.wikimedia.org', port=443): Failed to resolve 'api.wikimedia.org' ([Errno 8] nodename nor servname provided, or not known)"))
+  Bank secrecy: gave up on https://api.wikimedia.org/core/v1/wikipedia/en/page/Bank_secrecy/html after 4 attempts: HTTPSConnectionPool(host='api.wikimedia.org', port=443): Max retries exceeded with url: /core/v1/wikipedia/en/page/Bank_secrecy/html (Caused by NameResolutionError("HTTPSConnection(host='api.wikimedia.org', port=443): Failed to resolve 'api.wikimedia.org' ([Errno 8] nodename nor servname provided, or not known)"))
+  1000 articles saved
+  1200 articles saved
+  EV/GCI: gave up on https://api.wikimedia.org/core/v1/wikipedia/en/page/EV/GCI/html after 4 attempts: 404 for https://api.wikimedia.org/core/v1/wikipedia/en/page/EV/GCI/html
+  EV/EBITDA: gave up on https://api.wikimedia.org/core/v1/wikipedia/en/page/EV/EBITDA/html after 4 attempts: 404 for https://api.wikimedia.org/core/v1/wikipedia/en/page/EV/EBITDA/html
+  P/B ratio: gave up on https://api.wikimedia.org/core/v1/wikipedia/en/page/P/B_ratio/html after 4 attempts: 404 for https://api.wikimedia.org/core/v1/wikipedia/en/page/P/B_ratio/html
+  Put/call ratio: gave up on https://api.wikimedia.org/core/v1/wikipedia/en/page/Put/call_ratio/html after 4 attempts: 404 for https://api.wikimedia.org/core/v1/wikipedia/en/page/Put/call_ratio/html
+
+wikipedia (at 1.0/s)
+  discovering: 20 categories read, 1519 titles
+  discovering: 40 categories read, 2691 titles
+  discovering: 60 categories read, 3772 titles
+  discovering: 80 categories read, 4636 titles
+  discovering: 100 categories read, 5204 titles
+  discovering: 120 categories read, 5749 titles
+  discovering: 140 categories read, 6714 titles
+  discovering: 160 categories read, 7488 titles
+  discovering: 180 categories read, 8200 titles
+  discovering: 200 categories read, 8253 titles
+  discovering: 220 categories read, 8365 titles
+  discovering: 240 categories read, 8427 titles
+  discovering: 260 categories read, 8514 titles
+  discovering: 280 categories read, 8641 titles
+  discovering: 300 categories read, 9650 titles
+  discovering: 320 categories read, 10237 titles
+  discovering: 340 categories read, 10784 titles
+  discovering: 360 categories read, 11236 titles
+  discovering: 380 categories read, 11749 titles
+  9005 distinct articles across 388 categories
+  200 articles saved
+  400 articles saved
+  600 articles saved
+  800 articles saved
+  1000 articles saved
+  1200 articles saved
+  1400 articles saved
+  1600 articles saved
+  1800 articles saved
+  2000 articles saved
+  2200 articles saved
+  2400 articles saved
+  2600 articles saved
+  2800 articles saved
+  3000 articles saved
+  3200 articles saved
+  3400 articles saved
+  3600 articles saved
+  3800 articles saved
+  4000 articles saved
+  4200 articles saved
+  4400 articles saved
+  4600 articles saved
+  4800 articles saved
+  5000 articles saved
+  5200 articles saved
+  5400 articles saved
+  5600 articles saved
+  5800 articles saved
+  6000 articles saved
+  6200 articles saved
+  6400 articles saved
+  6600 articles saved
+  6800 articles saved
