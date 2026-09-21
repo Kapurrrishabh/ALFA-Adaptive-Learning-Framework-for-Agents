@@ -40,7 +40,11 @@ model. Where that costs us fluency, we pay it and say so.
 | 5 — price advisory, both heads | **Both built and compared.** Direction is unpredictable here; volatility loses to persistence |
 | 6–9 | Not started |
 
-250 tests pass (`python3 -m pytest tests/ dataforge/ -q`). Gates closed: S1, S2, S3, S11, S14, S15.
+250 tests pass (`python3 -m pytest tests/ dataforge/ -q`). Gates closed: S1, S2, S3, S11, S15. **S14
+closes on trained phrasings only.** Re-measured on the current model over 200 generated answers: 1.7%
+unsupported figures on validation, under the 2% gate and down from 10.5% on the previous model — but
+4.7% on phrasings training never saw. The gate is met where the wording is familiar and missed where it
+is not, which is the same paraphrase failure below, reaching the number the product is judged on.
 
 **Phase 3 results, measured.** Corpus 454 MB of cleaned text over nine sources → 100,828,672 training
 tokens and 1,018,368 validation tokens at `max_text_length` 128. MLM validation loss fell 6.19 → 3.03
@@ -65,6 +69,17 @@ the MLM encoder places a word it has never read 15/15 given a familiar sentence 
 shape built from familiar words only 28/41, and both-novel 2/7. Task fine-tuning then *halves* shape
 handling, 28/41 → 13/41 — catastrophic forgetting, measured. So the ~600M-token general-English corpus
 is **not** the blocker and is deliberately not being collected; `--freeze-encoder` tests the other half.
+
+**The real-human-Q&A dataset was re-scored, both directions, and it is still the harder task.** The
+Stack Exchange model on its own validation: loss 4.1227 (perplexity 61.7), blanking the evidence costs
+**+0.0191** and swapping it +0.0302 — 55-65× weaker grounding than the advisory task, the original
+diagnosis reproduced. Generated answers are fluent and unfaithful: 0% exact match, **57.1% of figures
+unsupported**, repetition healthy at 2.6% against the humans' 2.1%. The advisory model scored on Stack
+Exchange reaches loss 11.96, i.e. nothing transfers across answer distributions. Exact match is not a
+usable score on human prose — there is no single right wording — so loss plus the blank/swap deltas are
+the measurement, and they say the same thing they said before: 30.7% of answer content words are absent
+from the input, so most rows are unanswerable from their evidence and the decoder correctly learns to
+ignore it. Fixing this is a retrieval-coverage problem, not a model problem.
 
 **Retrieval is lexical by decision, not by omission.** BM25 only. An oracle ablation showed a perfect
 reranker would not fix what was actually costing answers, so the dense retriever and cross-encoder in

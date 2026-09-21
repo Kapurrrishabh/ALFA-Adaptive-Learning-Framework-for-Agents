@@ -80,6 +80,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifacts", default="artifacts")
     parser.add_argument("--dataset", default="advisory")
+    parser.add_argument("--checkpoint", default="",
+                        help="model to score, when it is not the one named after the dataset")
     parser.add_argument("--split", default="validation")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--batches", type=int, default=200)
@@ -87,7 +89,7 @@ def main():
 
     artifacts = Path(args.artifacts)
     tokenizer = WordPiece.load(artifacts / "tokenizer.json")
-    config, weights = pretrained.load(artifacts / f"{args.dataset}.npz")
+    config, weights = pretrained.load(artifacts / (args.checkpoint or f"{args.dataset}.npz"))
     model = GroundedGenerator(config)
     model.load_state_dict(weights)
     model.eval()

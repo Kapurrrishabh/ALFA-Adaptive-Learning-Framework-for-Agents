@@ -486,6 +486,46 @@ encoder's handling of unseen shapes (28/41 → 13/41).
 
 **250 tests pass** (`tests/` and `dataforge/` together).
 
+### 5.8 Scoring both models on the real human Q&A data
+
+The real dataset is **Stack Exchange**: 76,857 questions and 117,254 answers scraped from the
+economics, money and quant sites, prepared into 60,155 training rows and 2,000 validation rows. Both
+models were scored on it so the comparison runs in both directions. `--checkpoint` was added to
+`check_answers.py` and `ablate_generator.py` so a model can be pointed at a dataset it was not named
+after.
+
+| | advisory data | Stack Exchange data |
+|---|---|---|
+| loss / perplexity | 0.0073 / 1.0 | 4.1227 / **61.7** |
+| cost of blanking the evidence | **+1.0420** | **+0.0191** |
+| cost of swapping the evidence | **+1.9464** | **+0.0302** |
+| exact match | 90.5% | **0%** |
+| unsupported figures | **1.7%** | **57.1%** |
+| repeated 4-grams (humans) | 0.3% (0.0%) | 2.6% (2.1%) |
+
+Read it plainly. On the synthetic advisory task the model **reads its evidence** — hide the numbers and
+it gets much worse. On real human Q&A, hiding the evidence barely matters: **+0.019 versus +1.042 is
+roughly 55× weaker**. The model writes fluent, confident finance prose and **57% of the figures in it
+are invented**. That is the original failure, reproduced exactly.
+
+**Why the real data is harder, and it is not the model's fault.** Only **30.7%** of the content words
+in a Stack Exchange answer appear anywhere in its retrieved evidence. Most rows simply cannot be
+answered from what the model is shown, so ignoring the evidence is the *correct* thing for it to learn.
+This is a **retrieval-coverage** problem, not an architecture problem.
+
+**Exact match is the wrong score here.** There is no single right wording for "how do I think about
+tom/next swap points", so 0% exact match says nothing. Loss and the blank/swap deltas are the honest
+measurement on human prose.
+
+**The advisory model on Stack Exchange scores loss 11.96** (perplexity 156,000). Nothing transfers
+across answer distributions — expected, and worth stating, because it means one model per answer style,
+not one model for everything.
+
+**One more number worth remembering.** The S14 gate is "under 2% unsupported figures". On the advisory
+validation split the current model hits **1.7% — the gate closes**. On phrasings it has never seen it
+is **4.7% — the gate fails**. So faithfulness itself depends on familiar wording, which is the same
+paraphrase weakness from §5.7 arriving at the number the product is actually judged on.
+
 ---
 
 ## 6. Why this design, versus the alternatives
@@ -760,7 +800,10 @@ module's docstring.
 | New generator, evidence blanked | **+1.0420** |
 | New generator, evidence swapped | **+1.9464** |
 | Abstention / false refusal | 100% / 0% |
-| Exact match, trained vs reworded phrasing | 45.8% vs **12.5%** |
+| Exact match, trained vs reworded phrasing | 90.5% vs **28.5%** (was 45.8/12.5 pre-fix) |
+| Unsupported figures, trained vs reworded | **1.7%** vs 4.7% — S14's 2% gate closes then fails |
+| Stack Exchange: loss, blanked, unsupported | 4.1227, **+0.0191**, **57.1%** of figures |
+| Advisory model on Stack Exchange | loss **11.96** — nothing transfers |
 | Encoder: novel word / novel frame / both | 100% / 68% / 29% |
 | Same, after fine-tuning | 93% / **32%** / 14% |
 | Phrasings, distinct questions | 190, 19,183 |
