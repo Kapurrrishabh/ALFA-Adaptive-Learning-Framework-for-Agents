@@ -102,6 +102,17 @@ class GroundedGenerator(Module):
             )
         self.text.load_state_dict(encoder)
 
+    def freeze_encoder(self):
+        """Holds the encoder's layers at their pretrained values while the rest of the model trains.
+
+        Task training was measured to halve how well the encoder places sentence shapes it never saw,
+        so this asks whether the fine-tune needs to touch those layers at all. The shared token matrix
+        stays trainable on purpose: the decoder's output layer is that same matrix.
+        """
+        for parameter in self.text.encoder.parameters():
+            parameter.requires_grad = False
+        return self
+
     def generate(self, source_ids, is_real_source_token=None, temperature=0.0, top_p=1.0, rng=None):
         """One list of token ids per row, markers stripped. Greedy when temperature is 0.
 

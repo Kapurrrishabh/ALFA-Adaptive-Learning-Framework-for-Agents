@@ -35,12 +35,12 @@ model. Where that costs us fluency, we pay it and say so.
 | 1 — autograd engine | **Done.** 46 gradient checks green |
 | 2 — layers, encoder, optimizer | **Done.** Overfit gate green |
 | 3 — tokenizer, corpus, MLM pretraining | **Done.** 100.8M tokens; validation loss 3.03 vs uniform 8.99 (S3 closed) |
-| 3a — generator stack (decoder, grounded seq2seq) | **Built, untrained.** Causal-mask, grounding and overfit gates green |
-| 4 — retrieval + generation training | In progress. Blocked on the Q&A records now being collected |
-| 5 — price advisory, both heads | Not started |
+| 3a — generator stack (decoder, grounded seq2seq) | **Done, trained.** Causal-mask, grounding and overfit gates green |
+| 4 — retrieval + generation training | **Grounding done, paraphrase open.** BM25 only; no dense retriever, no reranker |
+| 5 — price advisory, both heads | **Both built and compared.** Direction is unpredictable here; volatility loses to persistence |
 | 6–9 | Not started |
 
-166 tests pass (`python3 -m pytest tests/ dataforge/ -q`). Gates closed: S1, S2, S3, S11.
+250 tests pass (`python3 -m pytest tests/ dataforge/ -q`). Gates closed: S1, S2, S3, S11, S14, S15.
 
 **Phase 3 results, measured.** Corpus 454 MB of cleaned text over nine sources → 100,828,672 training
 tokens and 1,018,368 validation tokens at `max_text_length` 128. MLM validation loss fell 6.19 → 3.03
@@ -48,6 +48,33 @@ over 48,000 steps (perplexity 20.7) against 8.99 for a uniform guess, so the bac
 language rather than memorising a prior. Remaining weakness on probes: number pieces score 29.8%,
 which is real learning of magnitude and format against 10% chance, not a bug to fix — the digits are
 already in the character vocabulary.
+
+**Phase 4 results: grounding is proven, not assumed.** The advisory dataset is 321,279 rows over 7
+intents and 190 question phrasings built from frames × interchangeable words (19,183 distinct
+questions). Ablation on the converged checkpoint — loss 0.0073 as the evidence is given, 1.0493 with it
+blanked (**+1.0420**), 1.9537 with another row's numbers swapped in (**+1.9464**). Swapping costing
+*more* than blanking is the ordering that proves reading: a model reciting a memorised shape still
+scores well with no evidence, but not while staring at wrong numbers. The old Stack Exchange task cost
++0.018 on the same test, so this is ~58× its grounding. S14/S15 close on the guardrail plus the slot
+path, which makes faithfulness structural — a slot answer names fields and states no figure of its own.
+
+**What is still open is paraphrase.** Loss on phrasings training never saw bottoms at 0.2821 while
+trained phrasings reach 0.0057. Four times more phrasing variety cut that floor from 0.70 to 0.28, so
+the wording of the data was the binding constraint, not its size. `scripts/probe_intents.py` says why:
+the MLM encoder places a word it has never read 15/15 given a familiar sentence shape, an unfamiliar
+shape built from familiar words only 28/41, and both-novel 2/7. Task fine-tuning then *halves* shape
+handling, 28/41 → 13/41 — catastrophic forgetting, measured. So the ~600M-token general-English corpus
+is **not** the blocker and is deliberately not being collected; `--freeze-encoder` tests the other half.
+
+**Retrieval is lexical by decision, not by omission.** BM25 only. An oracle ablation showed a perfect
+reranker would not fix what was actually costing answers, so the dense retriever and cross-encoder in
+the Phase 4 list are deprioritised rather than pending, and S16 stays open.
+
+**Phase 5 results, and two are negative.** Direction over the next week is not predictable from these
+windows — measured against persistence, which is the honest baseline here, never majority class.
+Volatility is the label that carries signal and it still loses to persistence. The GRU
+(`RecurrentPriceTower`) beat the patch transformer, so the tower question is settled. The consequence is
+written into the output contract: the agent reports risk and abstains on direction.
 
 ## 2. Success criteria
 
@@ -301,7 +328,7 @@ passes; a failing gate is information, not an obstacle to route around.
 - **Gate (S3): passed.** Validation loss 3.03 against `ln(8000) = 8.99`, perplexity 20.7, on 100.8M
   tokens over 48,000 steps.
 
-### Phase 3a — Generator stack — BUILT, UNTRAINED
+### Phase 3a — Generator stack — DONE, TRAINED
 - `nn/attention.causal_mask`; `nn/decoder.py` pre-LN block with causal self-attention, cross-attention
   to the encoder output, and FFN; `models/generator.py` with `generate()` and greedy/temperature
   sampling.
@@ -415,23 +442,30 @@ measures what pretraining bought us).
 
 ## 7. Immediate next steps
 
-Rewritten 2026-09-20. Items 1–3 of the original list are done; the data did not arrive as files, so it
-was collected instead (see `dataforge/`).
+Rewritten 2026-09-21. The previous list — re-collect Stack Exchange, collect the archives, re-tokenize
+and pretrain, then Phase 4 — is done. Everything below is ordered by what the measurements now say.
 
-1. **Re-collect Stack Exchange with structure** — in progress. The dumps were previously flattened to
-   text, discarding `Score` and `AcceptedAnswerId`, which are the only signal in the corpus saying a
-   finance answer was any good. Without them there is no supervised set for the generator, so this
-   blocks Phase 4. Now lands in `data/qa/<site>/{questions,answers}.jsonl`.
-2. **Collect press-release and report archives** — Fed (~8,000 releases), SEC, RBI (~1,500/yr),
-   Economic Survey. This is the training-critical collection: it fixes the measured news-register hole
-   and lifts Indian sources off 2%. Archives, not feeds — see §4.
-3. **Re-tokenize, then one pretraining run.** Normalisation already invalidated
-   `artifacts/tokenizer.json`, and any corpus change invalidates it again, so the ordering is
-   collect → re-tokenize → train **once**. The run is ~11 h; `caffeinate -i -m` is required, and CPU
-   time must be checked against elapsed afterwards, because a sleep mid-run has already cost 15 hours
-   once.
-4. **Then Phase 4**: `data/qa_pairs.py`, the retriever and index, and `scripts/train_generator.py`
-   warm-started from the pretrained encoder.
-5. Targeted SEC filings for the 101 tickers and the CIK↔ticker map are **not** on the critical path:
-   `sec_edgar` is already at its 50% corpus share cap, so more filings add no corpus text. They serve
-   the event-why join in Phase 6 only.
+1. **Stop the fine-tune destroying the encoder.** The probe puts the paraphrase failure in the encoder's
+   handling of sentence shape, and shows task training halving it. `--freeze-encoder` holds the four
+   encoder layers at their pretrained values (3.2M of 7.5M parameters) while the shared token matrix
+   stays trainable, because that matrix is also the decoder's output layer. Run it against the current
+   baseline with nothing else changed, and compare the unseen-phrasing floor, not the final loss —
+   `{dataset}.best.npz` now keeps the turning point, since the unseen split starts rising while
+   validation falls forever. If freezing loses too much, the next step is a lower encoder learning rate,
+   which needs per-parameter rates in `AdamW`.
+2. **Train the slot variant** (`--dataset advisory_slots --extra-split unseen`) and compare
+   unsupported-figure rates against the figure-carrying model. The dataset is built and tested; a slot
+   answer cannot state a figure at all, so if it costs little fluency it should become the default.
+3. **One fair rematch for the price head, then stop regardless of outcome.** A 20-day scale channel
+   instead of 128-day, plus the `warmup_cosine` schedule the generator does not use either. If it still
+   loses to persistence, that is the reported result and Phase 5 closes as a negative.
+4. **Phase 4's remaining substance is tools, not models.** Indicators, retrieval and a persistence-based
+   risk estimator supply every fact; the generator only phrases them. This is what makes the small model
+   viable and it needs no further training.
+5. **Then Phase 6, which is the thesis** — calibration from outcomes, a learned abstention threshold,
+   retrieval weighting and candidate ranking, all with frozen weights; LoRA only as a last resort. It
+   needs a learning curve **and** a no-adaptation control curve, or it shows nothing.
+6. Deferred with a reason, not forgotten: the ~600M-token general-English corpus (the probe says
+   vocabulary is not the constraint), the neural reranker (the oracle ablation says it would not pay),
+   and the CIK↔ticker map for Phase 6's event-why join (still blocked, and `sec_edgar` is already at its
+   50% corpus-share cap so more filings add no text).

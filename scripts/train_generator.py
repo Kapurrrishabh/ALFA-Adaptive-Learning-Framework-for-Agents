@@ -63,13 +63,18 @@ def evaluate(model, split, vocab_size, batch_size, batches):
 
 def report(model, validation, extra, args, config):
     """Validation, and the extra split beside it. The gap between them is the measurement that matters:
-    both hold unseen dates, but only the extra holds question phrasings training never saw."""
+    both hold unseen dates, but only the extra holds question phrasings training never saw.
+
+    Returns the loss worth judging a checkpoint on, which is the extra split's whenever there is one.
+    """
     held = evaluate(model, validation, config.vocab_size, args.batch_size, args.eval_batches)
     line = f"  validation loss {held:.4f}  perplexity {math.exp(held):.1f}"
+    judged = held
     if extra is not None:
-        unseen = evaluate(model, extra, config.vocab_size, args.batch_size, args.eval_batches)
-        line += f"   {args.extra_split} loss {unseen:.4f}  perplexity {math.exp(unseen):.1f}"
+        judged = evaluate(model, extra, config.vocab_size, args.batch_size, args.eval_batches)
+        line += f"   {args.extra_split} loss {judged:.4f}  perplexity {math.exp(judged):.1f}"
     print(line)
+    return judged
 
 
 def main():
@@ -80,6 +85,8 @@ def main():
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--freeze-encoder", action="store_true",
+                        help="hold the encoder's layers at their pretrained values")
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--eval-every", type=int, default=1000)
     parser.add_argument("--eval-batches", type=int, default=25)
@@ -107,12 +114,16 @@ def main():
         )
     model.load_pretrained_encoder(weights)
     print(f"encoder initialised from {artifacts}/pretrained.npz")
+    if args.freeze_encoder:
+        model.freeze_encoder()
 
     checkpoint = f"{args.dataset}.npz"
+    best_checkpoint = f"{args.dataset}.best.npz"
     optimizer = AdamW(model.trainable_parameters(), lr=args.learning_rate)
     steps_per_epoch = len(source) // args.batch_size
     print(
-        f"{sum(p.size for p in model.parameters()):,} parameters, "
+        f"{sum(p.size for p in model.trainable_parameters()):,} of "
+        f"{sum(p.size for p in model.parameters()):,} parameters training, "
         f"{len(source):,} train rows, {len(validation[0]):,} held out, "
         f"{source.shape[1]} passages x {source.shape[2]} tokens"
     )
@@ -121,8 +132,19 @@ def main():
 
     rng = np.random.default_rng(config.seed)
     step = 0
+    best, best_step = math.inf, 0
     started = time.monotonic()
     model.train()
+
+    def keep_if_best(judged):
+        """Validation shares its phrasings with training so it falls forever; only the unseen split
+        turns back up, and the turn is where the usable model is. This makes that number a
+        model-selection number rather than a clean test one, so quote it as such."""
+        nonlocal best, best_step
+        if judged < best:
+            best, best_step = judged, step
+            pretrained.save(artifacts / best_checkpoint, model, config)
+
     for epoch in range(args.epochs):
         order = rng.permutation(len(source))
         for index in range(steps_per_epoch):
@@ -142,13 +164,14 @@ def main():
                     f"{step / elapsed:.2f} step/s  {left:.1f}h left"
                 )
             if step % args.eval_every == 0:
-                report(model, validation, extra, args, config)
+                keep_if_best(report(model, validation, extra, args, config))
             if step % args.checkpoint_every == 0:
                 pretrained.save(artifacts / checkpoint, model, config)
 
     pretrained.save(artifacts / checkpoint, model, config)
-    report(model, validation, extra, args, config)
+    keep_if_best(report(model, validation, extra, args, config))
     print(f"saved {artifacts}/{checkpoint}")
+    print(f"best {best:.4f} at step {best_step:,}, saved {artifacts}/{best_checkpoint}")
 
 
 if __name__ == "__main__":

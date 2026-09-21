@@ -288,6 +288,40 @@ def test_generator_refuses_a_checkpoint_holding_no_encoder():
         GroundedGenerator(TINY).load_pretrained_encoder({"head.output_bias": np.zeros(4)})
 
 
+def test_freezing_the_encoder_leaves_the_shared_token_matrix_trainable():
+    """The trap this pins: the token matrix sits under model.text but is also the decoder's output
+    layer, so freezing everything named for the encoder would stop the model learning to write."""
+    model = GroundedGenerator(TINY).freeze_encoder()
+    trainable = {name for name, p in model.named_parameters() if p.requires_grad}
+    assert "text.embedding.tokens.weight" in trainable
+    assert not any(name.startswith("text.encoder.") for name in trainable)
+
+
+def test_a_frozen_encoder_stays_put_while_the_rest_of_the_model_trains():
+    """requires_grad is only a promise until an optimizer reads it. Backward still fills .grad on the
+    frozen layers, so what holds them still is their absence from trainable_parameters()."""
+    rng = np.random.default_rng(0)
+    source = rng.integers(1, TINY.vocab_size, (4, TINY.max_text_length))
+    answer = np.concatenate(
+        [np.full((4, 1), CLS_ID), rng.integers(1, TINY.vocab_size, (4, TINY.max_answer_length - 1))],
+        axis=1,
+    )
+    model = GroundedGenerator(TINY).freeze_encoder()
+    before = {name: parameter.data.copy() for name, parameter in model.named_parameters()}
+
+    train_to_convergence(
+        model,
+        lambda: F.cross_entropy(
+            model(source, answer[:, :-1]).reshape((-1, TINY.vocab_size)), answer[:, 1:].reshape(-1)
+        ),
+        steps=3,
+    )
+
+    for name, parameter in model.named_parameters():
+        moved = not np.array_equal(parameter.data, before[name])
+        assert moved != name.startswith("text.encoder."), name
+
+
 def test_no_grad_leaves_parameters_untouched():
     rng = np.random.default_rng(0)
     token_ids, window = fake_batch(rng)
