@@ -342,9 +342,10 @@ This also **killed the neural-reranker plan**. Perfect retrieval buys 0.05 while
 copy, so retrieval quality was never the binding constraint. Two of my earlier conclusions were wrong
 and should not be revived.
 
-### 5.3 The failure that is still open: reworded questions
+### 5.3 The next failure: reworded questions
 
-With the grounding fixed, the three-way split exposed the next problem:
+With the grounding fixed, the three-way split exposed the next problem. These are the **first** advisory
+run's numbers, on 46 hand-written phrasings — §5.7 has what they became once the data was reworded:
 
 | Split | Loss |
 |---|---|
@@ -444,17 +445,46 @@ Two bugs caught by design review *before* any training:
   `turbulent_confidence`. Fixed by substituting longest name first.
 
 Dataset built (321,279 rows, geometry identical to the copy set so the two are directly comparable).
-**Not yet trained** — deliberately, because it would hit the same phrasing wall.
+**Not yet trained.** It was held back because it would have hit the same phrasing wall; now that §5.7
+has lowered that wall, training it is the next experiment after the frozen-encoder arm.
 
-### 5.7 Current state
+### 5.7 The phrasing fix worked, and the number is large
 
 `selfagent/data/advisory.py` now builds questions from **frames × interchangeable words** instead of
 one hand-written string each: **190 phrasings**, up from 46, of which 127 are trained and 63 reserved
 across the three novelty cells. The dataset rebuilt to **19,183 distinct questions**, up from 4,646,
-with the row count unchanged. A training run is in progress to answer whether the held-out gap closes,
-with the training procedure held identical so phrasing count is the only variable.
+with the row count unchanged so the two runs are directly comparable. The training procedure was held
+identical, so phrasing variety is the only variable.
 
-**234 tests pass.**
+| step | trained phrasings | **unseen phrasings** |
+|---|---|---|
+| 2,000 | 0.6997 | 0.8461 |
+| 4,000 | 0.1404 | 0.4272 |
+| 6,000 | 0.0187 | 0.3801 |
+| 8,000 | 0.0175 | 0.3709 |
+| 10,000 | 0.0130 | **0.2821 ← best** |
+| 12,000 | 0.0057 | 0.3061 |
+| 14,000 | 0.0041 | 0.3256 |
+
+**The unseen floor fell from 0.70 to 0.2821 — a 60% cut — from rewording the data alone.** No
+architecture change, no extra corpus, no longer training. The old run's unseen loss *froze and then
+regressed*; this one genuinely descends for 10,000 steps first. That is the probe's prediction confirmed:
+sentence shape was the constraint, and more shapes is the cheap lever.
+
+**What the table also shows is where to stop.** After step 10,000 the unseen loss climbs while the
+trained loss keeps falling — ordinary overfitting, but only visible because of the third split.
+Validation alone says "still improving" the whole way. The script kept a single checkpoint file and
+overwrote it every 2,000 steps, so the best model was being destroyed; `{dataset}.best.npz` now keeps
+the turn. Note honestly that a number selected this way is a **model-selection** number, not a clean
+test number.
+
+**The next experiment is already wired.** `--freeze-encoder` holds the four encoder layers at their
+pretrained values (3,159,552 of 7,472,192 parameters) while the shared token matrix stays trainable —
+that matrix is *also* the decoder's output layer, so freezing it by name would stop the model learning
+to write at all. This tests the probe's other finding: that task training is what *destroys* the
+encoder's handling of unseen shapes (28/41 → 13/41).
+
+**250 tests pass** (`tests/` and `dataforge/` together).
 
 ---
 
@@ -734,7 +764,9 @@ module's docstring.
 | Encoder: novel word / novel frame / both | 100% / 68% / 29% |
 | Same, after fine-tuning | 93% / **32%** / 14% |
 | Phrasings, distinct questions | 190, 19,183 |
-| Tests | 234 passing |
+| Unseen-phrasing loss, 46 vs 190 phrasings | 0.70 → **0.2821** (60% cut, data reworded only) |
+| Encoder frozen by `--freeze-encoder` | 3,159,552 of 7,472,192 parameters |
+| Tests | 250 passing |
 
 ---
 
@@ -782,11 +814,14 @@ working, once answered +3.3% where the evidence said +3.7% — a plausible, unfa
 It is the difference between believing the model works and knowing it does not. Validation fell to
 0.011 while `unseen` froze at 0.70 and then regressed — a 62× gap that a conventional train/validation
 split would have hidden completely. The two splits share the same snapshot and the same facts and
-differ only in how the question is worded, so the gap isolates paraphrase generalisation.
+differ only in how the question is worded, so the gap isolates paraphrase generalisation. It then did
+the job a second time: it is the only split that shows the reworded run overfitting after step 10,000,
+while validation says "still improving" all the way to the end.
 
 **"What would you do with more time?"**
-In order: (1) finish the frames experiment, and lower the encoder's learning rate to stop fine-tuning
-destroying its general language; (2) train the slot variant and compare unsupported-figure rates;
+In order: (1) run the frozen-encoder arm, and if it loses too much fluency, a lower encoder learning
+rate instead — either way to stop fine-tuning destroying the general language the MLM run bought;
+(2) train the slot variant and compare unsupported-figure rates;
 (3) build the learning loop, which is the actual thesis — calibration from outcomes, a learned
 abstention threshold, retrieval weighting and candidate ranking, **all with frozen weights** — and
 report a learning curve against a no-adaptation control curve. That control is essential: without it,
