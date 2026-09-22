@@ -56,7 +56,7 @@ picked a checkpoint that generates worse (81.0% vs 94.5% exact match), so stage 
 |---|---|---|---|
 | B1 | `selfagent/learn/store.py`: append-only feedback log — question, evidence, answer, label, labeller, timestamp. SQLite. | a round trip test, and the log replays into the same training set twice | **done** — 8 tests in `tests/test_learn.py` |
 | B2 | `selfagent/learn/teacher.py`: two labellers behind one interface — programmatic oracle (exact match, guardrail, intent) and agent-as-teacher (Claude, writing judgments to disk for replay) | 200 rows labelled both ways; agreement rate reported, not assumed | **done** — agreement **156/198 (78.8%)** |
-| B3 | `selfagent/learn/calibrate.py`: map self-confidence to the probability the answer is right, fit on the feedback log | calibration error beats the raw confidence's on a held-out slice | open |
+| B3 | `selfagent/learn/calibrate.py`: map self-confidence to the probability the answer is right, fit on the feedback log | calibration error beats the raw confidence's on a held-out slice | **done** — 0.683 → **0.121** oracle, 0.475 → **0.144** agent |
 | B4 | `selfagent/learn/abstain.py`: learned threshold replacing the hand-picked 0.9980 | beats 53.8% correct @ 40% coverage on `unseen`, threshold fit on other rows | open |
 | B5 | `selfagent/learn/rank.py`: generate k candidates, rank with frozen weights using the calibrator | exact match on `unseen` beats single-sample 31.0% | open |
 | B6 | `scripts/learning_curve.py`: accuracy against number of feedback rows, adaptation on vs off | two curves; the gap is the thesis, and if there is no gap say so | open |
@@ -78,6 +78,20 @@ the evidence plainly answers. Then two the guardrail cannot see: four **wrong co
 ("above both its 20 and 50 day averages" when the price is below one) where every digit is supported,
 and four **digit-duplication inventions** (`242804.00` for a close of `24280.00`) which it does catch.
 A figure guard is not an intent guard, and C1's router is where the first class gets fixed.
+
+**B3 measured**, `scripts/calibrate_confidence.py`, fit on half the log and scored on the other,
+averaged over 25 splits. Platt scaling, two parameters, `p = sigmoid(0.33 * log odds of confidence
+- 3.31)` under the oracle. The gate passes wide: calibration error 0.683 → **0.121** (oracle) and
+0.475 → **0.144** (agent), on every split, because raw confidence claims 0.99 on answers right 31% of
+the time and almost anything beats that. So a second, harder baseline was measured too — a constant that
+ignores the confidence and predicts the base rate. Against it: calibration error is a coin toss
+(**12/25** oracle, **9/25** agent) but Brier is a near-clean sweep (**25/25** and **24/25**). Read the
+Brier: calibration error flatters a constant, which has no spread inside a bin to be wrong about.
+
+The number that matters for what comes next is **ranking AUC 0.740 ± 0.039** (oracle) and **0.692 ±
+0.036** (agent). The confidence does rank right above wrong, well clear of a coin toss — and because any
+monotone calibration leaves the order untouched, that AUC is the hard ceiling on B4's threshold and B5's
+reranker. Neither can do better than this signal allows, and B5's gate should be judged against it.
 
 ## Stage C — the architecture in the diagram
 

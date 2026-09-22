@@ -4,10 +4,12 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from selfagent.data import advisory
 from selfagent.learn import AGENT, ORACLE, FeedbackLog
+from selfagent.learn.calibrate import (Calibrator, expected_calibration_error, ranking_auc)
 from selfagent.learn.teacher import AgentTeacher, OracleTeacher, verdict_key
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -24,6 +26,14 @@ def log(tmp_path):
 
 def oracle():
     return OracleTeacher(REFUSAL)
+
+
+def confident_but_often_wrong(rows=400, seed=0):
+    """Confidences crammed against 1.0, a third of them right, like the real feedback log."""
+    rng = np.random.default_rng(seed)
+    confidence = 1.0 - rng.beta(1.0, 300.0, size=rows)
+    likely = 0.15 + 0.5 * (confidence - confidence.min()) / np.ptp(confidence)
+    return confidence, rng.random(rows) < likely
 
 
 def test_a_turn_comes_back_out_the_way_it_went_in(tmp_path):
@@ -187,3 +197,47 @@ def test_reading_the_verdicts_back_twice_logs_them_once(tmp_path):
         tell(tmp_path, feedback)
         assert len(feedback.rows(labeller=AGENT)) == 1
         assert feedback.agreement() == (0, 1)
+
+
+def test_calibration_pulls_a_confident_model_down_to_the_rate_it_is_right():
+    """The failure this exists for: the model states 0.99 on answers that are right a third of the time.
+    An abstention threshold set on a number that never moves is a threshold on nothing."""
+    confidence, right = confident_but_often_wrong()
+    calibrated = Calibrator().fit(confidence, right)(confidence)
+    assert confidence.mean() > 0.98
+    assert calibrated.mean() == pytest.approx(right.mean(), abs=0.05)
+    assert expected_calibration_error(calibrated, right) < \
+        expected_calibration_error(confidence, right) / 3
+
+
+def test_calibration_never_reorders_two_answers():
+    """B4 ranks on this score and B5 picks the top of it. A calibrator that changed the order would make
+    the AUC reported beside it a fiction, and would quietly move which answers get abstained on."""
+    confidence, right = confident_but_often_wrong()
+    calibrated = Calibrator().fit(confidence, right)(confidence)
+    assert ranking_auc(calibrated, right) == pytest.approx(ranking_auc(confidence, right))
+
+
+def test_calibration_error_can_see_an_error_in_a_crowded_score():
+    """Equal-width bins would drop all 400 of these into the top bin and report one bin's average miss,
+    near zero. The measure has to survive every score sitting above 0.98."""
+    confidence, right = confident_but_often_wrong()
+    overconfident_by = confidence.mean() - right.mean()
+    assert expected_calibration_error(confidence, right) > 0.9 * overconfident_by
+
+
+def test_a_calibrator_will_not_fit_on_rows_that_are_all_right():
+    """Silently returning a constant here would ship a mapping that says 1.0 to everything, and the
+    first genuinely wrong answer would be served with full confidence."""
+    with pytest.raises(ValueError, match="no difference to learn"):
+        Calibrator().fit(np.array([0.9, 0.99]), np.array([True, True]))
+
+
+def test_a_saved_calibrator_predicts_the_same_after_loading(tmp_path):
+    """It is fit in one process and served in another. A mapping that drifted across that boundary would
+    move every abstention decision downstream of it, with nothing to show the two disagreed."""
+    confidence, right = confident_but_often_wrong()
+    fitted = Calibrator().fit(confidence, right)
+    fitted.save(tmp_path / "calibrator.json")
+    assert Calibrator.load(tmp_path / "calibrator.json")(confidence) == \
+        pytest.approx(fitted(confidence))
