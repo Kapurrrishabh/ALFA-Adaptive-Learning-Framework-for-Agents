@@ -298,13 +298,22 @@ dataforge/         unchanged, and still deletable on its own
 | id | task | gate | status |
 |---|---|---|---|
 | C1 | Agent core: intent router → context assembler → generator → guardrails, domain agnostic | one call answers a free-text question end to end, no network | **done** — `scripts/ask.py` answers a typed question offline. Rewriting into the routed trained phrasing takes held-out exact match **33.5% → 73.5%** with frozen weights; the routing gate refuses 12/12 out-of-domain questions at 88.5% coverage. Routing is now 23.5 of the remaining 26.5 points |
-| C2 | Retriever: hybrid lexical + vector, as-of filtered, local index; chunk and embed worker | recall@5 beats the lexical baseline, or the vector half is dropped and that is recorded | open |
+| C2 | Retriever: hybrid lexical + vector, as-of filtered, local index; chunk and embed worker | recall@5 beats the lexical baseline, or the vector half is dropped and that is recorded | **done** — the gate's second branch. On 400 queries over a 44,811-chunk index: lexical **15.5%**, hybrid 12.0%, vector **1.5%**, random 0.0%, so `SERVED = LEXICAL` and `scripts/eval_retrieval.py` prints the verdict. Cause diagnosed: no contrastive objective, mean-embedding norm 0.942 of 1. Only `sec_edgar` and `fed_press` carry real dates, so the other nine sources are excluded rather than dated by download |
 | C3 | Price advisory endpoint: version-pinned GRU + point-in-time feature builder | a served feature vector matches one rebuilt from bars up to that date, exactly | open |
 | C4 | News ETL (RSS, dedupe, ticker tag) + sentiment scorer, version pinned | a scored article traces to its source URL and licence in the manifest | open |
 | C5 | Portfolio and memory service: SQLite for users, conversations, holdings, trades, feedback; session buffer. The reference repo already has login/auth and a portfolio UI, so the schema follows what that UI asks for rather than being invented here | a conversation survives a restart, and a logged-in user sees only their own | open |
 | C6 | Model registry + eval gate + promote: nothing ships that fails S14 | a deliberately bad model is refused promotion by the gate | open |
 | C7 | FastAPI REST + WebSocket, streaming a turn | the chat loop from B7 runs over the socket | open |
 | C8 | Frontend from the chosen repo, wired to C7 | a question typed in the browser returns a grounded answer with its evidence shown | open |
+
+Three limits in C2 are deliberate rather than unfinished. Retrieved passages are **not** wired into the
+answer path: the advisory decoder was trained with exactly one passage slot, so handing it five would be
+out of distribution and would make answers worse — the wiring waits for a decoder trained on several.
+Near-duplicate chunks (~11%, on top of the 3.8% exact ones that are dropped) need the MinHash index in
+`dataforge/process/dedup.py`, which `backend/` must not import. And the index is a bounded sample of the
+corpus — 44,811 chunks of a possible ~13.4M, because the whole corpus is ~19 hours of encoder passes —
+with the share of each source recorded in `artifacts/index.sources.json` so no number reads as covering
+everything collected.
 
 ## Stage D — publish
 

@@ -484,7 +484,7 @@ that matrix is *also* the decoder's output layer, so freezing it by name would s
 to write at all. This tests the probe's other finding: that task training is what *destroys* the
 encoder's handling of unseen shapes (28/41 → 13/41).
 
-**349 tests pass** (`tests/` and `dataforge/` together).
+**391 tests pass** (`tests/` and `dataforge/` together).
 
 ### 5.8 Scoring both models on the real human Q&A data
 
@@ -765,6 +765,97 @@ alone. Nothing about the decoder's wording is the bottleneck any more.
 demo refuses most of what it generates, including supported and correct-looking answers. The fit reports
 the shortfall rather than claiming the bar; `scripts/ask.py` prints it.
 
+### 5.13 The retriever over the collected corpus — and the arm that did not earn its place
+
+Everything up to here answers from figures computed off a price file. §5.13 is the first time the agent
+has a *corpus* behind it: 44,811 passages out of the 200k documents `dataforge/` collected, searchable by
+question and filtered by date. Two design rules and one measured verdict.
+
+**Rule one: a document with no publication date is dropped, not dated by its download.** Of the eleven
+sources collected, exactly two carry a real publication date in the artefact itself — SEC filings
+(`..._2024-02-15_10-K.txt`, 13,728 documents, 2015–2024) and Fed press releases (`enforcement20260918b`,
+4,613, 2006–2026). Everything else — Wikipedia, the textbooks, Stack Exchange — has only `fetched_at`,
+the moment we downloaded it. Dating by that would either hide every historical filing from every
+historical question, or let a 2026 press release answer a question asked in 2020. The second is the
+look-ahead the whole project forbids and it would be invisible in the answer, so undated sources are
+not in the as-of index at all.
+
+**Rule two: the date mask is applied to the scores, before ranking.** Filtering a ranked top-5 down to
+what existed on the day is the same bug in slower motion: ask about January 2020 and the five best
+passages are all from 2024, so the filtered list comes back empty or with two results and calls itself a
+top-5. Masked first, the top-5 is the best five that *existed*. `tests/test_retrieval.py` pins it by
+making the later chunks score higher, which is the case where the two orders differ.
+
+**Sizing came from measurement, not ambition.** Chunked at the encoder's 128-token window the two dated
+sources are wildly different: a Fed release makes 3.8 chunks, a 10-K makes 370.5. The whole corpus is
+~13.4M chunks, which is ~19 hours of NumPy encoder passes and an index larger than the corpus it
+indexes. So the build takes a **chunk budget** — 40,000, the largest number that keeps a rebuild at
+about three minutes — and shares it out smallest-source-first, so a source that fits whole is taken
+whole and hands its remainder to the ones that do not. A source that does not fit is thinned by **whole
+documents spread across its list**, never by keeping each document's first chunks: the first pages of a
+10-K are its cover and contents, and one window in 370 is a fragment of something nobody asked about.
+The index is therefore a bounded sample and says so — `index.sources.json` records the share of each
+source that survived, so no number here can be read as covering everything collected.
+
+**The gate, and the answer is no.** C2's queue row promised the hybrid would be kept only if it beat
+lexical alone. On 400 queries over the 44,811-chunk index:
+
+| Arm | recall@5 | MRR |
+|---|---|---|
+| lexical (BM25) | **15.5%** | 0.060 |
+| hybrid (RRF of both) | 12.0% | 0.037 |
+| vector (encoder cosine) | 1.5% | 0.006 |
+| random picker | 0.0% | — |
+
+The vector half is not weak, it is **near chance**, and fusing a working retriever with a near-random
+one costs 3.5 points — which is exactly what fusion does when one input carries no signal. So
+`SERVED = LEXICAL`, stated as a constant rather than a preference, and `scripts/eval_retrieval.py`
+prints the verdict itself so no reader has to infer it from the table. The vector arm stays in the code
+as the reproducer for that sentence and as the thing a trained retriever would replace.
+
+**Why it fails, diagnosed rather than guessed.** An encoder trained only to fill in masked words is never
+once asked to push unlike passages apart, and it does not: two unrelated chunks sit at cosine **0.925**,
+and the mean embedding of the whole corpus has norm **0.942 out of 1** — nearly every direction is the
+same direction. Subtracting that common direction and renormalising fixes the geometry outright, 0.925 →
+0.142 between unrelated chunks, and moves recall by **half a point**. That gap is the finding: the
+collapse is a symptom, the missing contrastive objective is the cause, and no amount of post-hoc
+geometry substitutes for a training signal that was never there. It is the same shape of result as §5.4 —
+locate the cause cheaply, then say plainly that the fix needs training this project deliberately froze.
+
+**Fused by rank, not by score.** A BM25 score is unbounded, a cosine sits in [-1, 1], and a weighted sum
+of the two needs a scale constant nothing here has measured. Reciprocal rank fusion needs none: it reads
+only the position each half put a chunk in, so the halves cannot be mis-weighted by accident.
+
+**The two arms abstain differently, and that asymmetry is real.** A BM25 zero means no query term appears
+anywhere in the passage, so the lexical arm returns fewer than *k* — or nothing — rather than padding the
+generator's window with text unrelated to the question. A cosine of zero means nothing in particular, and
+after centring half of them are negative, so the vector arm has no honest floor and never abstains. The
+retriever that abstains is the one that is served; that is not a coincidence.
+
+**What the recall number is and is not.** There are no relevance judgements for this corpus, and
+inventing them with the model under test would measure the model against itself. So the eval uses the
+standard weak-supervision proxy and names it: *find the rest of the document*. One sentence of a document
+is the query, a hit is any returned chunk of that same document, and every chunk containing the query
+sentence is removed from the target set — without that removal BM25 would be scoring a passage against
+words lifted straight out of it, which is string search, and the vector half would lose to an artefact.
+The absolute 15.5% is not a claim about answer quality; the arm-against-arm comparison and the 0.0%
+random floor are what the verdict rests on.
+
+**Two measurement repairs before the numbers were trusted.** The first run had both arms at ~8–12% and
+overlapping, because a randomly chosen query sentence out of a Fed release is usually its standing
+boilerplate — *"for media inquiries, call 202-452-2955"* — and asking any retriever to find one release
+from a line printed in four thousand of them measures nothing. Two fixes: drop exact-duplicate chunks
+(1,790 of 46,601, 3.8%) and choose each document's **most distinctive** sentence by the index's own idf.
+Lexical rose 12.5% → 17.5% and hybrid 8.0% → 14.5% while vector stayed at ~2%, and only then did the
+arms separate cleanly enough to decide anything. Near-duplicates are a further ~11% and catching them
+needs the MinHash index in `dataforge/process/dedup.py`, which `backend/` must not import — so that is a
+recorded limitation, not a second copy of the algorithm.
+
+**Deliberately not wired into the agent yet.** The advisory decoder was trained with exactly one passage
+slot. Handing it five retrieved chunks would be out of distribution and would make answers *worse*, so
+C2 ends at a measured retriever and the wiring waits for a decoder trained on multiple passages. Shipping
+the retrieval into the answer path now would have been the kind of unmeasured improvement §5.5 is about.
+
 ---
 
 ## 6. Why this design, versus the alternatives
@@ -788,7 +879,7 @@ This is the first question an examiner will ask. Answers, strongest first:
 |---|---|
 | A real LLM | 7.5M parameters versus hundreds of billions. Fluency and paraphrase understanding are not comparable, and §5.4 measures exactly where ours breaks |
 | A tuned gradient-boosted model on price features | Our price head ties a one-line persistence baseline (§3.4). A GBM with good features would likely beat it |
-| A production RAG stack | No trained dense retriever, no reranker, no vector index |
+| A production RAG stack | No trained dense retriever and no reranker. There is a vector index, and it was **measured at 1.5% recall@5 against BM25's 15.5%** and dropped (§5.13) |
 
 **Say this plainly in the viva.** The value is not "our model is best". It is that **every claim is
 measured against an honest baseline, and the negative results are reported**. A project that says "the
@@ -954,6 +1045,17 @@ domain would supply its own module with the same surface and nothing in `core.py
 - **`finance.py`** — the domain: `Market` (`resolve`, `snapshot` with the as-of rule), `examples`,
   `ask`, `without_subject`, `needs`, and the three refusal strings.
 
+### `backend/retrieval/` — the corpus retriever (§5.13)
+
+- **`corpus.py`** — `published_on` (the two dated naming schemes, `None` for anything else),
+  `documents`, `Document` (text read on access; the extracted corpus is 2.8 GB). Reads
+  `data/manifest.jsonl` as a *file format*, not as an import, so `dataforge/` stays deletable.
+- **`chunk.py`** — `sentences`, `chunks` (128-token windows overlapping by a whole sentence, because a
+  figure and the thing it measures often sit either side of a boundary), `deduplicate`, `Chunk`.
+- **`index.py`** — `Hybrid` (`search`, `visible`, `cite`), `save`/`load` (no `allow_pickle`: an index is
+  data, and data that can execute on load is not worth the convenience), `fuse`, `centred`, `without`,
+  and `SERVED` — the constant the gate's answer is recorded in.
+
 ### `scripts/`
 
 | Script | What it does |
@@ -977,13 +1079,15 @@ domain would supply its own module with the same surface and nothing in `core.py
 | `chat.py` | The loop, one turn at a time: ask, answer, judge, adapt, show what moved |
 | `route.py` | **Which question is this?** Lexical against semantic on intent, on out-of-domain rejection, and with `--payoff` on what rewriting into the routed phrasing is worth. Fits and saves the routing cut |
 | `ask.py` | The served agent end to end, offline: one typed question in, one answer or one named refusal out |
+| `build_index.py` | Chunks the dated corpus, embeds it with the frozen encoder, writes one index. Shares a **chunk budget** out smallest-source-first and records what share of each source survived |
+| `eval_retrieval.py` | **Does the vector half earn its place beside BM25?** Lexical, vector and hybrid on the same 400 queries against a random floor, and it prints the gate's verdict. It does not (§5.13) |
 
 **Why `check_answers.py` exists at all.** Perplexity on this data is flattering: the answers are
 templated, so most positions are boilerplate a model can predict without reading anything, and the
 handful of digit positions that actually need the evidence are lost in the average. Generate-and-check
 is the number that decides whether the system works.
 
-### `tests/` — 349 passing
+### `tests/` — 391 passing
 
 - **`test_gradcheck.py`** — every operation's analytic gradient against a numerical finite-difference
   gradient. **The most important tests in the repo**: a wrong derivative still trains to a plausible
@@ -1003,6 +1107,12 @@ is the number that decides whether the system works.
   quietly shortening the window; a served row compared array-for-array against a training row; and each
   of the five stops naming itself, with a model that raises on any call to prove the turn stopped before
   the decoder.
+- **`test_retrieval.py`** — the retriever's two honesty rules. An undated document is dropped rather than
+  dated by its download; the date mask runs **before** ranking, pinned by making the later chunks score
+  higher so the two orders differ; the lexical arm abstains where no query term appears and the vector
+  arm returns a negative cosine instead; a non-finite vector is caught at construction, because one NaN
+  row wins every comparison it is in. Both ordering tests were verified by mutating the code and
+  watching them fail.
 - **`test_import_guard.py`** — fails if TensorFlow, Keras or PyTorch is imported in the training path.
 - **`conftest.py`** — shared fixtures.
 
@@ -1109,7 +1219,12 @@ module's docstring.
 | Out-of-domain at a 97% bar | semantic refuses **12/12** at 88.5% coverage; BM25's margin does not separate |
 | Rewriting into the routed phrasing | exact match **33.5% → 73.5%** on 200 held-out wordings, frozen weights |
 | What is left of that 26.5% | **23.5 pts misroutes**, ~3 the decoder — the ceiling is the router, not the wording |
-| Tests | 349 passing |
+| Retrieval recall@5, 400 queries | lexical **15.5%**, hybrid 12.0%, vector **1.5%**, random 0.0% — the vector half is dropped |
+| Why the vector arm fails | unrelated chunks at cosine **0.925**, mean embedding norm **0.942 of 1** — no contrastive objective |
+| Centring the embeddings | cosine 0.925 → **0.142**, recall moves **half a point** — a geometric fix, not a retrieval one |
+| Index | 44,811 chunks over 4,674 documents, 2006-01-03 to 2026-09-18; 3.8% exact duplicates dropped |
+| Dated sources, of everything collected | **2 of 11** — `sec_edgar` and `fed_press`; the other nine carry only a download time |
+| Tests | 391 passing |
 
 ---
 
@@ -1177,17 +1292,29 @@ decoder the trained phrasing it matched takes exact match on held-out wordings f
 the weights loaded once and never touched. That is a 40-point gain against the loop's ~4, and it is the
 largest frozen-weight lever in the repo. See §5.12.
 
+**"Your retriever's vector half is near chance — why keep the code?"**
+Because it is the evidence for the claim. Deleting it would leave a sentence in the write-up with nothing
+behind it, and `scripts/eval_retrieval.py` re-runs the comparison in minutes. `SERVED = LEXICAL` is a
+constant, so nothing serves the losing arm by accident, and a trained retriever drops into the same slot.
+The diagnosis is the transferable part: an encoder trained only to fill in masked words is never asked to
+push unlike passages apart, and the mean-embedding norm of 0.942 is what that looks like from outside.
+See §5.13.
+
 **"What would you do with more time?"**
 In order: (1) **routing on unseen sentence shapes** — it is now 23.5 of the remaining 26.5 points of error
-and the axis is measured at 68%, so this is the whole bottleneck; (2) a longer feedback log — the curve at
-a strict bar was still falling when the log ran out at 118 rows, so the cheapest win there is more judged
-turns, not a cleverer fit; (3) train the slot variant and compare unsupported-figure rates.
+and the axis is measured at 68%, so this is the whole bottleneck; (2) a **contrastive objective** for the
+encoder, which is the one thing that would make the vector arm worth fusing (§5.13) and would also help
+routing, since both read the same embeddings; (3) a longer feedback log — the curve at a strict bar was
+still falling when the log ran out at 118 rows, so the cheapest win there is more judged turns, not a
+cleverer fit; (4) train the slot variant and compare unsupported-figure rates.
 
 **"What is not built yet?"**
-Stated plainly: no LoRA; no trained dense retriever (BM25 only); no FastAPI backend or frontend; the slot
-dataset is built but untrained; and the reranker is built but **measured not to pay** on this model. The
-learning loop is built and measured (§5.11), and so is the serving layer it wraps (§5.12) — what remains
-is the retrieval, API and UI around them.
+Stated plainly: no LoRA; no trained dense retriever (the corpus index is BM25, measured — §5.13); no
+FastAPI backend or frontend; retrieved passages are **not** wired into the answer path, because the
+decoder was trained with exactly one passage slot and five would be out of distribution; the slot dataset
+is built but untrained; and the reranker is built but **measured not to pay** on this model. The learning
+loop is built and measured (§5.11), the serving layer it wraps (§5.12) and the retriever over the corpus
+(§5.13) — what remains is the API and UI around them.
 
 ---
 
