@@ -9,6 +9,7 @@ import pytest
 
 from selfagent.data import advisory
 from selfagent.learn import AGENT, ORACLE, FeedbackLog
+from selfagent.learn.abstain import Abstainer
 from selfagent.learn.calibrate import (Calibrator, expected_calibration_error, ranking_auc)
 from selfagent.learn.teacher import AgentTeacher, OracleTeacher, verdict_key
 
@@ -241,3 +242,48 @@ def test_a_saved_calibrator_predicts_the_same_after_loading(tmp_path):
     fitted.save(tmp_path / "calibrator.json")
     assert Calibrator.load(tmp_path / "calibrator.json")(confidence) == \
         pytest.approx(fitted(confidence))
+
+
+def graded_by_confidence():
+    """100 rows: the top fifth nearly all right, the next third a coin toss, the bottom half wrong.
+
+    One wrong answer sits inside the top fifth so that no cut is perfect, which is also what a real
+    precision-coverage curve looks like — a fixture without it makes any bar reachable.
+    """
+    confidence = np.linspace(0.90, 0.999, 100)
+    right = np.zeros(100, dtype=bool)
+    right[80:] = True
+    right[95] = False
+    right[50:80:2] = True
+    return confidence, right
+
+
+def test_the_cut_is_the_lowest_that_clears_the_bar_not_the_most_precise():
+    """The most precise cut is nearly always the one answering a handful of rows at 100%, and a threshold
+    fitted to a handful is a coincidence quoted as a policy. Asking for 60% has to buy coverage."""
+    abstainer = Abstainer.fit(*graded_by_confidence(), wanted=0.6)
+    assert abstainer.expected >= 0.6
+    assert abstainer.coverage >= 0.5
+
+
+def test_a_bar_nothing_reaches_is_reported_as_missed_not_claimed():
+    """Returning the bar that was asked for would put a precision in the served config that no row ever
+    demonstrated, and the first person to trust it would be reading a wish."""
+    confidence, right = graded_by_confidence()
+    abstainer = Abstainer.fit(confidence, right, wanted=0.99)
+    assert abstainer.wanted == 0.99
+    assert abstainer.expected < 0.99
+
+
+def test_no_feedback_yet_refuses_to_produce_a_cut():
+    """A fresh install has an empty log. Defaulting to a cut of zero there would answer every question
+    at full confidence, which is the opposite of what abstention is for."""
+    with pytest.raises(ValueError, match="collect more feedback"):
+        Abstainer.fit(np.array([]), np.array([], dtype=bool), wanted=0.6)
+
+
+def test_a_saved_cut_answers_the_same_rows_after_loading(tmp_path):
+    confidence, right = graded_by_confidence()
+    fitted = Abstainer.fit(confidence, right, wanted=0.6).save(tmp_path / "abstain.json")
+    assert (Abstainer.load(tmp_path / "abstain.json").answers(confidence)
+            == fitted.answers(confidence)).all()

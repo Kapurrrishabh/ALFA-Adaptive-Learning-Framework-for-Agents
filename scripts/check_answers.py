@@ -32,6 +32,7 @@ from selfagent import pretrained  # noqa: E402
 from selfagent.agent import guardrails  # noqa: E402
 from selfagent.autograd import no_grad  # noqa: E402
 from selfagent.data import advisory  # noqa: E402
+from selfagent.learn.abstain import COVERAGE_FLOOR  # noqa: E402
 from selfagent.models import GroundedGenerator  # noqa: E402
 from selfagent.models.generator import ANSWER_TEMPERATURE, ANSWER_TOP_P  # noqa: E402
 from selfagent.tokenizer.vocab import CLS_ID, PAD_ID, SEP_ID  # noqa: E402
@@ -89,7 +90,7 @@ def report_confidence(sure, right, threshold):
         return
     best = max(
         ((right[sure >= cut].mean(), (sure >= cut).mean(), cut)
-         for cut in np.unique(sure) if (sure >= cut).mean() >= 0.2),
+         for cut in np.unique(sure) if (sure >= cut).mean() >= COVERAGE_FLOOR),
         default=None,
     )
     if best:

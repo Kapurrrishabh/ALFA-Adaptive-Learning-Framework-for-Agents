@@ -57,7 +57,7 @@ picked a checkpoint that generates worse (81.0% vs 94.5% exact match), so stage 
 | B1 | `selfagent/learn/store.py`: append-only feedback log — question, evidence, answer, label, labeller, timestamp. SQLite. | a round trip test, and the log replays into the same training set twice | **done** — 8 tests in `tests/test_learn.py` |
 | B2 | `selfagent/learn/teacher.py`: two labellers behind one interface — programmatic oracle (exact match, guardrail, intent) and agent-as-teacher (Claude, writing judgments to disk for replay) | 200 rows labelled both ways; agreement rate reported, not assumed | **done** — agreement **156/198 (78.8%)** |
 | B3 | `selfagent/learn/calibrate.py`: map self-confidence to the probability the answer is right, fit on the feedback log | calibration error beats the raw confidence's on a held-out slice | **done** — 0.683 → **0.121** oracle, 0.475 → **0.144** agent |
-| B4 | `selfagent/learn/abstain.py`: learned threshold replacing the hand-picked 0.9980 | beats 53.8% correct @ 40% coverage on `unseen`, threshold fit on other rows | open |
+| B4 | `selfagent/learn/abstain.py`: learned threshold replacing the hand-picked 0.9980 | beats 53.8% correct @ 40% coverage on `unseen`, threshold fit on other rows | **done, gate tied not beaten** — **53.6% @ 39.0%** held out |
 | B5 | `selfagent/learn/rank.py`: generate k candidates, rank with frozen weights using the calibrator | exact match on `unseen` beats single-sample 31.0% | open |
 | B6 | `scripts/learning_curve.py`: accuracy against number of feedback rows, adaptation on vs off | two curves; the gap is the thesis, and if there is no gap say so | open |
 | B7 | `scripts/chat.py`: one conversation turn at a time — ask, answer, label, adapt, show what moved | a scripted session of 20 turns runs end to end and the store grows by 20 | open |
@@ -92,6 +92,26 @@ The number that matters for what comes next is **ranking AUC 0.740 ± 0.039** (o
 0.036** (agent). The confidence does rank right above wrong, well clear of a coin toss — and because any
 monotone calibration leaves the order untouched, that AUC is the hard ceiling on B4's threshold and B5's
 reranker. Neither can do better than this signal allows, and B5's gate should be judged against it.
+
+**B4 measured**, `scripts/fit_abstention.py`, cut fitted on half and quoted on the other, 25 splits.
+**The gate is tied, not beaten: 53.6% correct on 39.0% coverage, against 53.8% @ 40%.** Read what the
+target was, though — `check_answers.report_confidence` says in its own docstring that a cut chosen on the
+rows it is quoted on is an upper bound, and 53.8% was exactly that. On this log that in-sample bound is
+68.9% @ 22.5%. So the honest result is that a cut fitted out of sample *reproduces* the in-sample number
+at matched coverage, which is the thing that was in doubt.
+
+No threshold could have beaten it, and that is structural rather than a shortfall. A cut on a calibrated
+probability orders rows identically to a cut on the raw confidence, so every threshold lives on one
+precision-coverage curve fixed by the model, and AUC 0.740 is where that curve sits. What B4 replaces is
+therefore the *meaning* of the number, not the number: `Abstainer.fit(..., wanted=0.6)` asks for a stated
+chance of being right and solves for the confidence that delivers it, and 60% still means 60% on the next
+checkpoint where 0.9980 means nothing. It also reports the bar it missed instead of claiming it.
+
+The curve itself, held out, under the oracle: asking 50% buys **51.5% @ 43.8%**, asking 60% buys
+**58.5% @ 32.7%**, asking 70% buys **64.3% @ 24.2%** — against 31.0% for answering everything, so +21 to
++34 points of precision for the coverage given up. Under the agent's labels the same cut of 0.9980 turns
+out to be almost exactly a 70% bar (67.2% @ 52.2%), which is what the hand-picked number had been all
+along without saying so.
 
 ## Stage C — the architecture in the diagram
 
