@@ -11,6 +11,7 @@ from selfagent.data import advisory
 from selfagent.learn import AGENT, ORACLE, FeedbackLog
 from selfagent.learn.abstain import Abstainer
 from selfagent.learn.calibrate import (Calibrator, expected_calibration_error, ranking_auc)
+from selfagent.learn.rank import best, consensus, rank
 from selfagent.learn.teacher import AgentTeacher, OracleTeacher, verdict_key
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -287,3 +288,59 @@ def test_a_saved_cut_answers_the_same_rows_after_loading(tmp_path):
     fitted = Abstainer.fit(confidence, right, wanted=0.6).save(tmp_path / "abstain.json")
     assert (Abstainer.load(tmp_path / "abstain.json").answers(confidence)
             == fitted.answers(confidence)).all()
+
+
+GROUNDED_ANSWER = "its 14 day rsi is 71 ."
+INVENTED_ANSWER = "its 14 day rsi is 62 ."
+
+
+def test_an_invented_figure_loses_however_confident_it_is():
+    """The failure the tiers exist for. The model is most fluent exactly when it invents, so ranking on
+    confidence alone would systematically serve the made-up figure — a reranker doing harm, not nothing."""
+    picked = best([INVENTED_ANSWER, GROUNDED_ANSWER], TURN["evidence"], [1.0, 0.5], REFUSAL)
+    assert picked == GROUNDED_ANSWER
+
+
+def test_a_refusal_beats_an_invention_and_loses_to_a_grounded_answer():
+    """Both halves matter. Putting refusals last would serve invented figures whenever nothing else is
+    grounded; putting them first would make the model refuse whenever any sample happened to."""
+    candidates = [INVENTED_ANSWER, REFUSAL, GROUNDED_ANSWER]
+    order = rank(candidates, TURN["evidence"], [1.0, 0.2, 0.3], REFUSAL)
+    assert [candidates[position] for position in order] == [GROUNDED_ANSWER, REFUSAL, INVENTED_ANSWER]
+
+
+def test_confidence_only_decides_between_candidates_of_the_same_kind():
+    """Within a tier the confidence is all there is to go on, and B3 measured that it ranks right above
+    wrong at AUC 0.74. Ignoring it would throw away the one signal the log says is real."""
+    grounded = [GROUNDED_ANSWER, "the rsi is 71 ."]
+    assert best(grounded, TURN["evidence"], [0.4, 0.9], REFUSAL) == grounded[1]
+
+
+def test_the_same_candidates_always_produce_the_same_pick():
+    """A learning curve is a sequence of these picks. A tie broken by dict order or hash would make the
+    curve move between runs, and the movement would be indistinguishable from learning."""
+    tied = [GROUNDED_ANSWER, "the rsi is 71 .", "rsi 71 ."]
+    assert rank(tied, TURN["evidence"], [0.8, 0.8, 0.8], REFUSAL) == [0, 1, 2]
+
+
+def test_consensus_takes_the_repeated_answer_over_the_confident_one():
+    """The whole point of the second policy. Within one question the confidence prefers the short
+    refusal, so a picker that ignores it and counts repeats has to be able to disagree with it."""
+    candidates = ["the rsi is 71 .", GROUNDED_ANSWER, GROUNDED_ANSWER]
+    assert consensus(candidates, TURN["evidence"], REFUSAL) == 1
+
+
+def test_consensus_will_not_repeat_its_way_past_the_guardrail():
+    """A wrong figure is more repeatable than a right one when the model is confidently wrong. Counting
+    votes without the tiers would serve the invented number seven times out of eight."""
+    candidates = [INVENTED_ANSWER] * 7 + [GROUNDED_ANSWER]
+    assert consensus(candidates, TURN["evidence"], REFUSAL) == 7
+
+
+def test_ranking_nothing_is_refused_rather_than_answered():
+    """A generation step that produced no candidates is a bug upstream. Returning a default answer here
+    would hide it behind a served response."""
+    with pytest.raises(ValueError, match="at least one"):
+        rank([], TURN["evidence"], [], REFUSAL)
+    with pytest.raises(ValueError, match="against"):
+        rank([GROUNDED_ANSWER], TURN["evidence"], [0.9, 0.9], REFUSAL)

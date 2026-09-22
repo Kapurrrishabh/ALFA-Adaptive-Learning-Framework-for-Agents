@@ -109,17 +109,19 @@ def load_model(artifacts, dataset, checkpoint=""):
     return tokenizer, model, config
 
 
-def answer_rows(model, tokenizer, split, chosen, rng, greedy=False, batch_size=8):
+def answer_rows(model, tokenizer, split, chosen, rng, greedy=False, batch_size=8,
+                temperature=ANSWER_TEMPERATURE, top_p=ANSWER_TOP_P):
     """(question, evidence, gold, produced, confidence) for each chosen row.
 
     Shared with the labelling loop rather than copied: a judge has to see the same answers the scorer
     saw, and regenerating them under a different sampler would have the two sets of numbers describing
-    two different models.
+    two different models. The sampler defaults to the served one, so only a caller that deliberately
+    asks for a different one gets it.
     """
     source, keep, target = split
     starts = evidence_starts(source[chosen])
-    temperature = 0.0 if greedy else ANSWER_TEMPERATURE
-    top_p = 1.0 if greedy else ANSWER_TOP_P
+    if greedy:
+        temperature, top_p = 0.0, 1.0
 
     scored = []
     for start in range(0, len(chosen), batch_size):

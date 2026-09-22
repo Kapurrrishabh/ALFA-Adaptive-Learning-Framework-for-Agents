@@ -80,7 +80,7 @@ loss is the price of reading the evidence, not a sign of overfitting to it.
 | B2 | `selfagent/learn/teacher.py`: two labellers behind one interface — programmatic oracle (exact match, guardrail, intent) and agent-as-teacher (Claude, writing judgments to disk for replay) | 200 rows labelled both ways; agreement rate reported, not assumed | **done** — agreement **156/198 (78.8%)** |
 | B3 | `selfagent/learn/calibrate.py`: map self-confidence to the probability the answer is right, fit on the feedback log | calibration error beats the raw confidence's on a held-out slice | **done** — 0.683 → **0.121** oracle, 0.475 → **0.144** agent |
 | B4 | `selfagent/learn/abstain.py`: learned threshold replacing the hand-picked 0.9980 | beats 53.8% correct @ 40% coverage on `unseen`, threshold fit on other rows | **done, gate tied not beaten** — **53.6% @ 39.0%** held out |
-| B5 | `selfagent/learn/rank.py`: generate k candidates, rank with frozen weights using the calibrator | exact match on `unseen` beats single-sample 31.0% | open |
+| B5 | `selfagent/learn/rank.py`: generate k candidates, rank with frozen weights using the calibrator | exact match on `unseen` beats single-sample 31.0% | **done, gate failed** — no picker beats it; 8 samples give **1.77 distinct answers** |
 | B6 | `scripts/learning_curve.py`: accuracy against number of feedback rows, adaptation on vs off | two curves; the gap is the thesis, and if there is no gap say so | open |
 | B7 | `scripts/chat.py`: one conversation turn at a time — ask, answer, label, adapt, show what moved | a scripted session of 20 turns runs end to end and the store grows by 20 | open |
 
@@ -134,6 +134,40 @@ The curve itself, held out, under the oracle: asking 50% buys **51.5% @ 43.8%**,
 +34 points of precision for the coverage given up. Under the agent's labels the same cut of 0.9980 turns
 out to be almost exactly a 70% bar (67.2% @ 52.2%), which is what the hand-picked number had been all
 along without saying so.
+
+**B5 measured, and the gate fails.** `scripts/rerank.py`, `selfagent/learn/rank.py`. Three pickers were
+tried against taking the first sample, on `unseen` with `advisory_frozen.npz`:
+
+| temperature / top-p | distinct of 8 | single | by confidence | by `rank()` | most repeated | ceiling |
+|---|---|---|---|---|---|---|
+| 0.9 / 0.9 (served) | **1.54** | 31.0% | 28.5% | 30.0% | 31.5% | 35.5% |
+| 0.9 / 0.99 | 1.65 | 31.0% | 28.5% | 29.0% | — | 35.0% |
+| 1.0 / 0.999 | 1.72 | 31.0% | 29.0% | 30.5% | 33.0% | 37.5% |
+| 1.0 / 0.999, 600 rows | **1.77** | 28.0% | 27.8% | 28.5% | **29.2%** | 34.0% |
+
+**The cause is not the ranking — it is that there is nothing to rank.** Eight samples produce 1.54
+distinct answers at the served sampler. Doubling k from 4 to 8 moved the ceiling 1.0 point; loosening the
+nucleus tenfold moved distinctness to 1.65 and the ceiling not at all. `_nucleus` keeps a second token
+only when the top one holds less than top-p of the mass, and this model's per-token mass is about 0.99 —
+the same fact as the raw confidence sitting above 0.999 in B3. A near-deterministic model cannot be
+improved by sampling it more, so best-of-k is structurally unavailable here.
+
+The most repeated answer is the only picker that ever leads, and on the 600-row run it **rescued 14 rows
+the first sample got wrong and spoiled 7 it got right**. McNemar exact on those 21 discordant rows gives
+**p = 0.189**; 16 of 21 would have been needed for 0.05. So +1.2 points is not distinguishable from
+chance, and the gate is recorded as failed rather than squeezed. Note also that single-sample accuracy
+read 31.0% on 200 rows and 28.0% on 600 — the 200-row figure the gate was written against carries about
+±3 points, which is larger than every effect measured against it.
+
+Two findings worth carrying forward. **Confidence ranks worse than not ranking at all** (-2.5 points),
+because refusals carry the highest confidence the model produces — 0.99538 against 0.98797 on answers, at
+18 words against 32, and confidence correlates -0.037 with length so it is not brevity. B3's AUC 0.740
+holds *across* questions and does not transfer to ranking answers to one; B4's threshold is unaffected
+because it also ranks across questions. And **the tiers do help where they fire**, beating confidence by
+1.5 points, but fired on 4-6% of rows because this checkpoint invents figures on only 0.7% of unseen
+answers. `rank.py` and its tier order are kept for C1, where the candidates will come from different
+retrieved contexts rather than from resampling one question — real diversity, which is the input this
+measurement says the policy is missing.
 
 ## Stage C — the architecture in the diagram
 
