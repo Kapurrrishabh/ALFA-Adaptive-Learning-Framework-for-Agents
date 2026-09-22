@@ -40,7 +40,7 @@ model. Where that costs us fluency, we pay it and say so.
 | 5 — price advisory, both heads | **Both built and compared.** Direction is unpredictable here; volatility loses to persistence |
 | 6–9 | Not started |
 
-250 tests pass (`python3 -m pytest tests/ dataforge/ -q`). Gates closed: S1, S2, S3, S11, S15. **S14
+305 tests pass (`python3 -m pytest tests/ dataforge/ -q`). Gates closed: S1, S2, S3, S11, S15. **S14
 closes on trained phrasings only.** Re-measured on the current model over 200 generated answers: 1.7%
 unsupported figures on validation, under the 2% gate and down from 10.5% on the previous model — but
 4.7% on phrasings training never saw. The gate is met where the wording is familiar and missed where it
@@ -69,6 +69,16 @@ the MLM encoder places a word it has never read 15/15 given a familiar sentence 
 shape built from familiar words only 28/41, and both-novel 2/7. Task fine-tuning then *halves* shape
 handling, 28/41 → 13/41 — catastrophic forgetting, measured. So the ~600M-token general-English corpus
 is **not** the blocker and is deliberately not being collected; `--freeze-encoder` tests the other half.
+
+**Held-out loss is the wrong way to pick a checkpoint here, and that is now measured rather than
+suspected.** On the chat-register arm the loss-selected checkpoint (step 6,000, unseen loss 0.2339) loses
+to the final one (unseen loss 0.4162) on every generation number: exact match 32.5% → **39.0%**,
+unsupported figures 17.2% → **4.1%** of answers, false refusals 18.9% → **4.7%**. On the register's own
+split the same comparison is 68.0% → **94.5%** exact match. Early stopping would have shipped the worse
+generator with a better loss curve. The ablation says why: the evidence-swap penalty *grows* with
+training, +1.69 → **+2.60** on unseen, so the late model commits harder to the digits its evidence
+states — which costs average cross-entropy on unfamiliar phrasings while making answers more correct.
+Every checkpoint decision from stage B onward is therefore made on generated answers, not on loss.
 
 **The real-human-Q&A dataset was re-scored, both directions, and it is still the harder task.** The
 Stack Exchange model on its own validation: loss 4.1227 (perplexity 61.7), blanking the evidence costs

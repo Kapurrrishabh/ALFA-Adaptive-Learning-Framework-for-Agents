@@ -484,7 +484,7 @@ that matrix is *also* the decoder's output layer, so freezing it by name would s
 to write at all. This tests the probe's other finding: that task training is what *destroys* the
 encoder's handling of unseen shapes (28/41 → 13/41).
 
-**250 tests pass** (`tests/` and `dataforge/` together).
+**305 tests pass** (`tests/` and `dataforge/` together).
 
 ### 5.8 Scoring both models on the real human Q&A data
 
@@ -525,6 +525,31 @@ not one model for everything.
 validation split the current model hits **1.7% — the gate closes**. On phrasings it has never seen it
 is **4.7% — the gate fails**. So faithfulness itself depends on familiar wording, which is the same
 paraphrase weakness from §5.7 arriving at the number the product is actually judged on.
+
+### 5.9 The checkpoint with the better loss is the worse model
+
+This one is worth having ready, because it is counter to what everyone is taught about early stopping.
+The chat-register arm was trained for a full epoch and two checkpoints were compared — the one held-out
+loss picked, and the last one.
+
+| | loss on unseen phrasings | exact match | unsupported figures | false refusals |
+|---|---|---|---|---|
+| picked by loss (step 6,000) | **0.2339** | 32.5% | 17.2% of answers | 18.9% |
+| the final one (step 28,163) | 0.4162 | **39.0%** | **4.1%** | **4.7%** |
+
+The loss-selected checkpoint is better on loss by a wide margin and **worse on every number a user would
+notice**. Early stopping here would have shipped the weaker generator, and nothing in the loss curve says
+so.
+
+**Why it happens.** The evidence-swap ablation grows from **+1.69 to +2.60** between those two
+checkpoints. The late model is *more* grounded, not less: it commits harder to the specific digits its
+evidence states. Cross-entropy on an unfamiliar phrasing punishes exactly that commitment, because a
+confidently wrong word costs more than a hedged one. So rising held-out loss is the price of reading the
+evidence.
+
+**What to say if asked.** Loss is a proxy, and it is a proxy for the wrong thing once generation is what
+you ship. Every checkpoint decision in this project is now made on generated answers — exact match,
+unsupported figures, refusal behaviour — with loss used only to see that training is progressing at all.
 
 ---
 
@@ -703,7 +728,7 @@ templated, so most positions are boilerplate a model can predict without reading
 handful of digit positions that actually need the evidence are lost in the average. Generate-and-check
 is the number that decides whether the system works.
 
-### `tests/` — 234 passing
+### `tests/` — 305 passing
 
 - **`test_gradcheck.py`** — every operation's analytic gradient against a numerical finite-difference
   gradient. **The most important tests in the repo**: a wrong derivative still trains to a plausible
@@ -809,7 +834,10 @@ module's docstring.
 | Phrasings, distinct questions | 190, 19,183 |
 | Unseen-phrasing loss, 46 vs 190 phrasings | 0.70 → **0.2821** (60% cut, data reworded only) |
 | Encoder frozen by `--freeze-encoder` | 3,159,552 of 7,472,192 parameters |
-| Tests | 250 passing |
+| Chat register, final checkpoint | **94.5%** exact match on its own split, **39.0%** unseen |
+| Same arm, checkpoint picked on loss | 68.0% / 32.5% — **better loss, worse on all four** |
+| Evidence-swap penalty, early vs late | +1.69 → **+2.60** — grounding grows as loss rises |
+| Tests | 305 passing |
 
 ---
 
