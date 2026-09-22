@@ -42,13 +42,35 @@ Every pass does the same five things. Do not start a task while an earlier one i
 
 | id | task | gate | status |
 |---|---|---|---|
-| A1 | Chat-register arm completes; measure the `casual` split on its best and final checkpoints | casual-split loss and exact match recorded next to `unseen` | waiting — step 23,200/28,163, ~0.3h left |
-| A2 | Combined arm: `--freeze-encoder` on the casual dataset | unseen loss beats 0.1717, or say plainly that the two fixes do not add | waiting — `advisory_combined` launched, ~1.6h |
+| A1 | Chat-register arm completes; measure the `casual` split on its best and final checkpoints | casual-split loss and exact match recorded next to `unseen` | **done** — final **94.5%** casual / **39.0%** unseen exact match; the loss-picked checkpoint is worse on all four |
+| A2 | Combined arm: `--freeze-encoder` on the casual dataset | unseen loss beats 0.1717, or say plainly that the two fixes do not add | waiting — step 5,800/28,163, ~1.2h left |
 | A3 | Write A1/A2 into `PLAN_OF_ACTION.md` and `learnme.md` | both files quote the same numbers as this file | open |
 
 Already measured, for reference: frozen encoder cut unseen loss 0.2821 → **0.1717** and unsupported
 figures on unseen 4.7% → **0.7%**, closing S14 on both splits for the first time. Selecting on loss
 picked a checkpoint that generates worse (81.0% vs 94.5% exact match), so stage B selects on generation.
+
+**A1 measured**, `scripts/ablate_generator.py` for loss and `scripts/check_answers.py` for generation,
+200 rows each, on `advisory_casual`:
+
+| checkpoint | split | loss | exact match | unsupported figures | false refusal |
+|---|---|---|---|---|---|
+| best, step 6,000 | casual | 0.0193 | 68.0% | 20.7% of answers | 0.0% |
+| best, step 6,000 | unseen | **0.2339** | 32.5% | 17.2% | 18.9% |
+| final, step 28,163 | casual | 0.0040 | **94.5%** | **3.6%** | 0.0% |
+| final, step 28,163 | unseen | 0.4162 | **39.0%** | **4.1%** | **4.7%** |
+
+Read the two unseen rows against each other, because they settle how this project picks checkpoints. The
+loss-selected one is better on loss by a wide margin — 0.2339 against 0.4162 — and worse on every
+generation number there is: 6.5 points less exact match, four times the unsupported figures, four times
+the false refusals. Early stopping on held-out loss would have shipped the worse generator, and nothing
+in the loss curve says so. The earlier 81.0%-vs-94.5% finding was one arm and one split; this is both
+splits and a larger gap, so **selecting on loss is settled as wrong here, not merely suspect**.
+
+Why it happens is visible in the ablation: the evidence-swap penalty *grows* with training, +1.69 →
+**+2.60** on unseen. The late model commits harder to the specific digits its evidence states, which
+costs average cross-entropy on held-out phrasings while making the answers more correct. Rising unseen
+loss is the price of reading the evidence, not a sign of overfitting to it.
 
 ## Stage B — interactive training, the thesis
 
