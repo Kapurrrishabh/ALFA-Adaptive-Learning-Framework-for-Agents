@@ -78,7 +78,18 @@ split the same comparison is 68.0% → **94.5%** exact match. Early stopping wou
 generator with a better loss curve. The ablation says why: the evidence-swap penalty *grows* with
 training, +1.69 → **+2.60** on unseen, so the late model commits harder to the digits its evidence
 states — which costs average cross-entropy on unfamiliar phrasings while making answers more correct.
-Every checkpoint decision from stage B onward is therefore made on generated answers, not on loss.
+Every checkpoint decision from stage B onward is therefore made on generated answers, not on loss. The
+combined arm then **replicated it independently**: loss-picked 0.1435 against final 0.2496, and the
+loss-picked one worse on all four generation numbers again (30.5% against 36.0% exact match, 17.2% against
+2.4% unsupported, 7.7% against 3.6% false refusal). Two arms, one conclusion.
+
+**Stacking the frozen encoder onto the richer phrasings adds on faithfulness and not on exact match.** Same
+splits, same 200 rows, one fix apart: unseen loss 0.4162 → **0.2496**, unsupported figures 4.1% → **2.4%**
+of answers, false refusals 4.7% → **3.6%**, and own-split exact match identical at 94.5% (189/200 in both).
+Unseen exact match reads 39.0% → 36.0%, which is 6 rows and sits inside the ±3 points this sample carries
+at n=200, so it is not a cost the measurement can distinguish from noise. So `--freeze-encoder` stays on
+for the served model: it buys the faithfulness the S14 gate is written against, for no measurable
+accuracy.
 
 **The real-human-Q&A dataset was re-scored, both directions, and it is still the harder task.** The
 Stack Exchange model on its own validation: loss 4.1227 (perplexity 61.7), blanking the evidence costs

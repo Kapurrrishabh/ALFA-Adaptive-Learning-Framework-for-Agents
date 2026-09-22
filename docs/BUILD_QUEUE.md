@@ -43,8 +43,8 @@ Every pass does the same five things. Do not start a task while an earlier one i
 | id | task | gate | status |
 |---|---|---|---|
 | A1 | Chat-register arm completes; measure the `casual` split on its best and final checkpoints | casual-split loss and exact match recorded next to `unseen` | **done** — final **94.5%** casual / **39.0%** unseen exact match; the loss-picked checkpoint is worse on all four |
-| A2 | Combined arm: `--freeze-encoder` on the casual dataset | unseen loss beats 0.1717, or say plainly that the two fixes do not add | waiting — step 5,800/28,163, ~1.2h left |
-| A3 | Write A1/A2 into `PLAN_OF_ACTION.md` and `learnme.md` | both files quote the same numbers as this file | open |
+| A2 | Combined arm: `--freeze-encoder` on the casual dataset | unseen loss beats 0.1717, or say plainly that the two fixes do not add | **done, gate unanswerable as written** — they add on faithfulness (unsupported **4.1% → 2.4%**, loss **0.4162 → 0.2496**) and not on exact match (39.0% → 36.0%) |
+| A3 | Write A1/A2 into `PLAN_OF_ACTION.md` and `learnme.md` | both files quote the same numbers as this file | **done** — §1a in the plan, §5.9 and new §5.10 in `learnme.md`; stage B's own write-up is B8 |
 
 Already measured, for reference: frozen encoder cut unseen loss 0.2821 → **0.1717** and unsupported
 figures on unseen 4.7% → **0.7%**, closing S14 on both splits for the first time. Selecting on loss
@@ -72,6 +72,38 @@ Why it happens is visible in the ablation: the evidence-swap penalty *grows* wit
 costs average cross-entropy on held-out phrasings while making the answers more correct. Rising unseen
 loss is the price of reading the evidence, not a sign of overfitting to it.
 
+**A2 measured**, and first the gate has to be corrected. It asked A2's unseen loss to beat **0.1717**,
+which was the frozen-encoder arm's figure on **`advisory`'s** unseen split, while A2 trains on
+`advisory_casual` and reports on **that** dataset's unseen split. Different rows, so the two numbers were
+never comparable and the gate as written cannot be settled. What is comparable is A1 against A2: same two
+splits, same 200 rows, one fix apart. Final checkpoints:
+
+| | A1, casual data only | A2, casual data + frozen encoder |
+|---|---|---|
+| casual loss | 0.0040 | 0.0037 |
+| casual exact match | 94.5% | 94.5% |
+| casual unsupported figures | 3.6% of answers | **2.4%** |
+| unseen loss | 0.4162 | **0.2496** |
+| unseen exact match | **39.0%** | 36.0% |
+| unseen unsupported figures | 4.1% of answers | **2.4%** |
+| unseen false refusal | 4.7% | **3.6%** |
+
+**So the two fixes add on faithfulness and not on exact match.** Freezing the encoder cuts unseen loss by
+40%, cuts unsupported figures and false refusals by about a quarter each, and leaves casual exact match
+identical to the row — 189/200 in both arms. It reads 3 points lower on unseen exact match, which is 6 rows
+of 200, and B5 measured that this sample carries about ±3 points at n=200, so that is not a cost this
+measurement can distinguish from noise. The claim to make is the faithfulness one, which is larger than the
+noise and is what the fix was for.
+
+The second finding is the one that matters more, because it is now **replicated on an independent arm**.
+A2's best checkpoint by unseen loss is step 6,000 at **0.1435** — better on loss than the final's 0.2496 —
+and worse on all four generation numbers: casual exact match **77.0% against 94.5%**, unseen **30.5%
+against 36.0%**, unsupported figures **17.2% against 2.4%**, false refusal **7.7% against 3.6%**. That is
+the same direction and roughly the same size as A1. Two arms, two datasets, one conclusion: on this task
+held-out loss and generation quality move in opposite directions after the copying phase transition, and
+early stopping on loss ships the worse generator. Stage B selects on generation, and so will stage C's
+eval gate in C6.
+
 ## Stage B — interactive training, the thesis
 
 | id | task | gate | status |
@@ -83,6 +115,7 @@ loss is the price of reading the evidence, not a sign of overfitting to it.
 | B5 | `selfagent/learn/rank.py`: generate k candidates, rank with frozen weights using the calibrator | exact match on `unseen` beats single-sample 31.0% | **done, gate failed** — no picker beats it; 8 samples give **1.77 distinct answers** |
 | B6 | `scripts/learning_curve.py`: accuracy against number of feedback rows, adaptation on vs off | two curves; the gap is the thesis, and if there is no gap say so | open |
 | B7 | `scripts/chat.py`: one conversation turn at a time — ask, answer, label, adapt, show what moved | a scripted session of 20 turns runs end to end and the store grows by 20 | open |
+| B8 | Write stage B into `learnme.md` and `PLAN_OF_ACTION.md` — B2's agreement, B3's AUC, B4's curve, B5's failed gate. Neither doc mentions the learning loop's results yet, and it is the thesis | both files quote the same numbers as this file, and a reader can answer "did the loop work" from `learnme.md` alone | open |
 
 **B2 measured**, on 200 `unseen` rows from `advisory_frozen.npz` (198 distinct question/answer pairs;
 the sample drew two pairs twice). Oracle **62/200 right (31.0%)**, matching `check_answers.py`'s unseen

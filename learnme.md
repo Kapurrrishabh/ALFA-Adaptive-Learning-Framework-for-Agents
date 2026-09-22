@@ -547,9 +547,40 @@ evidence states. Cross-entropy on an unfamiliar phrasing punishes exactly that c
 confidently wrong word costs more than a hedged one. So rising held-out loss is the price of reading the
 evidence.
 
+**And it replicated.** A second arm was trained — the same chat-register data with the encoder frozen —
+and its loss-picked checkpoint (step 6,000, unseen loss 0.1435) loses to its final one on all four numbers
+again: exact match 30.5% against **36.0%**, unsupported figures 17.2% against **2.4%**, false refusals
+7.7% against **3.6%**, and on the register's own split 77.0% against **94.5%**. Two arms, two datasets,
+same direction and roughly the same size. One such result is an anecdote; this one is a property of the
+task.
+
 **What to say if asked.** Loss is a proxy, and it is a proxy for the wrong thing once generation is what
 you ship. Every checkpoint decision in this project is now made on generated answers — exact match,
 unsupported figures, refusal behaviour — with loss used only to see that training is progressing at all.
+
+### 5.10 Stacking the two fixes: they add on faithfulness, not on exact match
+
+Two separate fixes had each worked alone — freezing the MLM encoder (§5.4), and four times more phrasing
+variety in the data (§5.7). The obvious question is whether they add. Both arms were measured on the same
+two splits and the same 200 rows, one fix apart:
+
+| | phrasing variety only | both fixes |
+|---|---|---|
+| loss on unseen phrasings | 0.4162 | **0.2496** |
+| exact match, unseen | **39.0%** | 36.0% |
+| unsupported figures, unseen | 4.1% of answers | **2.4%** |
+| false refusals, unseen | 4.7% | **3.6%** |
+| exact match, own split | 94.5% | 94.5% |
+
+Freezing the encoder on top of the better data cuts held-out loss by 40%, cuts unsupported figures and
+false refusals by about a quarter each, and leaves the trained-phrasing exact match untouched at the row —
+189/200 in both arms.
+
+**Be careful with the 3-point drop on unseen exact match.** It is 6 rows out of 200, and this sample was
+separately measured to carry about ±3 points at n=200 (the same accuracy read 31.0% on 200 rows and 28.0%
+on 600). So the honest statement is that the faithfulness gain is real and larger than the noise, and the
+exact-match cost is inside it. Claiming "freezing the encoder costs 3 points of accuracy" from this
+measurement would be reading a number the sample size does not support.
 
 ---
 
@@ -837,6 +868,8 @@ module's docstring.
 | Chat register, final checkpoint | **94.5%** exact match on its own split, **39.0%** unseen |
 | Same arm, checkpoint picked on loss | 68.0% / 32.5% — **better loss, worse on all four** |
 | Evidence-swap penalty, early vs late | +1.69 → **+2.60** — grounding grows as loss rises |
+| Both fixes stacked, unseen | loss **0.2496**, unsupported **2.4%**, exact match 36.0% |
+| Same arm, checkpoint picked on loss | 77.0% / 30.5% — **the finding replicates** |
 | Tests | 305 passing |
 
 ---
