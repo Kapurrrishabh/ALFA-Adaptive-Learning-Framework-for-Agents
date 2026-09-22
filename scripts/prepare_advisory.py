@@ -37,17 +37,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from prepare_generator import build_sources  # noqa: E402
 from selfagent.agent import guardrails  # noqa: E402
 from selfagent.config import ModelConfig  # noqa: E402
 from selfagent.data import advisory, prices  # noqa: E402
+from selfagent.data.advisory import QUESTION_TOKENS  # noqa: E402
+from selfagent.data.encode import build_sources  # noqa: E402
 from selfagent.tokenizer.vocab import CLS_ID, PAD_ID, SEP_ID  # noqa: E402
 from selfagent.tokenizer.wordpiece import WordPiece  # noqa: E402
-
-# Advisory questions are one short sentence, unlike the Stack Exchange ones, so the evidence gets the
-# rest of the window: a full snapshot is 78 tokens and truncating it would cut a figure in half. A
-# clean question reaches 15 tokens and a misspelling costs two more, measured at 19 over every frame.
-QUESTION_TOKENS = 24
 
 # How often a training question arrives in chat register. Provisional: what settles it is whether the
 # casual split closes on validation without validation itself getting worse.
@@ -83,14 +79,14 @@ def snapshot_rows(ticker, bars, end, probabilities, split, rng, slots, messy):
 
     rows = []
     for intent in advisory.INTENTS:
-        trained = [p for p in range(advisory.phrasings(intent)) if not advisory.is_held_out(intent, p)]
+        trained = advisory.trained_phrasings(intent)
         phrasing = rng.choice(trained)
         typed = rng if messy and split == "train" and rng.random() < CASUAL_SHARE else None
         question, answer = advisory.row(intent, ticker, facts, spoken, phrasing, typed)
         rows.append((split, question, evidence, answer))
         if split == "train":
             continue
-        unseen = [p for p in range(advisory.phrasings(intent)) if advisory.is_held_out(intent, p)]
+        unseen = [p for p in range(advisory.phrasings(intent)) if p not in trained]
         question, answer = advisory.row(intent, ticker, facts, spoken, rng.choice(unseen))
         rows.append(("unseen", question, evidence, answer))
         if messy:

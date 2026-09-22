@@ -297,7 +297,7 @@ dataforge/         unchanged, and still deletable on its own
 
 | id | task | gate | status |
 |---|---|---|---|
-| C1 | Agent core: intent router → context assembler → generator → guardrails, domain agnostic | one call answers a free-text question end to end, no network | open |
+| C1 | Agent core: intent router → context assembler → generator → guardrails, domain agnostic | one call answers a free-text question end to end, no network | **done** — `scripts/ask.py` answers a typed question offline. Rewriting into the routed trained phrasing takes held-out exact match **33.5% → 73.5%** with frozen weights; the routing gate refuses 12/12 out-of-domain questions at 88.5% coverage. Routing is now 23.5 of the remaining 26.5 points |
 | C2 | Retriever: hybrid lexical + vector, as-of filtered, local index; chunk and embed worker | recall@5 beats the lexical baseline, or the vector half is dropped and that is recorded | open |
 | C3 | Price advisory endpoint: version-pinned GRU + point-in-time feature builder | a served feature vector matches one rebuilt from bars up to that date, exactly | open |
 | C4 | News ETL (RSS, dedupe, ticker tag) + sentiment scorer, version pinned | a scored article traces to its source URL and licence in the manifest | open |

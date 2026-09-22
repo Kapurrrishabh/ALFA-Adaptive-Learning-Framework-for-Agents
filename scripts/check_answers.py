@@ -30,7 +30,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ablate_generator import evidence_starts  # noqa: E402
 from selfagent import pretrained  # noqa: E402
 from selfagent.agent import guardrails  # noqa: E402
-from selfagent.autograd import no_grad  # noqa: E402
 from selfagent.data import advisory  # noqa: E402
 from selfagent.learn.abstain import COVERAGE_FLOOR  # noqa: E402
 from selfagent.models import GroundedGenerator  # noqa: E402
@@ -47,27 +46,6 @@ def repeated_fraction(text, size=4):
     words = text.split()
     grams = [tuple(words[i : i + size]) for i in range(len(words) - size + 1)]
     return 0.0 if not grams else 1.0 - len(set(grams)) / len(grams)
-
-
-def self_confidence(model, source, keep, produced, budget):
-    """The model's own mean token probability on the answer it just wrote, one number per row.
-
-    An abstention threshold has to run on something available at serving time, when the right answer
-    is not. This is the cheapest such signal — one extra forward pass and no new parameters — and it is
-    only worth building on if it separates the rows the model got right from the ones it got wrong.
-    """
-    target = np.full((len(produced), budget), PAD_ID, dtype=np.int64)
-    for row, ids in enumerate(produced):
-        whole = [CLS_ID] + list(ids)[: budget - 2] + [SEP_ID]
-        target[row, : len(whole)] = whole
-    with no_grad():
-        logits = model(source, target[:, :-1], keep).data
-    logits = logits - logits.max(axis=-1, keepdims=True)
-    log_probabilities = logits - np.log(np.exp(logits).sum(axis=-1, keepdims=True))
-    wanted = target[:, 1:]
-    taken = np.take_along_axis(log_probabilities, wanted[:, :, None], axis=-1)[:, :, 0]
-    counted = wanted != PAD_ID
-    return np.exp((taken * counted).sum(axis=-1) / np.maximum(counted.sum(axis=-1), 1))
 
 
 def report_confidence(sure, right, threshold):
@@ -127,7 +105,7 @@ def answer_rows(model, tokenizer, split, chosen, rng, greedy=False, batch_size=8
     for start in range(0, len(chosen), batch_size):
         rows = chosen[start : start + batch_size]
         produced = model.generate(source[rows], keep[rows], temperature, top_p, rng)
-        sure = self_confidence(model, source[rows], keep[rows], produced, target.shape[1])
+        sure = model.confidence(source[rows], produced, keep[rows])
         for offset, ids in enumerate(produced):
             row = rows[offset]
             whole = source[row, 0]

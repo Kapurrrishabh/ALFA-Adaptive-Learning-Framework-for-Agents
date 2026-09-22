@@ -142,6 +142,28 @@ class GroundedGenerator(Module):
 
         return [self._trim(row) for row in answer]
 
+    def confidence(self, source_ids, produced, is_real_source_token=None):
+        """The model's own mean token probability on the answers it just wrote, one number per row.
+
+        An abstention threshold has to run on something available at serving time, when the right answer
+        is not. This is the cheapest such signal — one extra forward pass, no new parameters — and every
+        threshold, calibrator and reranker in `learn/` is built on it, so it lives with the model rather
+        than with any one caller.
+        """
+        budget = self.config.max_answer_length
+        target = xp.full((len(produced), budget), PAD_ID, dtype=int)
+        for row, ids in enumerate(produced):
+            whole = [ANSWER_START_ID] + list(ids)[: budget - 2] + [ANSWER_END_ID]
+            target[row, : len(whole)] = whole
+        with no_grad():
+            logits = self(source_ids, target[:, :-1], is_real_source_token).data
+        logits = logits - logits.max(axis=-1, keepdims=True)
+        log_probabilities = logits - xp.log(xp.exp(logits).sum(axis=-1, keepdims=True))
+        wanted = target[:, 1:]
+        taken = xp.take_along_axis(log_probabilities, wanted[:, :, None], axis=-1)[:, :, 0]
+        counted = wanted != PAD_ID
+        return xp.exp((taken * counted).sum(axis=-1) / xp.maximum(counted.sum(axis=-1), 1))
+
     def _pick(self, logits, temperature, top_p, rng):
         if temperature <= 0.0:
             return logits.argmax(axis=-1)

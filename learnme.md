@@ -484,7 +484,7 @@ that matrix is *also* the decoder's output layer, so freezing it by name would s
 to write at all. This tests the probe's other finding: that task training is what *destroys* the
 encoder's handling of unseen shapes (28/41 → 13/41).
 
-**312 tests pass** (`tests/` and `dataforge/` together).
+**349 tests pass** (`tests/` and `dataforge/` together).
 
 ### 5.8 Scoring both models on the real human Q&A data
 
@@ -617,7 +617,7 @@ or volatility question (13), drawdown answering an outlook question (6). Then **
 two kinds the guardrail cannot see: four wrong *comparative* claims ("above both its 20 and 50 day
 averages" when the price is below one), where every digit is supported, and four digit-duplication
 inventions (`242804.00` for a close of `24280.00`), which it does catch. **A figure guard is not an intent
-guard**, and that is what C1's router exists to fix.
+guard**, and that is what the router in §5.12 was built to fix.
 
 **Calibration — `calibrate.py`.** The model's confidence averages 0.990 on answers that are right 31% of
 the time, so as a probability it is worthless. Platt scaling, two parameters on the log odds, fitted on half
@@ -664,7 +664,7 @@ refusals carry the highest confidence the model produces (0.99538 against 0.9879
 the surest candidate picks the refusal. The AUC 0.740 holds *across* questions and does **not** transfer to
 ranking answers to one — a distinction easy to miss and expensive to miss. And the tier order does help
 where it fires, beating confidence by 1.5 points; it just fires on 4–6% of rows, because this checkpoint
-invents figures on only 0.7% of unseen answers. It is kept for C1, where candidates will differ by
+invents figures on only 0.7% of unseen answers. It is kept for C2, where candidates will differ by
 retrieved context rather than by resampling one question.
 
 **The curve — `scripts/learning_curve.py`.** This is the thesis measured. Because the adaptation sets a
@@ -706,6 +706,64 @@ touched. That is improvement from interaction without retraining. What the loop 
 the wording — and that is not an omission but a measurement: B5 showed there is nothing to choose between
 this model's samples. The answers come from frozen weights; the judgement about whether an answer is worth
 saying comes from the log. Anyone claiming more than that from these numbers is overselling them.
+
+### 5.12 The served agent — and the one input-side win that is bigger than the loop
+
+§5.11 closed on a limit: feedback can choose *when* to speak but not *what* to say. That is true of the
+five channels feedback could flow through — weights, reranking, prompts, thresholds — but not of the
+sixth, which is **changing the input the frozen decoder reads**. `backend/agent/` is that channel, and it
+is worth more than everything in §5.11 put together.
+
+**The measured cause.** Of the 95 answers the agent judge called wrong, misrouting is the largest single
+group: 14 buy-advice templates answering an overbought question, 13 performance answering an outlook or
+volatility one, 6 drawdown answering an outlook one. **The figure guard catches none of it**, because
+every digit in a wrong-intent answer is supported by the evidence it was handed. A figure guard is not an
+intent guard, and the router is the guard it was missing.
+
+**The four stages, in `backend/agent/core.py`: route, assemble, generate, screen.** Routing goes first
+because everything downstream depends on knowing which question this is — which facts the answer may
+quote, and which *trained* wording to hand the decoder in place of the user's. Five separate things can
+stop a turn and each one names itself: no subject, unclear question, missing facts, unsupported figure,
+low confidence. "I could not understand you" and "I do not hold that figure" are different faults with
+different fixes, and a single generic apology would hide which one fired.
+
+**Two cuts, on two quantities, fitted the same way.** `gate` sits on the routing margin, `abstainer` on
+the answer's own confidence. A question can be understood and the answer still not worth saying, and the
+reverse, so one cut could not stand for both. The routing cut comes from `scripts/route.py` exactly as B4
+fits the answer cut: a stated bar, solved for the margin that delivers it, quoted on rows it was not
+fitted on.
+
+**The result — `scripts/route.py --payoff`.** Rewriting a held-out question into the nearest trained
+phrasing takes exact match from **33.5% to 73.5%** over 200 wordings, weights loaded once and never
+touched. The user's words choose the question; the model only ever reads words it has seen. That is a
+40-point gain with no gradient anywhere in it, against the ~4-point promise-keeping gain of §5.11.
+
+**Which scorer, measured rather than assumed.** BM25 over the known phrasings needs no weights at all and
+ties the encoder on intent overall (94.3% each), and both place a chat-register question as well as a
+clean one (100%). But two things separate them. The encoder misroutes less on wordings training never saw
+(47 against 65 of 200), which is why its payoff is 73.5% against BM25's 65.5%. And on knowing a question
+is *not* one of ours they are not close: at a 97% bar the encoder's margin refuses all 12 out-of-domain
+questions while still answering 88.5% of real ones, where BM25's does not, because a query's unmatched
+words cost it nothing — *"write me a poem about the sea"* matches *"tell me about the recent price action
+in X"* at a margin of 5.55, wider than most genuine questions score. So the served router is the semantic
+one, reading the encoder the decoder already shares.
+
+**And that encoder is the fine-tuned one, which §5.7 would not have predicted.** The probe measured task
+training *destroying* the encoder's handling of unseen shapes, 28/41 → 13/41. Here the served checkpoint
+beats the pretrained one it started from — 68% against 66% on novel frames, 12/12 out-of-domain refused at
+88.5% coverage against 82.4%. The reason is `--freeze-encoder`: it held every transformer block, so of 70
+encoder tensors only the four embedding ones moved. The regression is real, and it is what happens when the
+blocks are left to train.
+
+**What is left is almost entirely routing.** Of the 26.5% still missed, 23.5 points are misroutes and
+about 3 are the decoder getting a correctly-rewritten question wrong. The ceiling is the router's accuracy
+on a sentence shape it has never seen — 68% — which is the same blocker §5.4 measured on the encoder
+alone. Nothing about the decoder's wording is the bottleneck any more.
+
+**One honest caveat.** The served answer cut is solved for a 60% chance of being right and delivers 29% on
+35% coverage, because that bar is not reachable on this checkpoint (§5.11 measured 53.6% at 39.0%). So the
+demo refuses most of what it generates, including supported and correct-looking answers. The fit reports
+the shortfall rather than claiming the bar; `scripts/ask.py` prints it.
 
 ---
 
@@ -871,13 +929,30 @@ mapping or an ordering, which is what makes the thesis's "without retraining" cl
 - **`abstain.py`** — `Abstainer.fit(confidence, is_right, wanted)`, `precision_at`, `COVERAGE_FLOOR`.
   Keeps `expected` so a served threshold can be compared against what actually happens.
 - **`rank.py`** — `tier`, `rank`, `best`, `consensus`. Measured not to pay on this model (§5.11); kept
-  for C1, where candidates will differ by retrieved context.
+  for C2, where candidates will differ by retrieved context.
 
 ### `selfagent/` root
 
 - **`config.py`** — `ModelConfig`, one source of truth for every dimension (§ values in table below).
 - **`backend.py`** — `dtype`, `set_dtype`, `default_rng`, `check_numerics`, `set_check_numerics`.
 - **`pretrained.py`** — `save` / `load` for checkpoints.
+
+### `backend/agent/` — the serving layer (§5.12)
+
+Imports `selfagent/`, never the reverse. The core knows about a *domain*, not about finance: a second
+domain would supply its own module with the same surface and nothing in `core.py` would change.
+
+- **`router.py`** — `Router.route` → `Route(label, key, text, score, margin)`, and two scorers to build
+  it with: `lexical` (BM25 over the known phrasings) and `semantic` (cosine against the encoder). The
+  margin is against the best *different* intent, not the runner-up example, because every intent has
+  several trained phrasings and a runner-up margin would be near zero exactly where the router is surest.
+- **`context.py`** — `assemble`. Calls the same `build_sources` training called, so a served row cannot
+  drift from a trained one. Over-long evidence raises rather than truncating: a cut passage drops a figure
+  the answer quotes, and the guard then refuses for a reason that looks like the model's fault.
+- **`core.py`** — `Agent.answer` → `Turn`, plus `answered` and `routing_margins`. Four stages and five
+  named stops.
+- **`finance.py`** — the domain: `Market` (`resolve`, `snapshot` with the as-of rule), `examples`,
+  `ask`, `without_subject`, `needs`, and the three refusal strings.
 
 ### `scripts/`
 
@@ -900,13 +975,15 @@ mapping or an ordering, which is what makes the thesis's "without retraining" cl
 | `rerank.py` | **Does best-of-k buy anything?** Four pickers against taking the first sample. It does not (§5.11) |
 | `learning_curve.py` | **The thesis as a curve** — the miss against the stated bar versus how much feedback the cut was solved from, beside two flat controls and a ceiling |
 | `chat.py` | The loop, one turn at a time: ask, answer, judge, adapt, show what moved |
+| `route.py` | **Which question is this?** Lexical against semantic on intent, on out-of-domain rejection, and with `--payoff` on what rewriting into the routed phrasing is worth. Fits and saves the routing cut |
+| `ask.py` | The served agent end to end, offline: one typed question in, one answer or one named refusal out |
 
 **Why `check_answers.py` exists at all.** Perplexity on this data is flattering: the answers are
 templated, so most positions are boilerplate a model can predict without reading anything, and the
 handful of digit positions that actually need the evidence are lost in the average. Generate-and-check
 is the number that decides whether the system works.
 
-### `tests/` — 312 passing
+### `tests/` — 349 passing
 
 - **`test_gradcheck.py`** — every operation's analytic gradient against a numerical finite-difference
   gradient. **The most important tests in the repo**: a wrong derivative still trains to a plausible
@@ -921,6 +998,11 @@ is the number that decides whether the system works.
   intent (the leak that would invalidate the experiment in silence — verified by injecting a leak and
   confirming the test fails); each novelty axis has phrasings to measure; slot filling is lossless;
   prose that merely looks like a field name is left alone; article agreement across frames × words.
+- **`test_agent.py`** — the serving layer, which earns its keep by what it refuses. A zero margin on a
+  question sharing no words with anything known; the as-of rule; too little history raising rather than
+  quietly shortening the window; a served row compared array-for-array against a training row; and each
+  of the five stops naming itself, with a model that raises on any call to prove the turn stopped before
+  the decoder.
 - **`test_import_guard.py`** — fails if TensorFlow, Keras or PyTorch is imported in the training path.
 - **`conftest.py`** — shared fixtures.
 
@@ -1023,7 +1105,11 @@ module's docstring.
 | Abstention, asked 60% / 70% | **58.5% on 32.7%** / 64.3% on 24.2%, against 31.0% answering everything |
 | Best of 8 samples | 28.0% → 29.2%, **p = 0.189**; only **1.77 distinct answers** of 8 |
 | Learning curve, miss vs stated bar | **8.5 pts** from 60 rows, against 16.7 hand-picked and 29.2 unabstained |
-| Tests | 312 passing |
+| Routing, lexical vs semantic | **94.3% each** on intent; 100% on chat register, **71% / 68%** on a novel frame |
+| Out-of-domain at a 97% bar | semantic refuses **12/12** at 88.5% coverage; BM25's margin does not separate |
+| Rewriting into the routed phrasing | exact match **33.5% → 73.5%** on 200 held-out wordings, frozen weights |
+| What is left of that 26.5% | **23.5 pts misroutes**, ~3 the decoder — the ceiling is the router, not the wording |
+| Tests | 349 passing |
 
 ---
 
@@ -1085,17 +1171,23 @@ wording, and that is a measurement rather than an omission: eight samples of thi
 distinct answers, so there is nothing for a reranker to choose between. **It learns when to speak, not
 what to say.** See §5.11.
 
+**"So the frozen model cannot be made to answer better at all?"**
+It can, but not through the feedback loop — through the *input*. Routing the question and handing the
+decoder the trained phrasing it matched takes exact match on held-out wordings from 33.5% to 73.5%, with
+the weights loaded once and never touched. That is a 40-point gain against the loop's ~4, and it is the
+largest frozen-weight lever in the repo. See §5.12.
+
 **"What would you do with more time?"**
-In order: (1) a longer feedback log — the curve at a strict bar was still falling when the log ran out at
-118 rows, so the cheapest remaining win is more judged turns, not a cleverer fit; (2) fix **intent
-misrouting**, which is the largest single error class (33 of the agent's 95 wrong rows) and which the
-figure guardrail structurally cannot see — that is C1's router; (3) train the slot variant and compare
-unsupported-figure rates.
+In order: (1) **routing on unseen sentence shapes** — it is now 23.5 of the remaining 26.5 points of error
+and the axis is measured at 68%, so this is the whole bottleneck; (2) a longer feedback log — the curve at
+a strict bar was still falling when the log ran out at 118 rows, so the cheapest win there is more judged
+turns, not a cleverer fit; (3) train the slot variant and compare unsupported-figure rates.
 
 **"What is not built yet?"**
 Stated plainly: no LoRA; no trained dense retriever (BM25 only); no FastAPI backend or frontend; the slot
 dataset is built but untrained; and the reranker is built but **measured not to pay** on this model. The
-learning loop itself is built and measured (§5.11) — what remains is the served architecture around it.
+learning loop is built and measured (§5.11), and so is the serving layer it wraps (§5.12) — what remains
+is the retrieval, API and UI around them.
 
 ---
 
@@ -1118,5 +1210,11 @@ the hand-picked threshold misses by 16.7 and no abstention by 29.2 — improveme
 foundation model frozen. It does not learn better wording, because eight samples of it produce 1.77
 distinct answers: there is nothing to choose between. **It learns when to speak, not what to say.**
 
-What is still open is paraphrase generalisation, and it is measured precisely enough to act on: the
-vocabulary is fine, the sentence shapes are not, and fine-tuning makes them worse.
+What *does* improve the wording is the input rather than the loop. Routing a free-text question to the
+intent it matches and handing the frozen decoder that intent's trained phrasing takes exact match on
+held-out wordings from 33.5% to 73.5% — the largest frozen-weight gain in the repo, and eight times the
+loop's.
+
+What is still open is paraphrase generalisation, and it is now measured precisely enough to act on: the
+vocabulary is fine, the sentence shapes are not, and routing on an unseen shape is 68% — which is 23.5 of
+the remaining 26.5 points of error, so it is the one number left worth moving.

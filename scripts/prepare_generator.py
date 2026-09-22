@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from selfagent.config import ModelConfig  # noqa: E402
 from selfagent.data import qa_pairs  # noqa: E402
+from selfagent.data.encode import build_sources  # noqa: E402
 from selfagent.models.retriever import BM25  # noqa: E402
 from selfagent.tokenizer.vocab import CLS_ID, PAD_ID, SEP_ID  # noqa: E402
 from selfagent.tokenizer.wordpiece import WordPiece, pretokenize  # noqa: E402
@@ -29,22 +30,6 @@ from selfagent.tokenizer.wordpiece import WordPiece, pretokenize  # noqa: E402
 # Of the 128-token window, the question gets the smaller share: it is one question, and the passages
 # are what the answer has to be built out of.
 QUESTION_TOKENS = 48
-
-
-def build_sources(question_ids, passage_ids_list, passages_wanted, length):
-    """(passages, length) ids and the matching 1/0 mask for one training row.
-
-    Every row carries the same number of passage slots so the set is one array. A row that retrieved
-    fewer keeps empty slots, fully masked, which the encoder then ignores.
-    """
-    source = np.full((passages_wanted, length), PAD_ID, dtype=np.uint16)
-    keep = np.zeros((passages_wanted, length), dtype=np.uint8)
-    for slot, passage_ids in enumerate(passage_ids_list[:passages_wanted]):
-        row = [CLS_ID] + question_ids + [SEP_ID] + passage_ids
-        row = row[: length - 1] + [SEP_ID]
-        source[slot, : len(row)] = row
-        keep[slot, : len(row)] = 1
-    return source, keep
 
 
 def main():

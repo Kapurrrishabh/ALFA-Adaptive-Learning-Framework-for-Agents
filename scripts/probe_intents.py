@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from selfagent import pretrained  # noqa: E402
 from selfagent.data import advisory  # noqa: E402
 from selfagent.models import GroundedGenerator  # noqa: E402
+from selfagent.models.retriever import embed  # noqa: E402
 from selfagent.tokenizer.wordpiece import WordPiece  # noqa: E402
 
 # One ticker for every phrasing: the intent has to be read off the wording, not off which stock it is.
@@ -48,25 +49,6 @@ def questions():
         for intent in advisory.INTENTS
         for phrasing in range(advisory.phrasings(intent))
     ]
-
-
-def embed(model, tokenizer, texts, length):
-    """One unit vector per question, so a dot product is a cosine.
-
-    Mean over the real tokens, not [CLS]: masked language modelling never gives [CLS] a job, so it
-    comes out near constant and every pair of questions scores above 0.97. The decoder cross-attends
-    to all the token states anyway, so this is the representation it actually works from.
-    """
-    ids = np.zeros((len(texts), length), dtype=np.int64)
-    keep = np.zeros((len(texts), length), dtype=np.uint8)
-    for row, text in enumerate(texts):
-        encoded = tokenizer.encode(text)[:length]
-        ids[row, : len(encoded)] = encoded
-        keep[row, : len(encoded)] = 1
-    # float64 before any reduction: the encoder runs in a narrower dtype and the norms overflow.
-    states = np.asarray(model.text(ids, keep).data, dtype=np.float64)
-    pooled = (states * keep[..., None]).sum(axis=1) / keep.sum(axis=1, keepdims=True)
-    return pooled / np.linalg.norm(pooled, axis=-1, keepdims=True)
 
 
 def main():

@@ -30,8 +30,8 @@ def imported_root_modules(path):
 
 def python_files():
     return sorted(PROJECT_ROOT.glob("selfagent/**/*.py")) + sorted(
-        PROJECT_ROOT.glob("scripts/**/*.py")
-    )
+        PROJECT_ROOT.glob("backend/**/*.py")
+    ) + sorted(PROJECT_ROOT.glob("scripts/**/*.py"))
 
 
 def test_there_are_source_files_to_check():
@@ -60,7 +60,8 @@ def test_numpy_is_imported_in_one_place_only():
     """Every module goes through backend.xp, so a later cupy swap is a one-line change."""
     importers = [
         path.relative_to(PROJECT_ROOT)
-        for path in PROJECT_ROOT.glob("selfagent/**/*.py")
+        for path in list(PROJECT_ROOT.glob("selfagent/**/*.py"))
+        + list(PROJECT_ROOT.glob("backend/**/*.py"))
         if "numpy" in imported_root_modules(path)
     ]
     assert importers == [Path("selfagent/backend.py")], f"numpy imported directly in {importers}"
