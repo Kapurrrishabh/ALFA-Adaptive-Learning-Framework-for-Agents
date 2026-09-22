@@ -114,7 +114,7 @@ eval gate in C6.
 | B4 | `selfagent/learn/abstain.py`: learned threshold replacing the hand-picked 0.9980 | beats 53.8% correct @ 40% coverage on `unseen`, threshold fit on other rows | **done, gate tied not beaten** — **53.6% @ 39.0%** held out |
 | B5 | `selfagent/learn/rank.py`: generate k candidates, rank with frozen weights using the calibrator | exact match on `unseen` beats single-sample 31.0% | **done, gate failed** — no picker beats it; 8 samples give **1.77 distinct answers** |
 | B6 | `scripts/learning_curve.py`: accuracy against number of feedback rows, adaptation on vs off | two curves; the gap is the thesis, and if there is no gap say so | **done, gate passes** — the learned cut misses its stated bar by **8.5 pts** against **16.7** hand-picked and **29.2** unabstained |
-| B7 | `scripts/chat.py`: one conversation turn at a time — ask, answer, label, adapt, show what moved | a scripted session of 20 turns runs end to end and the store grows by 20 | open |
+| B7 | `scripts/chat.py`: one conversation turn at a time — ask, answer, label, adapt, show what moved | a scripted session of 20 turns runs end to end and the store grows by 20 | **done, gate passes** — 20 turns, log **0 → 20**, cut moved 0.99800 → **0.99962** at turn 10 |
 | B8 | Write stage B into `learnme.md` and `PLAN_OF_ACTION.md` — B2's agreement, B3's AUC, B4's curve, B5's failed gate. Neither doc mentions the learning loop's results yet, and it is the thesis | both files quote the same numbers as this file, and a reader can answer "did the loop work" from `learnme.md` alone | open |
 
 **B2 measured**, on 200 `unseen` rows from `advisory_frozen.npz` (198 distinct question/answer pairs;
@@ -247,6 +247,27 @@ less than the binomial noise of the scored set predicts, so the ~7 points still 
 **transfer error from the fitting rows**, not noise in the scoring rows. That is precisely what more
 feedback buys, and 118 rows is not enough of it — the honest next step for this curve is a longer log from
 B7's chat loop rather than a cleverer fit.
+
+**B7 measured, and the gate passes.** `scripts/chat.py`. Twenty turns ran end to end, the log grew 0 → 20,
+and the cut it serves with moved **0.99800 → 0.99962 at turn 10**, which is the `--warmup` boundary: before
+it the loop serves the hand-picked value and says so, because a threshold solved from three rows is a
+coincidence and serving one while calling it learned is the one thing this loop must not do. On this
+session it spoke on 8 of 20 and was right on 2 of those (25.0%) against 10.0% for answering everything —
+the right direction, but 20 turns is far too few rows to read as a result, and the 10.0% is an unlucky
+prefix against the 28-31% this split gives at 200 rows.
+
+What the loop shows per turn is the honest scope of the claim: **what adapts is when the agent speaks, not
+what it says.** The wording comes from frozen weights, and B5 measured that resampling them gives nothing
+to choose between; the judgement about whether the wording is worth saying comes from the log. The line
+`expects 29% on 35%` is `Abstainer.fit` reporting that it could not reach the 60% bar and taking the most
+precise cut the coverage floor allows instead — the shortfall stated rather than hidden, which is the same
+behaviour B6 decomposed at the 80% bar.
+
+Two limits are deliberate and written into the script. The questions come from the dataset rather than
+from a person, because a typed question arrives with no evidence and choosing its passages is C2's
+retriever and C1's context assembler — guessing at it here would leave two rules for assembling context.
+And the session writes to `artifacts/chat.sqlite`, not the `feedback.sqlite` that B2 through B6 were
+measured on, so replaying a session cannot move a published number.
 
 ## Stage C — the architecture in the diagram
 

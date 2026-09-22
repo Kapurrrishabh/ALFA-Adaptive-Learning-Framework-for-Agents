@@ -40,7 +40,7 @@ model. Where that costs us fluency, we pay it and say so.
 | 5 — price advisory, both heads | **Both built and compared.** Direction is unpredictable here; volatility loses to persistence |
 | 6–9 | Not started |
 
-309 tests pass (`python3 -m pytest tests/ dataforge/ -q`). Gates closed: S1, S2, S3, S11, S15. **S14
+312 tests pass (`python3 -m pytest tests/ dataforge/ -q`). Gates closed: S1, S2, S3, S11, S15. **S14
 closes on trained phrasings only.** Re-measured on the current model over 200 generated answers: 1.7%
 unsupported figures on validation, under the 2% gate and down from 10.5% on the previous model — but
 4.7% on phrasings training never saw. The gate is met where the wording is familiar and missed where it

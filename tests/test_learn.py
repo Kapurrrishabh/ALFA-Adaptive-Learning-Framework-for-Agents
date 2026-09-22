@@ -359,6 +359,26 @@ def test_the_learning_curve_never_scores_a_cut_on_a_row_it_was_fitted_on():
         draw(20, 20, 0)
 
 
+def test_the_chat_loop_keeps_the_hand_picked_cut_until_the_log_can_teach_one(tmp_path):
+    """Two ways a session dies or lies on its first turns. Too few rows, and the cut it serves is three
+    rows' worth of coincidence dressed as a learned threshold. All rows wrong — normal early, the model
+    is right 31% of the time — and `Calibrator.fit` raises, which would end the conversation mid-turn."""
+    from chat import adapt
+
+    with log(tmp_path) as feedback:
+        for index in range(12):
+            feedback.append(TURN["asked_at"], f"q{index}", TURN["evidence"], TURN["answer"],
+                            0.9 + index / 1000, False, ORACLE)
+            abstainer, calibrator, learned = adapt(feedback, 0.6, warmup=10)
+            assert not learned and calibrator is None
+            assert abstainer.cut == pytest.approx(0.9980)
+
+        feedback.append(TURN["asked_at"], "right", TURN["evidence"], TURN["answer"], 0.999, True, ORACLE)
+        abstainer, calibrator, learned = adapt(feedback, 0.6, warmup=10)
+        assert learned and calibrator is not None
+        assert abstainer.cut != pytest.approx(0.9980)
+
+
 def test_a_cut_that_swings_either_side_of_the_bar_is_not_reported_as_hitting_it():
     """40% on one seed and 80% on the next averages to the bar exactly, which would claim a threshold
     delivers what it was asked for when it never once did."""

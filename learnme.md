@@ -484,7 +484,7 @@ that matrix is *also* the decoder's output layer, so freezing it by name would s
 to write at all. This tests the probe's other finding: that task training is what *destroys* the
 encoder's handling of unseen shapes (28/41 → 13/41).
 
-**309 tests pass** (`tests/` and `dataforge/` together).
+**312 tests pass** (`tests/` and `dataforge/` together).
 
 ### 5.8 Scoring both models on the real human Q&A data
 
@@ -759,7 +759,7 @@ templated, so most positions are boilerplate a model can predict without reading
 handful of digit positions that actually need the evidence are lost in the average. Generate-and-check
 is the number that decides whether the system works.
 
-### `tests/` — 309 passing
+### `tests/` — 312 passing
 
 - **`test_gradcheck.py`** — every operation's analytic gradient against a numerical finite-difference
   gradient. **The most important tests in the repo**: a wrong derivative still trains to a plausible
@@ -870,7 +870,7 @@ module's docstring.
 | Evidence-swap penalty, early vs late | +1.69 → **+2.60** — grounding grows as loss rises |
 | Both fixes stacked, unseen | loss **0.2496**, unsupported **2.4%**, exact match 36.0% |
 | Same arm, checkpoint picked on loss | 77.0% / 30.5% — **the finding replicates** |
-| Tests | 309 passing |
+| Tests | 312 passing |
 
 ---
 
