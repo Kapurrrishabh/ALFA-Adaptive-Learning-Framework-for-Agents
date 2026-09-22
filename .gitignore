@@ -1,6 +1,8 @@
 # Collected corpus and prices: 8.1 GB, and every file is reproducible with dataforge/collect.py.
 # The manifest records each source URL and licence, so provenance survives without the bytes.
-data/
+# Anchored: an unanchored `data/` also matches selfagent/data/, and silently left the whole dataset
+# package out of the repository.
+/data/
 
 # Tokenised datasets and model checkpoints: 920 MB, rebuilt by scripts/prepare_*.py and train_*.py.
 artifacts/*
