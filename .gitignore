@@ -3,9 +3,14 @@
 data/
 
 # Tokenised datasets and model checkpoints: 920 MB, rebuilt by scripts/prepare_*.py and train_*.py.
-artifacts/
+artifacts/*
+
+# The exception: no script can rebuild a judgement. These are the agent's verdicts, and without them
+# the learning curve is not reproducible from a clone. scripts/label_feedback.py --tell replays them.
+!artifacts/verdicts_given.jsonl
 
 __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
+reference/

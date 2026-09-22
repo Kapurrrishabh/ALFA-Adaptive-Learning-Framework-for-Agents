@@ -38,9 +38,8 @@ from selfagent.tokenizer.vocab import CLS_ID, PAD_ID, SEP_ID  # noqa: E402
 from selfagent.tokenizer.wordpiece import WordPiece  # noqa: E402
 from train_generator import load_split  # noqa: E402
 
-# A refusal is recognised by its opening words rather than exact equality, so a model that refuses and
-# then keeps talking still counts as having refused. Words only: decoding respaces the punctuation.
-_REFUSAL_OPENING = " ".join(advisory.UNSUPPORTED.split()[:7])
+def _refuses(text):
+    return guardrails.is_refusal(text, advisory.UNSUPPORTED)
 
 
 def repeated_fraction(text, size=4):
@@ -99,6 +98,47 @@ def report_confidence(sure, right, threshold):
               f"(answering everything: {right.mean():.1%})")
 
 
+def load_model(artifacts, dataset, checkpoint=""):
+    """The tokenizer and the model for a dataset, in eval mode."""
+    tokenizer = WordPiece.load(artifacts / "tokenizer.json")
+    config, weights = pretrained.load(artifacts / (checkpoint or f"{dataset}.npz"))
+    model = GroundedGenerator(config)
+    model.load_state_dict(weights)
+    model.eval()
+    return tokenizer, model, config
+
+
+def answer_rows(model, tokenizer, split, chosen, rng, greedy=False, batch_size=8):
+    """(question, evidence, gold, produced, confidence) for each chosen row.
+
+    Shared with the labelling loop rather than copied: a judge has to see the same answers the scorer
+    saw, and regenerating them under a different sampler would have the two sets of numbers describing
+    two different models.
+    """
+    source, keep, target = split
+    starts = evidence_starts(source[chosen])
+    temperature = 0.0 if greedy else ANSWER_TEMPERATURE
+    top_p = 1.0 if greedy else ANSWER_TOP_P
+
+    scored = []
+    for start in range(0, len(chosen), batch_size):
+        rows = chosen[start : start + batch_size]
+        produced = model.generate(source[rows], keep[rows], temperature, top_p, rng)
+        sure = self_confidence(model, source[rows], keep[rows], produced, target.shape[1])
+        for offset, ids in enumerate(produced):
+            row = rows[offset]
+            whole = source[row, 0]
+            cut = starts[start + offset, 0]
+            question = tokenizer.decode([i for i in whole[:cut] if i != PAD_ID])
+            evidence = tokenizer.decode([i for i in whole[cut:] if i != PAD_ID])
+            # The markers come off so the gold answer is comparable to the produced one, which
+            # generate() already strips. They never appear inside an answer, so dropping them is safe.
+            wanted = tokenizer.decode([i for i in target[row] if i not in (PAD_ID, CLS_ID, SEP_ID)])
+            answer = tokenizer.decode(list(ids))
+            scored.append((question, evidence, wanted, answer, float(sure[offset])))
+    return scored
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifacts", default="artifacts")
@@ -115,43 +155,19 @@ def main():
     args = parser.parse_args()
 
     artifacts = Path(args.artifacts)
-    tokenizer = WordPiece.load(artifacts / "tokenizer.json")
-    config, weights = pretrained.load(artifacts / (args.checkpoint or f"{args.dataset}.npz"))
-    model = GroundedGenerator(config)
-    model.load_state_dict(weights)
-    model.eval()
-
-    source, keep, target = load_split(artifacts, args.dataset, args.split)
+    tokenizer, model, config = load_model(artifacts, args.dataset, args.checkpoint)
+    split = load_split(artifacts, args.dataset, args.split)
     rng = np.random.default_rng(config.seed)
-    chosen = rng.permutation(len(source))[: args.rows]
-    starts = evidence_starts(source[chosen])
-    temperature = 0.0 if args.greedy else ANSWER_TEMPERATURE
-    top_p = 1.0 if args.greedy else ANSWER_TOP_P
+    chosen = rng.permutation(len(split[0]))[: args.rows]
+    scored = answer_rows(model, tokenizer, split, chosen, rng, args.greedy, args.batch_size)
 
-    scored = []
-    for start in range(0, len(chosen), args.batch_size):
-        rows = chosen[start : start + args.batch_size]
-        produced = model.generate(source[rows], keep[rows], temperature, top_p, rng)
-        sure = self_confidence(model, source[rows], keep[rows], produced, target.shape[1])
-        for offset, ids in enumerate(produced):
-            row = rows[offset]
-            whole = source[row, 0]
-            cut = starts[start + offset, 0]
-            question = tokenizer.decode([i for i in whole[:cut] if i != PAD_ID])
-            evidence = tokenizer.decode([i for i in whole[cut:] if i != PAD_ID])
-            # The markers come off so the gold answer is comparable to the produced one, which
-            # generate() already strips. They never appear inside an answer, so dropping them is safe.
-            wanted = tokenizer.decode([i for i in target[row] if i not in (PAD_ID, CLS_ID, SEP_ID)])
-            answer = tokenizer.decode(list(ids))
-            scored.append((question, evidence, wanted, answer, float(sure[offset])))
-
-    refusals = [row for row in scored if _REFUSAL_OPENING in row[2]]
-    answerable = [row for row in scored if _REFUSAL_OPENING not in row[2]]
+    refusals = [row for row in scored if _refuses(row[2])]
+    answerable = [row for row in scored if not _refuses(row[2])]
     unsupported = [guardrails.unsupported_figures(a, e) for _, e, _, a, _ in answerable]
     stated = sum(len(guardrails.figures(a)) for _, _, _, a, _ in answerable)
     missing = sum(len(u) for u in unsupported)
-    refused = sum(_REFUSAL_OPENING in a for _, _, _, a, _ in refusals)
-    wrongly_refused = sum(_REFUSAL_OPENING in a for _, _, _, a, _ in answerable)
+    refused = sum(_refuses(a) for _, _, _, a, _ in refusals)
+    wrongly_refused = sum(_refuses(a) for _, _, _, a, _ in answerable)
 
     right = [w.split() == a.split() for _, _, w, a, _ in scored]
     matched = sum(right)

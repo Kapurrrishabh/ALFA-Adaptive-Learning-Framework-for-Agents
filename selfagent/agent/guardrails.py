@@ -32,6 +32,15 @@ def _states(evidence, figure):
     return re.search(rf"(?<![\d.]){re.escape(figure)}(?![\d.])", evidence) is not None
 
 
+def is_refusal(text, refusal):
+    """Opening words rather than equality, so a model that refuses and then keeps talking still counts.
+
+    Shared because a scorer and a labeller that disagreed about what a refusal is would produce an
+    abstention rate and a feedback label that cannot be compared.
+    """
+    return " ".join(refusal.split()[:7]) in text
+
+
 def screen(answer, evidence, refusal):
     """(text to serve, unsupported figures). The refusal is returned whenever the list is non-empty.
 

@@ -1,0 +1,198 @@
+{"key": "616d43b743e2e000", "is_right": false, "why": "false refusal: the returns it asks about are in the evidence"}
+{"key": "9a398fb7d6bc48bc", "is_right": false, "why": "answered volatility to an overbought question"}
+{"key": "d4736f99a235e22b", "is_right": true, "why": "volatility asked, volatility given, every figure in evidence"}
+{"key": "771e39becdcd830b", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "c5d6c5961b6634e9", "is_right": true, "why": "drawdown answers whether the run was painful"}
+{"key": "1c15dfa45c94235e", "is_right": false, "why": "answered next week's outlook to a question about the past"}
+{"key": "1610658731079992", "is_right": true, "why": "declines to call direction, quotes only evidence, disclaims advice"}
+{"key": "3c0381b346dc008d", "is_right": false, "why": "false refusal: volatility is in the evidence"}
+{"key": "69577653052a6857", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "22b1731cf29d4a63", "is_right": false, "why": "answered drawdown to an outlook question"}
+{"key": "7e9eb2a4894957d5", "is_right": false, "why": "answered a buy question nobody asked"}
+{"key": "d33c94484b9de782", "is_right": false, "why": "answered next week's outlook to a question about the past"}
+{"key": "b67f1344743bdf78", "is_right": false, "why": "false refusal: rsi is in the evidence"}
+{"key": "d527826e9beab2c0", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "8eb942a9cf90c0f1", "is_right": false, "why": "answered drawdown to an outlook question"}
+{"key": "e29e5a5d110f66ca", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "504259b1797b7e19", "is_right": false, "why": "answered volatility to an overbought question"}
+{"key": "5dc4690cb97ea3b9", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "57a0ef0ae41e78b2", "is_right": false, "why": "false refusal: volatility is in the evidence"}
+{"key": "7682aba4c046b737", "is_right": true, "why": "drawdown answers whether the run was torrid"}
+{"key": "a8d46d2029b5043a", "is_right": false, "why": "invented 242804.00 for a close of 24280.00, and wrong intent besides"}
+{"key": "3c03715d4ae3fd87", "is_right": true, "why": "free cash flow is genuinely absent, so refusing is right"}
+{"key": "f4a37841e19cf274", "is_right": true, "why": "rsi 48 reported correctly for an overbought question"}
+{"key": "165b786d17e0edec", "is_right": true, "why": "rsi 66 reported correctly"}
+{"key": "6446f2d7139a279f", "is_right": false, "why": "invented 592.15 for a close of 5922.15"}
+{"key": "f6d63250ea9f7c6a", "is_right": true, "why": "dividend yield absent, refusing is right"}
+{"key": "62de4ac7d01a07e0", "is_right": false, "why": "false refusal: volatility is in the evidence"}
+{"key": "ea449feaaf87071b", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "9e776fd06ebce62b", "is_right": true, "why": "market cap absent, refusing is right"}
+{"key": "7b371e94f019650f", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "25b88c6270463ea5", "is_right": true, "why": "book value absent, refusing is right"}
+{"key": "d8568d9f45ea6197", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "d5d545a07fb072be", "is_right": false, "why": "answered a buy question to an overbought question"}
+{"key": "ec56a99633dbb767", "is_right": false, "why": "free cash flow is absent and it answered anyway, with the outlook"}
+{"key": "43276c24794d2912", "is_right": true, "why": "drawdown answers whether it has been bad"}
+{"key": "f99bfe8fba068209", "is_right": true, "why": "drawdown answers whether the run was torrid"}
+{"key": "0ebcaddfb20e7587", "is_right": true, "why": "returns and position against both averages, all correct"}
+{"key": "10d13290858272cc", "is_right": false, "why": "answered past performance to an outlook question"}
+{"key": "5e0bb61a16d8f8e1", "is_right": false, "why": "false refusal: volatility is in the evidence"}
+{"key": "2a84831c3e670cb0", "is_right": false, "why": "false refusal: rsi is in the evidence"}
+{"key": "734f5fa4de684c7d", "is_right": false, "why": "answered drawdown to an outlook question"}
+{"key": "8a36ad5d7b6d0947", "is_right": false, "why": "answered a buy question to an outlook question"}
+{"key": "f1d593f12b324a14", "is_right": false, "why": "answered the outlook to a past question, and calls volatility a run"}
+{"key": "ca08c7d5c7ef47ae", "is_right": false, "why": "invented 263444.00 for a close of 2634.00"}
+{"key": "3ecc64ecb210ee80", "is_right": true, "why": "drawdown answers whether it has been bad"}
+{"key": "e1cb074b008b8777", "is_right": false, "why": "answered a buy question to an overbought question"}
+{"key": "806607c80580e0c0", "is_right": false, "why": "answered the outlook to a question about the past"}
+{"key": "ea80fb54cb1d9b69", "is_right": false, "why": "answered past performance to an outlook question"}
+{"key": "e8b1ec8c356a8f39", "is_right": false, "why": "answered drawdown to an outlook question"}
+{"key": "0d75ab3f7e34d39b", "is_right": false, "why": "answered a buy question to an outlook question"}
+{"key": "f8f7c44dc637c075", "is_right": true, "why": "rsi 61 reported correctly"}
+{"key": "f918414ad54d0aec", "is_right": true, "why": "volatility asked and given, figures in evidence"}
+{"key": "221f9bc42fa6ea12", "is_right": true, "why": "revenue growth absent, refusing is right"}
+{"key": "9e237ea911729196", "is_right": true, "why": "drawdown answers whether it has been bad"}
+{"key": "eeec13c42e259dd6", "is_right": false, "why": "invented 1022222.61 for a close of 1022.61"}
+{"key": "2267a578017ed1c8", "is_right": false, "why": "answered a buy question to an outlook question"}
+{"key": "3ede6e8c3404ac27", "is_right": true, "why": "free cash flow absent, refusing is right"}
+{"key": "2b82be8bc67c6a20", "is_right": true, "why": "drawdown answers whether it was painful"}
+{"key": "3aa6dcb223208416", "is_right": true, "why": "rsi 52 reported correctly"}
+{"key": "08adc9434ec78bb5", "is_right": false, "why": "answered the outlook to a question about the past"}
+{"key": "5812a890f89ed19f", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "fb80aa7127fdf597", "is_right": true, "why": "free cash flow absent, refusing is right"}
+{"key": "a0f9c21bf349ab18", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "5aa2a7dec9410779", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "70f429f867888e29", "is_right": false, "why": "answered a buy question to an outlook question"}
+{"key": "e198093b19d75cfb", "is_right": false, "why": "broken opening 'i 20 day move', and performance for an outlook question"}
+{"key": "b96ad68b069b103d", "is_right": true, "why": "market cap absent, refusing is right"}
+{"key": "e944262bb19a7d4e", "is_right": false, "why": "answered a buy question to an overbought question"}
+{"key": "b193ff57a873b418", "is_right": true, "why": "debt load absent, refusing is right"}
+{"key": "238a56d41baf2e1b", "is_right": false, "why": "answered past performance to an outlook question"}
+{"key": "10a83308273df75c", "is_right": false, "why": "false refusal: rsi is in the evidence"}
+{"key": "bdf86073a7a3bd77", "is_right": false, "why": "answered a buy question to a volatility question"}
+{"key": "5b3d1a14d526256a", "is_right": true, "why": "drawdown answers whether it has been bad"}
+{"key": "4a891256bad9fbaa", "is_right": true, "why": "volatility asked and given"}
+{"key": "98e236bd6ed3b9d8", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "d99b408e9b045a38", "is_right": true, "why": "drawdown answers whether the stretch was torrid"}
+{"key": "4b54d3f0cbe9113e", "is_right": true, "why": "rsi 39 reported correctly"}
+{"key": "1bbbf75c6bdcf6ea", "is_right": false, "why": "answered a buy question to an overbought question"}
+{"key": "ff043be7282f5053", "is_right": false, "why": "answered a buy question to a volatility question"}
+{"key": "714c9b1fa5a6eace", "is_right": true, "why": "volatility asked and given"}
+{"key": "805de104e3d4db89", "is_right": true, "why": "debt load absent, refusing is right"}
+{"key": "f31c352ca48d830a", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "28ea23ba9059a2a6", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "2c483b23f0016867", "is_right": true, "why": "drawdown answers whether the stretch was torrid"}
+{"key": "8bbb66c4da781d15", "is_right": true, "why": "rsi 44 reported correctly"}
+{"key": "87b24d2cc137856a", "is_right": false, "why": "answered a buy question to an overbought question"}
+{"key": "8122c6a0e66b3798", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "b00fa130414e8baa", "is_right": true, "why": "drawdown answers whether it was painful"}
+{"key": "9cabcb327af67e2a", "is_right": false, "why": "answered volatility to an overbought question, rsi 70 left unused"}
+{"key": "436efaeec3749c8f", "is_right": false, "why": "answered the outlook to a past question, and calls volatility a run"}
+{"key": "cc8f4054aa36458c", "is_right": false, "why": "answered past performance to a volatility question"}
+{"key": "d08919c54842cc85", "is_right": true, "why": "free cash flow absent, refusing is right"}
+{"key": "69a0c0dad0e6c099", "is_right": true, "why": "market cap absent, refusing is right"}
+{"key": "78f2871fafb279c2", "is_right": true, "why": "price target absent, refusing is right"}
+{"key": "51b0d39be3e2b6f8", "is_right": false, "why": "says between the averages when 166.63 is below both"}
+{"key": "1b1e7155210788b4", "is_right": false, "why": "false refusal: rsi is in the evidence"}
+{"key": "c26cab82dc1c0bf4", "is_right": true, "why": "market cap absent, refusing is right"}
+{"key": "fcf077a67fb9eba8", "is_right": false, "why": "answered past performance to a volatility question"}
+{"key": "d864e09e4a6c7545", "is_right": false, "why": "answered past performance to a volatility question"}
+{"key": "570de2f94e50e5ae", "is_right": false, "why": "answered past performance to a volatility question"}
+{"key": "29fffdadb19dedec", "is_right": true, "why": "free cash flow absent, refusing is right"}
+{"key": "5f99d8e67b3b697e", "is_right": true, "why": "drawdown answers whether the run was torrid"}
+{"key": "f287219666c9d732", "is_right": false, "why": "answered past performance to an outlook question"}
+{"key": "a2b4b0262011ae2b", "is_right": true, "why": "returns and below both averages, both correct"}
+{"key": "51ae9ee9f123ea2d", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "03142c1cb12922bf", "is_right": true, "why": "rsi 54 reported correctly"}
+{"key": "be56de6d6dcb1802", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "9412377c549b1f6e", "is_right": false, "why": "answered drawdown to an outlook question"}
+{"key": "0faeb9a5c3b8ebd3", "is_right": true, "why": "rsi 73 correctly called overbought"}
+{"key": "77913c7962df559f", "is_right": false, "why": "answered drawdown to an outlook question"}
+{"key": "6deaca60ed7749de", "is_right": true, "why": "price to earnings absent, refusing is right"}
+{"key": "f09b98e77ef480da", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "8c9957b435cadd2e", "is_right": true, "why": "drawdown answers whether it was painful"}
+{"key": "121a24eba169ee29", "is_right": true, "why": "drawdown answers whether the stretch was torrid"}
+{"key": "306931e35581721b", "is_right": false, "why": "answered past performance to an overbought question"}
+{"key": "4de6660172b1ad73", "is_right": true, "why": "drawdown answers whether it has been bad"}
+{"key": "250069d6eaed116f", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "915f9bddc462ea9a", "is_right": false, "why": "answered past performance to a volatility question"}
+{"key": "8464dc74f931ad19", "is_right": false, "why": "false refusal: rsi is in the evidence"}
+{"key": "64aca90ecb703e5a", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "0be48115d31491a8", "is_right": true, "why": "volatility asked and given"}
+{"key": "d9e2181601c240fd", "is_right": true, "why": "price to earnings absent, refusing is right"}
+{"key": "9b585ce63f50b319", "is_right": false, "why": "says above both averages when 1545.85 is below the 50 day 1548.10"}
+{"key": "530c844dd3012d0d", "is_right": false, "why": "says between the averages when 1721.00 is above both"}
+{"key": "c5f00821abe49170", "is_right": false, "why": "answered the outlook to a question about the past"}
+{"key": "c09e49370ef93790", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "56945fa84eba5390", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "6bfe564c97c50bc7", "is_right": true, "why": "rsi 33 is neither overbought nor oversold, reported correctly"}
+{"key": "2529cec6e11a9bcc", "is_right": true, "why": "revenue growth absent, refusing is right"}
+{"key": "8faa0afde4ccc0e1", "is_right": true, "why": "market cap absent, refusing is right"}
+{"key": "afafdbc3f6e21767", "is_right": true, "why": "free cash flow absent, refusing is right"}
+{"key": "bffec4f2ae650314", "is_right": true, "why": "drawdown answers whether it has been bad"}
+{"key": "177dd873a6125d87", "is_right": false, "why": "answered a buy question to an outlook question"}
+{"key": "7ccf64777ccf87d0", "is_right": true, "why": "volatility asked and given"}
+{"key": "b30d4157db752da2", "is_right": false, "why": "answered volatility to an overbought question"}
+{"key": "992db0d8a341fd00", "is_right": true, "why": "free cash flow absent, refusing is right"}
+{"key": "776d87fab3cccac8", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "653846c5ffeebd3e", "is_right": true, "why": "volatility asked and given"}
+{"key": "283ddcb617e19795", "is_right": false, "why": "says below both averages when 76.53 is above the 50 day 75.90"}
+{"key": "f49a8db4e8e815bd", "is_right": true, "why": "returns and between the averages, both correct"}
+{"key": "ba6bf4df49c81507", "is_right": false, "why": "answered a buy question to an overbought question"}
+{"key": "304ddb396564efc7", "is_right": false, "why": "false refusal: volatility is in the evidence"}
+{"key": "c39aad665dcb839d", "is_right": true, "why": "outlook asked and the outlook given, with its confidence"}
+{"key": "50f5e2a3f6af60e8", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "297c61160f2c0e84", "is_right": false, "why": "answered past performance to an outlook question"}
+{"key": "e0c48d84eeea0bcc", "is_right": false, "why": "answered the outlook to a question about the past"}
+{"key": "d7005ca0b1419203", "is_right": true, "why": "free cash flow absent, refusing is right"}
+{"key": "6ca8fcf946b882cc", "is_right": true, "why": "market cap absent, refusing is right"}
+{"key": "caa69673670e0fa8", "is_right": false, "why": "answered past performance to a volatility question"}
+{"key": "44429282b040525c", "is_right": true, "why": "drawdown answers whether it was painful"}
+{"key": "0aa90c11a5e9ee27", "is_right": true, "why": "drawdown answers whether it was painful"}
+{"key": "4e5388f4048e022f", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "17fea8c0d9b0239c", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "98e61ba1769f2d1a", "is_right": true, "why": "returns and below both averages, both correct"}
+{"key": "71d04db7b584ce5c", "is_right": true, "why": "drawdown answers whether it has been bad"}
+{"key": "d745fe9d336859f1", "is_right": true, "why": "rsi 46 reported correctly"}
+{"key": "60ea4524d84d84fb", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "13ccd1abb9a43d6e", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "f64751483840e5f8", "is_right": true, "why": "debt load absent, refusing is right"}
+{"key": "d312b452d453fcd2", "is_right": true, "why": "returns and between the averages, both correct"}
+{"key": "2388f5db4776dd61", "is_right": false, "why": "answered a buy question to an outlook question"}
+{"key": "0aaa832cbd2c9818", "is_right": true, "why": "returns and below both averages, both correct"}
+{"key": "bf0d447f4e518b45", "is_right": true, "why": "rsi 54 reported correctly"}
+{"key": "6f9e771cbf1e4cdd", "is_right": true, "why": "book value absent, refusing is right"}
+{"key": "820b016d62023cef", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "da64bf79dcc35063", "is_right": false, "why": "false refusal: volatility is in the evidence"}
+{"key": "247b37015f6e0384", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "b1c8a0fcbd51cdd1", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "8e09677d7cc9efff", "is_right": false, "why": "answered past performance to an outlook question"}
+{"key": "393835024c74cb15", "is_right": false, "why": "answered a buy question to a volatility question"}
+{"key": "2b1d735a465bc25c", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "7a7099fbf72e383a", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "be81ff6b5d7399e9", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "c7755fe03d5e1652", "is_right": false, "why": "answered a buy question to an outlook question"}
+{"key": "f188220fe8bba889", "is_right": false, "why": "free cash flow is absent and it answered anyway, with the outlook"}
+{"key": "719e117db8d0b400", "is_right": true, "why": "drawdown answers whether the stretch was torrid"}
+{"key": "d0bf3267cfd3904a", "is_right": true, "why": "revenue growth absent, refusing is right"}
+{"key": "511462e75768766d", "is_right": false, "why": "answered past performance to an outlook question"}
+{"key": "081c939f42ba78cd", "is_right": true, "why": "volatility asked and given"}
+{"key": "e5c7cb583e764f7c", "is_right": true, "why": "returns and below both averages, both correct"}
+{"key": "863000b919c771ab", "is_right": true, "why": "returns and above both averages, both correct"}
+{"key": "295f63950129df2b", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "0e1251b1eb39cca6", "is_right": true, "why": "outlook asked and the outlook given, with its confidence"}
+{"key": "511bed64d9145d04", "is_right": true, "why": "rsi 45 reported correctly"}
+{"key": "270d49cfdf584250", "is_right": true, "why": "drawdown answers whether it was painful"}
+{"key": "1c96387eb1939f34", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "5dc9555eef9aeb1b", "is_right": true, "why": "drawdown answers whether the run was torrid"}
+{"key": "c245f276827bcbd1", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "e75327e07fbb61a2", "is_right": false, "why": "answered a buy question to an overbought question, rsi 73 left unused"}
+{"key": "559f2a57a35a25b8", "is_right": true, "why": "declines direction, grounded, disclaimed"}
+{"key": "c65b02128eb1d914", "is_right": false, "why": "false refusal: the returns are in the evidence"}
+{"key": "cba0219b4d4b780c", "is_right": false, "why": "answered a buy question to an overbought question"}
+{"key": "6bfc0ba287b9b2df", "is_right": true, "why": "debt load absent, refusing is right"}
+{"key": "d07f1f74303ac763", "is_right": false, "why": "answered past performance to an overbought question"}
+{"key": "61f8facd1944985d", "is_right": false, "why": "false refusal: volatility is in the evidence"}
+{"key": "fc631fcfc90f9bb5", "is_right": true, "why": "book value absent, refusing is right"}
+{"key": "57bea71840d80558", "is_right": true, "why": "volatility asked and given"}
+{"key": "c0181d12cfd0b970", "is_right": false, "why": "answered the outlook to a question about the past"}
