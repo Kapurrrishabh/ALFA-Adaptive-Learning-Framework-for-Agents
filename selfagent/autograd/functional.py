@@ -23,7 +23,10 @@ def sigmoid(tensor):
 def softmax(tensor, axis=-1):
     tensor = ops.as_tensor(tensor)
     shifted = tensor.data - tensor.data.max(axis=axis, keepdims=True)
-    exponentiated = xp.exp(shifted)
+    # A masked position is shifted to a large negative, so underflowing to zero is the intended result.
+    # Left unsilenced the flag surfaces on whatever op numpy checks next, blaming the wrong line.
+    with xp.errstate(under="ignore"):
+        exponentiated = xp.exp(shifted)
     out = exponentiated / exponentiated.sum(axis=axis, keepdims=True)
     return ops.result(
         out,
