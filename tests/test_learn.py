@@ -344,3 +344,30 @@ def test_ranking_nothing_is_refused_rather_than_answered():
         rank([], TURN["evidence"], [], REFUSAL)
     with pytest.raises(ValueError, match="against"):
         rank([GROUNDED_ANSWER], TURN["evidence"], [0.9, 0.9], REFUSAL)
+
+
+def test_the_learning_curve_never_scores_a_cut_on_a_row_it_was_fitted_on():
+    """The one bug that would produce a beautiful curve and mean nothing. Leakage here is invisible in the
+    output — it just makes every size look well fitted — so it is pinned rather than reviewed."""
+    from learning_curve import draw
+
+    for seed in range(8):
+        scored, pool = draw(50, 20, seed)
+        assert len(scored) == 20 and len(pool) == 30
+        assert not set(scored.tolist()) & set(pool.tolist())
+    with pytest.raises(ValueError, match="nothing would be left"):
+        draw(20, 20, 0)
+
+
+def test_a_cut_that_swings_either_side_of_the_bar_is_not_reported_as_hitting_it():
+    """40% on one seed and 80% on the next averages to the bar exactly, which would claim a threshold
+    delivers what it was asked for when it never once did."""
+    from learning_curve import average
+
+    precision, _, miss, kept = average([(0.4, 0.5), (0.8, 0.5)], 0.6)
+    assert precision == pytest.approx(0.6)
+    assert miss == pytest.approx(20.0)
+    # A seed where the cut answered nothing has no precision, and counting it as zero would report a
+    # silent cut as a wrong one.
+    assert average([(0.6, 0.5), (float("nan"), 0.0)], 0.6)[3] == 1
+    assert average([(float("nan"), 0.0)], 0.6)[1] == 0.0

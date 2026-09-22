@@ -113,7 +113,7 @@ eval gate in C6.
 | B3 | `selfagent/learn/calibrate.py`: map self-confidence to the probability the answer is right, fit on the feedback log | calibration error beats the raw confidence's on a held-out slice | **done** — 0.683 → **0.121** oracle, 0.475 → **0.144** agent |
 | B4 | `selfagent/learn/abstain.py`: learned threshold replacing the hand-picked 0.9980 | beats 53.8% correct @ 40% coverage on `unseen`, threshold fit on other rows | **done, gate tied not beaten** — **53.6% @ 39.0%** held out |
 | B5 | `selfagent/learn/rank.py`: generate k candidates, rank with frozen weights using the calibrator | exact match on `unseen` beats single-sample 31.0% | **done, gate failed** — no picker beats it; 8 samples give **1.77 distinct answers** |
-| B6 | `scripts/learning_curve.py`: accuracy against number of feedback rows, adaptation on vs off | two curves; the gap is the thesis, and if there is no gap say so | open |
+| B6 | `scripts/learning_curve.py`: accuracy against number of feedback rows, adaptation on vs off | two curves; the gap is the thesis, and if there is no gap say so | **done, gate passes** — the learned cut misses its stated bar by **8.5 pts** against **16.7** hand-picked and **29.2** unabstained |
 | B7 | `scripts/chat.py`: one conversation turn at a time — ask, answer, label, adapt, show what moved | a scripted session of 20 turns runs end to end and the store grows by 20 | open |
 | B8 | Write stage B into `learnme.md` and `PLAN_OF_ACTION.md` — B2's agreement, B3's AUC, B4's curve, B5's failed gate. Neither doc mentions the learning loop's results yet, and it is the thesis | both files quote the same numbers as this file, and a reader can answer "did the loop work" from `learnme.md` alone | open |
 
@@ -201,6 +201,52 @@ because it also ranks across questions. And **the tiers do help where they fire*
 answers. `rank.py` and its tier order are kept for C1, where the candidates will come from different
 retrieved contexts rather than from resampling one question — real diversity, which is the input this
 measurement says the policy is missing.
+
+**B6 measured, and the gate passes.** `scripts/learning_curve.py`. The adapting thing is B4's abstention
+cut: the agent is told "answer only where you are at least *p* likely to be right" and solves for the
+confidence cut that delivers it from the feedback it has. So the score is not accuracy but the **miss** —
+how far the delivered precision lands from the bar that was promised, on rows the cut was never fitted on.
+A cut fitted on ten rows promises 60% and delivers whatever those ten rows happened to say; the thesis is
+that the promise comes true as the log grows, with no gradient computed anywhere.
+
+| feedback rows | oracle @ 60% | agent @ 80% |
+|---|---|---|
+| 10 | 12.9 pts | 13.3 pts |
+| 20 | 12.0 | 10.4 |
+| 40 | 9.5 | 9.5 |
+| 60 | **8.5** | 9.0 |
+| 80 | 9.3 | 7.7 |
+| 118 | 9.6 | **6.3** |
+| fixed cut 0.9980, no feedback | 16.7 | 10.4 |
+| no abstention at all | 29.2 | 27.2 |
+| fitted on the scored rows (ceiling) | 1.1 | 3.5 |
+
+**The gap is there and it is large.** Both flat controls are beaten at every log size past ten rows: a cut
+placed from 60 rows of feedback misses by 8.5 points where the hand-picked 0.9980 misses by 16.7 and
+answering everything misses by 29.2. Nothing in the transformer changed to earn that — it is one threshold
+solved from outcomes, which is the thesis in its smallest honest form.
+
+**Feedback pays in proportion to how hard the promise is.** At a 60% bar under the oracle the curve falls
+12.9 → 8.5 by 60 rows and then flattens; at an 80% bar under the agent's labels it falls monotonically
+13.3 → 6.3 and is **still falling at 118 rows**, which is the whole log. The flat 60% case is not a null
+result but an easy bar: the agent's own base rate is 52.8%, so answering everything nearly clears 60%
+by accident, and there was little for a threshold to buy. Read the strict column for the thesis and the
+loose one for the reason a learning curve needs a hard task to be visible on.
+
+**And a miss that will not close is not always a failure to learn**, which is the finding worth carrying.
+Ask the oracle's 80% bar and the curve bottoms at 15.0 points — but the ceiling, a cut fitted on the very
+rows it is scored on, *also* misses by 11.7. This model has no confidence region that is right 80% of the
+time at 20% coverage or better, so only 3.3 of those 15.0 points was ever learnable and no quantity of
+feedback would have closed the rest. `Abstainer.fit` taking the most precise cut the coverage floor allows
+and reporting the shortfall through `expected` is what makes that visible instead of a threshold quietly
+promising something it cannot deliver. Every miss in the table is therefore split into the part the bar
+forbids and the part the log has not yet taught.
+
+One check on what the residual is. Scoring on 120 rows instead of 80 moved the plateau by 0.5 points, far
+less than the binomial noise of the scored set predicts, so the ~7 points still open at a 60% bar is
+**transfer error from the fitting rows**, not noise in the scoring rows. That is precisely what more
+feedback buys, and 118 rows is not enough of it — the honest next step for this curve is a longer log from
+B7's chat loop rather than a cleverer fit.
 
 ## Stage C — the architecture in the diagram
 
