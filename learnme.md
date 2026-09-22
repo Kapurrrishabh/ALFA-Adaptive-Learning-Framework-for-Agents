@@ -582,6 +582,131 @@ on 600). So the honest statement is that the faithfulness gain is real and large
 exact-match cost is inside it. Claiming "freezing the encoder costs 3 points of accuracy" from this
 measurement would be reading a number the sample size does not support.
 
+### 5.11 The learning loop — the thesis, and whether it worked
+
+Everything above is about one frozen model. This section is the research question itself: *can the agent
+improve from interaction, outcomes and feedback without retraining the foundation model?* Read it as one
+argument in six steps. **The short answer is yes, on a narrower claim than the question suggests** — the
+agent learns *when to speak*, measurably and from outcomes alone, and it does not learn *what to say*.
+
+**The log — `selfagent/learn/store.py`.** One SQLite table, append-only: question, evidence, answer,
+confidence, verdict, **who judged it**, timestamp. Nothing is ever updated or deleted; a label that turns
+out wrong is superseded by a later row, because the history of what the agent believed is the data the
+thesis is about. Everything else in the loop — calibrator, threshold, ranking — is derived from this file
+and can be thrown away and refitted.
+
+**The judge — `teacher.py`.** There is no financial analyst to ask, so there are two judges. The **oracle**
+compares against the dataset's gold answer: exact, free, and only available on built rows. The **agent** is
+Claude, judging in session, for rows with no gold. Its verdicts are written to a file and replayed, never
+re-asked, because a learning curve that saw different feedback on its second run is not a curve. **A cache
+miss reports "unjudged" and never guesses**: a fabricated label is indistinguishable from a real one once
+it is in the log, and would flatter every number downstream.
+
+The agent is shown the question, the evidence and the answer — and deliberately **not** the gold, because
+judging with the gold in hand reduces to string comparison and agreement would be 100% by construction.
+Blind, the comparison is a measurement: **agreement 156/198 (78.8%)**. The oracle scored 62/200 right
+(31.0%), matching `check_answers.py` exactly — the consistency check that the labeller and the scorer are
+one rule — and the agent scored 103/198 (52.0%). **All 42 disagreements run one way**: the oracle said
+*differs from the gold answer* and the agent said right. There is **not one row** where the oracle said
+right and the agent said wrong. So exact match understates this model by about 21 points, and blind judging
+never once rejected an answer the oracle could verify.
+
+What the agent's 95 wrong rows actually are, which is what set the rest of the queue: **intent misrouting
+dominates** — a buy-advice template answering an overbought question (14), performance answering an outlook
+or volatility question (13), drawdown answering an outlook question (6). Then **30 false refusals**. Then
+two kinds the guardrail cannot see: four wrong *comparative* claims ("above both its 20 and 50 day
+averages" when the price is below one), where every digit is supported, and four digit-duplication
+inventions (`242804.00` for a close of `24280.00`), which it does catch. **A figure guard is not an intent
+guard**, and that is what C1's router exists to fix.
+
+**Calibration — `calibrate.py`.** The model's confidence averages 0.990 on answers that are right 31% of
+the time, so as a probability it is worthless. Platt scaling, two parameters on the log odds, fitted on half
+the log and scored on the other over 25 splits: `p = sigmoid(0.33 × log odds − 3.31)`, and calibration error
+falls **0.683 → 0.121** under the oracle and 0.475 → 0.144 under the agent, on every split.
+
+That looks like a triumph and mostly is not, which is why a **third** predictor was measured: a constant
+that ignores the confidence and just states the base rate. Against it, calibration error is a coin toss
+(12/25) while Brier is a near-sweep (25/25). Read the Brier — calibration error flatters a constant, which
+has no spread inside a bin to be wrong about. **The number that mattered downstream is ranking AUC 0.740
+± 0.039.** The confidence does sort right above wrong, well clear of a coin toss, and because any monotone
+calibration leaves the order untouched, that AUC is a hard **ceiling** on the threshold and the reranker
+that follow.
+
+**The learned threshold — `abstain.py`.** The old abstention cut was a hand-picked 0.9980, a mean token
+probability with no meaning attached: nothing about it states how often an answer above it turns out right,
+which is the only thing a user wants to know. `Abstainer.fit(..., wanted=0.6)` instead takes a stated bar —
+"answer only where you are at least 60% likely to be right" — and solves for the confidence that delivers
+it. Held out, under the oracle: asking 50% buys **51.5% correct on 43.8% coverage**, asking 60% buys
+**58.5% on 32.7%**, asking 70% buys **64.3% on 24.2%**, against 31.0% for answering everything. So +21 to
++34 points of precision for the coverage given up.
+
+Be precise about what this did and did not beat. It **tied** the old number (53.6% on 39.0% against 53.8%
+on 40%) and that tie is the result, because 53.8% had been chosen on the very rows it was quoted on — an
+upper bound, as `check_answers.py` says in its own docstring. A cut fitted out of sample *reproducing* an
+in-sample bound at matched coverage was the thing in doubt. No threshold could have done better: a cut on
+a calibrated probability orders rows identically to a cut on the raw confidence, so every threshold lives
+on one precision–coverage curve fixed by the model at AUC 0.740. **What changes is the meaning, not the
+number** — 0.9980 means nothing on a retrained model, 60% means 60% always — and it reports the bar it
+missed instead of claiming it.
+
+**The reranker that failed — `rank.py`.** Sample k answers, rank them with frozen weights, serve the best:
+grounded above silent above invented, confidence only deciding among equals. **It does not pay, and the
+reason is worth more than a win would have been.** On 600 unseen rows: single sample 28.0%, best of 8 by
+confidence 27.8%, by `rank()` 28.5%, by most-repeated 29.2%, ceiling 34.0%. Eight samples produce **1.77
+distinct answers**. There is nothing to rank. `_nucleus` keeps a second token only when the top one holds
+less than `top_p` of the mass, and this model's per-token mass is about 0.99 — the same fact as the
+confidence sitting above 0.999. **A near-deterministic model cannot be improved by sampling it more**, and
+loosening the nucleus tenfold moved distinctness by 0.1 and the ceiling not at all. The 1.2-point
+consensus lead rescued 14 rows and spoiled 7, which is McNemar **p = 0.189** — a lead, not a result.
+
+Two things fell out of it. **Ranking on confidence is worse than not ranking** (-2.5 points), because
+refusals carry the highest confidence the model produces (0.99538 against 0.98797 on answers), so picking
+the surest candidate picks the refusal. The AUC 0.740 holds *across* questions and does **not** transfer to
+ranking answers to one — a distinction easy to miss and expensive to miss. And the tier order does help
+where it fires, beating confidence by 1.5 points; it just fires on 4–6% of rows, because this checkpoint
+invents figures on only 0.7% of unseen answers. It is kept for C1, where candidates will differ by
+retrieved context rather than by resampling one question.
+
+**The curve — `scripts/learning_curve.py`.** This is the thesis measured. Because the adaptation sets a
+threshold, the score is not accuracy but the **miss**: how far the delivered precision lands from the bar
+the agent promised, on rows the cut never saw.
+
+| | oracle @ 60% | agent @ 80% |
+|---|---|---|
+| 10 rows of feedback | 12.9 pts | 13.3 pts |
+| 60 rows | **8.5** | 9.0 |
+| 118 rows (the whole log) | 9.6 | **6.3** |
+| hand-picked 0.9980, sees no feedback | 16.7 | 10.4 |
+| no abstention at all | 29.2 | 27.2 |
+| fitted on the scored rows (ceiling) | 1.1 | 3.5 |
+
+**Both flat controls are beaten at every log size past ten rows**, and nothing in the transformer changed to
+earn it. Feedback also pays in proportion to how hard the promise is: at a 60% bar the curve flattens after
+60 rows, while at an 80% bar it falls monotonically and is **still falling at 118 rows**, which is the end
+of the log. The flat case is not a null result but an easy bar — the agent's own base rate is 52.8%, so
+answering everything nearly clears 60% by accident.
+
+**And the finding to carry:** a miss that will not close is not always a failure to learn. At the oracle's
+80% bar the curve bottoms at 15.0 points, but the *ceiling* — a cut fitted on the very rows it is scored on
+— also misses by 11.7. This model has no confidence region that is right 80% of the time at 20% coverage or
+better, so only 3.3 of those 15.0 points was ever learnable. Splitting every miss into the part the bar
+forbids and the part the log has not yet taught is what keeps a threshold from quietly promising something
+it cannot deliver.
+
+**The loop itself — `scripts/chat.py`.** Twenty turns end to end: ask, answer, judge, append, refit, show
+what moved. The log grew 0 → 20 and the cut moved 0.99800 → 0.99962 **at turn 10**, the warmup boundary —
+before it the loop serves the hand-picked value and *says* it is hand-picked, because a threshold solved
+from three rows is a coincidence and serving one while calling it learned is the one thing this loop must
+not do.
+
+**So: did the loop work?** Yes, with the claim stated exactly. Against a no-adaptation control, a threshold
+solved from 60 rows of outcomes keeps its stated promise nearly twice as closely as the hand-picked one and
+three times as closely as not abstaining at all, with the foundation model's weights loaded once and never
+touched. That is improvement from interaction without retraining. What the loop did **not** do is improve
+the wording — and that is not an omission but a measurement: B5 showed there is nothing to choose between
+this model's samples. The answers come from frozen weights; the judgement about whether an answer is worth
+saying comes from the log. Anyone claiming more than that from these numbers is overselling them.
+
 ---
 
 ## 6. Why this design, versus the alternatives
@@ -732,6 +857,22 @@ cross-attends to all token states anyway, so that is the representation it actua
 
 - **`guardrails.py`** — `figures`, `unsupported_figures`, `_states`, `screen`. The verification layer.
 
+### `selfagent/learn/` — the adaptation loop (§5.11)
+
+Nothing here touches the transformer. Every module reads the feedback log and produces a threshold, a
+mapping or an ordering, which is what makes the thesis's "without retraining" claim checkable.
+
+- **`store.py`** — `FeedbackLog`: `append`, `rows`, `agreement`. Append-only SQLite; `labeller` is a
+  required argument, because a row whose judge is unknown cannot be excluded from a measurement later.
+- **`teacher.py`** — `OracleTeacher` (judges against gold), `AgentTeacher` (replays Claude's cached
+  verdicts, `write_requests` / `record`), `verdict_key`. A cache miss returns `None`, never a guess.
+- **`calibrate.py`** — `Calibrator` (Platt scaling, `fit` / `__call__`), `expected_calibration_error`,
+  `brier`, `ranking_auc`. It refuses to fit on rows that are all right or all wrong.
+- **`abstain.py`** — `Abstainer.fit(confidence, is_right, wanted)`, `precision_at`, `COVERAGE_FLOOR`.
+  Keeps `expected` so a served threshold can be compared against what actually happens.
+- **`rank.py`** — `tier`, `rank`, `best`, `consensus`. Measured not to pay on this model (§5.11); kept
+  for C1, where candidates will differ by retrieved context.
+
 ### `selfagent/` root
 
 - **`config.py`** — `ModelConfig`, one source of truth for every dimension (§ values in table below).
@@ -753,6 +894,12 @@ cross-attends to all token states anyway, so that is the representation it actua
 | `probe_intents.py` | **Does the encoder know two wordings mean the same thing?** No training needed |
 | `benchmark_step.py` | Steps per second, for sizing decisions |
 | `export_model.py` | Checkpoint → portable form |
+| `label_feedback.py` | Fills the log with both judges' verdicts. `--ask` generates and labels, `--tell` reads Claude's verdicts back and prints the agreement rate |
+| `calibrate_confidence.py` | Fits the calibrator and reports it against **two** baselines, the raw confidence and the base rate |
+| `fit_abstention.py` | Solves the abstention cut from a stated bar and quotes it out of sample |
+| `rerank.py` | **Does best-of-k buy anything?** Four pickers against taking the first sample. It does not (§5.11) |
+| `learning_curve.py` | **The thesis as a curve** — the miss against the stated bar versus how much feedback the cut was solved from, beside two flat controls and a ceiling |
+| `chat.py` | The loop, one turn at a time: ask, answer, judge, adapt, show what moved |
 
 **Why `check_answers.py` exists at all.** Perplexity on this data is flattering: the answers are
 templated, so most positions are boilerplate a model can predict without reading anything, and the
@@ -870,6 +1017,12 @@ module's docstring.
 | Evidence-swap penalty, early vs late | +1.69 → **+2.60** — grounding grows as loss rises |
 | Both fixes stacked, unseen | loss **0.2496**, unsupported **2.4%**, exact match 36.0% |
 | Same arm, checkpoint picked on loss | 77.0% / 30.5% — **the finding replicates** |
+| Oracle and agent judges agree | **156/198 (78.8%)**, and all 42 disagreements run one way |
+| Calibration error, raw → Platt | 0.683 → **0.121**; but a constant ties it on error and loses on Brier |
+| Ranking AUC of the confidence | **0.740 ± 0.039** — the ceiling on the threshold and the reranker |
+| Abstention, asked 60% / 70% | **58.5% on 32.7%** / 64.3% on 24.2%, against 31.0% answering everything |
+| Best of 8 samples | 28.0% → 29.2%, **p = 0.189**; only **1.77 distinct answers** of 8 |
+| Learning curve, miss vs stated bar | **8.5 pts** from 60 rows, against 16.7 hand-picked and 29.2 unabstained |
 | Tests | 312 passing |
 
 ---
@@ -922,20 +1075,27 @@ differ only in how the question is worded, so the gap isolates paraphrase genera
 the job a second time: it is the only split that shows the reworded run overfitting after step 10,000,
 while validation says "still improving" all the way to the end.
 
+**"Did the learning loop actually work?"**
+Yes, on a precise claim. The agent is asked to promise a chance of being right, and a threshold solved
+from 60 rows of its own outcomes keeps that promise to within **8.5 points**, against 16.7 for the
+hand-picked threshold and 29.2 for not abstaining at all — two flat controls, beaten at every log size
+past ten rows, with the foundation model's weights loaded once and never touched. At a strict bar the
+curve is still improving at 118 rows, the whole log. What the loop does **not** do is improve the
+wording, and that is a measurement rather than an omission: eight samples of this model produce 1.77
+distinct answers, so there is nothing for a reranker to choose between. **It learns when to speak, not
+what to say.** See §5.11.
+
 **"What would you do with more time?"**
-In order: (1) run the frozen-encoder arm, and if it loses too much fluency, a lower encoder learning
-rate instead — either way to stop fine-tuning destroying the general language the MLM run bought;
-(2) train the slot variant and compare unsupported-figure rates;
-(3) build the learning loop, which is the actual thesis — calibration from outcomes, a learned
-abstention threshold, retrieval weighting and candidate ranking, **all with frozen weights** — and
-report a learning curve against a no-adaptation control curve. That control is essential: without it,
-any improvement could be an artifact of the evaluation order.
+In order: (1) a longer feedback log — the curve at a strict bar was still falling when the log ran out at
+118 rows, so the cheapest remaining win is more judged turns, not a cleverer fit; (2) fix **intent
+misrouting**, which is the largest single error class (33 of the agent's 95 wrong rows) and which the
+figure guardrail structurally cannot see — that is C1's router; (3) train the slot variant and compare
+unsupported-figure rates.
 
 **"What is not built yet?"**
-Stated plainly: no reranker; no `learn/` modules, so the adaptation loop that is the thesis is designed
-but not implemented; no LoRA; no trained dense retriever (BM25 only); no FastAPI backend; the slot
-dataset is built but untrained. Phases 1–4 are done and measured; the learning loop is the remaining
-work.
+Stated plainly: no LoRA; no trained dense retriever (BM25 only); no FastAPI backend or frontend; the slot
+dataset is built but untrained; and the reranker is built but **measured not to pay** on this model. The
+learning loop itself is built and measured (§5.11) — what remains is the served architecture around it.
 
 ---
 
@@ -951,6 +1111,12 @@ so the agent refuses to give directional advice. The neural price head only ties
 baseline, so it has not earned its place. The first generator was fluent and completely unfaithful —
 proven by ablation, caused by a task where 69% of each answer was invisible in the input. Rebuilding
 the task so every figure is copyable fixed it: blanking the evidence now costs 58× what it did.
+
+The thesis itself comes out positive but narrow. Asked to promise a chance of being right, the agent
+solves for that threshold from its own logged outcomes and keeps the promise to within 8.5 points, where
+the hand-picked threshold misses by 16.7 and no abstention by 29.2 — improvement from feedback with the
+foundation model frozen. It does not learn better wording, because eight samples of it produce 1.77
+distinct answers: there is nothing to choose between. **It learns when to speak, not what to say.**
 
 What is still open is paraphrase generalisation, and it is measured precisely enough to act on: the
 vocabulary is fine, the sentence shapes are not, and fine-tuning makes them worse.

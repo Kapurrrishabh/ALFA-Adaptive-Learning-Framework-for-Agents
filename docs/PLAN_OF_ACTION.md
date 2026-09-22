@@ -38,7 +38,8 @@ model. Where that costs us fluency, we pay it and say so.
 | 3a — generator stack (decoder, grounded seq2seq) | **Done, trained.** Causal-mask, grounding and overfit gates green |
 | 4 — retrieval + generation training | **Grounding done, paraphrase open.** BM25 only; no dense retriever, no reranker |
 | 5 — price advisory, both heads | **Both built and compared.** Direction is unpredictable here; volatility loses to persistence |
-| 6–9 | Not started |
+| 6 — human-in-the-loop learning | **Frozen-weight half done and measured.** Log, judge, calibrator, threshold, reranker, curve, loop. No LoRA, no replay, no EWC |
+| 7–9 | Not started |
 
 312 tests pass (`python3 -m pytest tests/ dataforge/ -q`). Gates closed: S1, S2, S3, S11, S15. **S14
 closes on trained phrasings only.** Re-measured on the current model over 200 generated answers: 1.7%
@@ -112,6 +113,24 @@ Volatility is the label that carries signal and it still loses to persistence. T
 (`RecurrentPriceTower`) beat the patch transformer, so the tower question is settled. The consequence is
 written into the output contract: the agent reports risk and abstains on direction.
 
+**Phase 6's frozen-weight half is built and measured, and the thesis holds on a narrower claim than the
+question asks.** The agent learns *when to speak* from outcomes alone; it does not learn *what to say*.
+Blind agreement between the two judges is **156/198 (78.8%)**, and all 42 disagreements run one way — the
+oracle said *differs from the gold* and the agent said right, never the reverse — so exact match understates
+this model by about 21 points. Platt scaling on the log odds cuts calibration error **0.683 → 0.121**, but
+the number that governs everything downstream is **ranking AUC 0.740 ± 0.039**: any monotone calibration
+leaves the row order untouched, so that AUC is a hard ceiling on both the threshold and the reranker. The
+learned threshold **ties** the hand-picked one out of sample (53.6% correct on 39.0% coverage against 53.8%
+on 40%), and the tie *is* the result, because 53.8% had been chosen on the rows it was quoted on. Best-of-k
+reranking **failed its gate**: eight samples give **1.77 distinct answers**, so there is nothing to rank,
+and the 1.2-point consensus lead is McNemar **p = 0.189**. The learning curve is scored on the miss against
+the promised bar rather than on accuracy: at a 60% bar a cut fitted on 60 rows of feedback misses by **8.5
+points** against **16.7** for the hand-picked cut and **29.2** unabstained, both flat controls beaten at
+every log size past ten rows with the transformer's weights never touched. The end-to-end loop then ran 20
+turns, the log grew 0 → 20, and the cut moved 0.99800 → **0.99962** at turn 10 — the warmup boundary, before
+which it serves the hand-picked value and says so. Full write-up in `learnme.md` §5.11. This addresses **S7
+only in part** (§2).
+
 ## 2. Success criteria
 
 | # | Criterion | Measurement | Gate |
@@ -134,6 +153,16 @@ written into the output contract: the agent reports risk and abstains on directi
 | S16 | Generation earns its place | Grounded answer vs returning the top retrieved passage verbatim, human-rated | preferred, or we ship the passage |
 
 S7, S8, S9 are the project. S1–S6 and S13–S16 are the platform that makes them measurable.
+
+**S7 is partly addressed, and the part that is missing is the part the gate names.** What exists is a
+learning curve against a no-adaptation control and a ceiling (§1a): more feedback places the abstention
+threshold better on rows it never saw. What does not exist is the three-arm design this row asks for —
+uncertainty-query against random-query against no-feedback — because all three arms select *which rows to
+ask about*, and that only matters once a query budget does. The current loop judges every row it answers.
+The score also differs: the gate says accuracy vs feedback rounds, and the measurement is the miss against
+a stated bar, because a cut on a calibrated probability cannot move the precision–coverage curve (AUC
+0.740) and so cannot raise accuracy at fixed coverage — it can only place the cut. S7 closes when the
+query-selection arms run under a label budget, which is Phase 6's remaining half.
 
 **S14 is the one that can sink the product.** An advisory that invents a number is worse than no
 advisory, so faithfulness is measured as a hard rate, not a vibe. S16 is its honest counterweight: if
@@ -197,8 +226,8 @@ across ten years, so this path must abstain until Phase 6 builds the join.
 One responsibility per module; dependencies point strictly downward (`agent` → `learn` → `models` →
 `nn` → `autograd` → `backend`). Nothing lower imports anything higher.
 
-`[x]` exists and is tested; `[ ]` is planned. Planned files are listed for shape only — none are
-created empty ahead of need.
+`[x]` exists and is tested; `[~]` is part-built; `[ ]` is planned. Planned files are listed for shape
+only — none are created empty ahead of need.
 
 ```
 selfagent/
@@ -248,8 +277,9 @@ selfagent/
 [ ]   reranker.py           # cross-encoder over (question, passage), trained on accepted answers
 [ ]   fusion.py             # cross-attention fusion, once late-concat has a number to beat
 
-[ ] learn/                  # the self-learning layer: uncertainty, feedback_store, outcome_labeler,
-                            #   index, reward_model, policy, dpo, replay, ewc, user_profile, registry
+[~] learn/                  # the self-learning layer. Built: store, teacher, calibrate, abstain, rank
+                            #   Open: uncertainty, outcome_labeler, index, reward_model, policy, dpo,
+                            #   replay, ewc, user_profile, registry
 [ ] eval/                   # THE ONLY package allowed to import sklearn/scipy
 [ ] agent/                  # router.py, compose.py, guardrails.py, loop.py, explain.py, cli.py
 
@@ -259,12 +289,16 @@ tests/
 [x] test_model.py           # S2 - overfit gates, wiring, causal mask, grounding, masking, features
 [x] test_import_guard.py    # S11 - library constraint, one test per source file
 [ ] test_leakage.py         # S10 - highest-value test in the repo
-[ ] test_faithfulness.py    # S14 - no figure in an answer that is not in the context
+[x] test_faithfulness.py    # S14 - no figure in an answer that is not in the context
+[x] test_learn.py           # the loop: log, judge, calibrate, abstain, rank, curve, chat
 [ ] test_user_isolation.py  # S9      test_forgetting.py  # S8
 
 [x] configs/tiny.json  configs/target.json
 [x] scripts/benchmark_step.py  prepare_pretrain.py  train_pretrain.py  export_model.py
-[ ] scripts/train_generator.py  build_index.py  train_supervised.py  run_experiment.py
+[x] scripts/train_generator.py  prepare_advisory.py  check_answers.py  ablate_generator.py
+[x] scripts/label_feedback.py  calibrate_confidence.py  fit_abstention.py  rerank.py
+[x] scripts/learning_curve.py  chat.py
+[ ] scripts/build_index.py  train_supervised.py  run_experiment.py
 ```
 
 **Two module-level decisions worth recording.** The decoder is a separate class from
@@ -401,8 +435,11 @@ passes; a failing gate is information, not an obstacle to route around.
   price head beats momentum, or the result is reported honestly as a loss; fusion kept only if it
   improves on the best single modality.
 
-### Phase 6 — Human-in-the-loop learning (~2 weeks)
-- `learn/uncertainty.py`, `feedback_store.py`, `replay.py`, `ewc.py`, `online_update.py`.
+### Phase 6 — Human-in-the-loop learning (~2 weeks) — FROZEN-WEIGHT HALF DONE
+- **Built and measured:** `learn/store.py`, `teacher.py`, `calibrate.py`, `abstain.py`, `rank.py`, plus
+  `scripts/learning_curve.py` and `scripts/chat.py`. Results in §1a; write-up in `learnme.md` §5.11.
+  `rank.py` failed its gate and is kept for C1 only. Nothing below has been started.
+- `learn/uncertainty.py`, `replay.py`, `ewc.py`, `online_update.py`.
 - **`learn/outcome_labeler.py`: the cheapest signal in the system.** A direction call is scored by the
   realized forward return with no human in the loop, so the training set grows while nobody is
   watching. `forward_return` already exists in `data/features.py`.
@@ -498,9 +535,11 @@ and pretrain, then Phase 4 — is done. Everything below is ordered by what the 
 4. **Phase 4's remaining substance is tools, not models.** Indicators, retrieval and a persistence-based
    risk estimator supply every fact; the generator only phrases them. This is what makes the small model
    viable and it needs no further training.
-5. **Then Phase 6, which is the thesis** — calibration from outcomes, a learned abstention threshold,
-   retrieval weighting and candidate ranking, all with frozen weights; LoRA only as a last resort. It
-   needs a learning curve **and** a no-adaptation control curve, or it shows nothing.
+5. **Phase 6's frozen-weight half is done** — calibration from outcomes, a learned abstention threshold and
+   candidate ranking, with a learning curve against a no-adaptation control (§1a). Candidate ranking does
+   not pay on this model and retrieval weighting was not reached. What is left is the label-budget
+   question S7 is written against: query selection by uncertainty against random, which needs the served
+   loop from C1 to have rows worth choosing between. LoRA still only as a last resort.
 6. Deferred with a reason, not forgotten: the ~600M-token general-English corpus (the probe says
    vocabulary is not the constraint), the neural reranker (the oracle ablation says it would not pay),
    and the CIK↔ticker map for Phase 6's event-why join (still blocked, and `sec_edgar` is already at its
