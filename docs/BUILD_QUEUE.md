@@ -42,8 +42,8 @@ Every pass does the same five things. Do not start a task while an earlier one i
 
 | id | task | gate | status |
 |---|---|---|---|
-| A1 | Chat-register arm completes; measure the `casual` split on its best and final checkpoints | casual-split loss and exact match recorded next to `unseen` | open |
-| A2 | Combined arm: `--freeze-encoder` on the casual dataset | unseen loss beats 0.1717, or say plainly that the two fixes do not add | open |
+| A1 | Chat-register arm completes; measure the `casual` split on its best and final checkpoints | casual-split loss and exact match recorded next to `unseen` | waiting — step 23,200/28,163, ~0.3h left |
+| A2 | Combined arm: `--freeze-encoder` on the casual dataset | unseen loss beats 0.1717, or say plainly that the two fixes do not add | waiting — `advisory_combined` launched, ~1.6h |
 | A3 | Write A1/A2 into `PLAN_OF_ACTION.md` and `learnme.md` | both files quote the same numbers as this file | open |
 
 Already measured, for reference: frozen encoder cut unseen loss 0.2821 → **0.1717** and unsupported
