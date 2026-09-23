@@ -48,6 +48,48 @@ def repeated_fraction(text, size=4):
     return 0.0 if not grams else 1.0 - len(set(grams)) / len(grams)
 
 
+def is_right(scored):
+    """Per row, whether the produced answer matches the wanted one word for word."""
+    return [wanted.split() == answer.split() for _, _, wanted, answer, _ in scored]
+
+
+def tally(scored):
+    """The counts this report and C6's eval gate both read, so they cannot judge one model differently.
+
+    Counts and not rates: the gate needs the denominator to know what a rate's standard error is, and a
+    stored rate loses it.
+    """
+    refusals = [row for row in scored if _refuses(row[2])]
+    answerable = [row for row in scored if not _refuses(row[2])]
+    unsupported = [guardrails.unsupported_figures(a, e) for _, e, _, a, _ in answerable]
+    return {
+        "rows": len(scored),
+        "matched": sum(is_right(scored)),
+        "answerable": len(answerable),
+        "figures": sum(len(guardrails.figures(a)) for _, _, _, a, _ in answerable),
+        "unsupported_figures": sum(len(u) for u in unsupported),
+        "unsupported_answers": sum(bool(u) for u in unsupported),
+        "should_refuse": len(refusals),
+        "refused": sum(_refuses(a) for _, _, _, a, _ in refusals),
+        "wrongly_refused": sum(_refuses(a) for _, _, _, a, _ in answerable),
+    }
+
+
+def report(counts):
+    """The same lines this script has always printed, from the counts the record stores."""
+    print(f"{counts['rows']} rows: {counts['answerable']} answerable, "
+          f"{counts['should_refuse']} refusals")
+    print(f"  exact match          {counts['matched']}/{counts['rows']} "
+          f"({counts['matched'] / max(counts['rows'], 1):.1%})")
+    print(f"  unsupported figures  {counts['unsupported_figures']}/{counts['figures']} "
+          f"({counts['unsupported_figures'] / max(counts['figures'], 1):.1%} of figures, "
+          f"{counts['unsupported_answers'] / max(counts['answerable'], 1):.1%} of answers)")
+    print(f"  abstention           {counts['refused']}/{counts['should_refuse']} "
+          f"({counts['refused'] / max(counts['should_refuse'], 1):.1%} of rows that should refuse)")
+    print(f"  false refusal        {counts['wrongly_refused']}/{counts['answerable']} "
+          f"({counts['wrongly_refused'] / max(counts['answerable'], 1):.1%})")
+
+
 def report_confidence(sure, right, threshold):
     """Does the model know when it is wrong? The question an abstention threshold rests on.
 
@@ -142,26 +184,8 @@ def main():
     chosen = rng.permutation(len(split[0]))[: args.rows]
     scored = answer_rows(model, tokenizer, split, chosen, rng, args.greedy, args.batch_size)
 
-    refusals = [row for row in scored if _refuses(row[2])]
-    answerable = [row for row in scored if not _refuses(row[2])]
-    unsupported = [guardrails.unsupported_figures(a, e) for _, e, _, a, _ in answerable]
-    stated = sum(len(guardrails.figures(a)) for _, _, _, a, _ in answerable)
-    missing = sum(len(u) for u in unsupported)
-    refused = sum(_refuses(a) for _, _, _, a, _ in refusals)
-    wrongly_refused = sum(_refuses(a) for _, _, _, a, _ in answerable)
-
-    right = [w.split() == a.split() for _, _, w, a, _ in scored]
-    matched = sum(right)
-
-    print(f"{len(scored)} rows: {len(answerable)} answerable, {len(refusals)} refusals")
-    print(f"  exact match          {matched}/{len(scored)} ({matched / max(len(scored), 1):.1%})")
-    print(f"  unsupported figures  {missing}/{stated} "
-          f"({missing / max(stated, 1):.1%} of figures, "
-          f"{sum(bool(u) for u in unsupported) / max(len(answerable), 1):.1%} of answers)")
-    print(f"  abstention           {refused}/{len(refusals)} "
-          f"({refused / max(len(refusals), 1):.1%} of rows that should refuse)")
-    print(f"  false refusal        {wrongly_refused}/{len(answerable)} "
-          f"({wrongly_refused / max(len(answerable), 1):.1%})")
+    right = is_right(scored)
+    report(tally(scored))
     print(f"  repeated 4-grams     "
           f"{np.mean([repeated_fraction(a) for _, _, _, a, _ in scored]):.1%} "
           f"(reference: the answers themselves are "

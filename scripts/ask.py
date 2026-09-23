@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from backend import models  # noqa: E402
 from backend.agent import Agent, Router, combined, finance  # noqa: E402
+from backend.models import registry  # noqa: E402
 from chat import adapt  # noqa: E402
 from check_answers import load_model  # noqa: E402
 from selfagent.learn import FeedbackLog  # noqa: E402
@@ -41,9 +42,12 @@ DEMO = (
 )
 
 
-def build(artifacts, dataset, checkpoint, prices, gate, log, wanted, warmup, price_head):
+def build(artifacts, checkpoint, prices, gate, log, wanted, warmup, price_head):
     """The served agent, with every threshold loaded from what solved for it."""
-    tokenizer, model, config = load_model(artifacts, dataset, checkpoint)
+    # Which checkpoint answers is the registry's to say. A default string here would serve a model on the
+    # strength of its file name, and C6's gate exists because one of these files generates much worse.
+    served = Path(checkpoint) if checkpoint else registry.serving(registry.GENERATOR)
+    tokenizer, model, config = load_model(artifacts, served.stem, "")
     known = finance.examples()
     router = Router(known, combined(
         [text for _, _, text in known], model, tokenizer, config.max_text_length))
@@ -52,7 +56,7 @@ def build(artifacts, dataset, checkpoint, prices, gate, log, wanted, warmup, pri
     advisor = models.load(Path(price_head)) if price_head else None
     return Agent(finance, finance.Market(Path(prices), advisor), router, Abstainer.load(gate), tokenizer,
                  model, config, abstainer, calibrator,
-                 np.random.default_rng(config.seed)), abstainer, learned
+                 np.random.default_rng(config.seed)), abstainer, learned, served
 
 
 def show(turn):
@@ -74,8 +78,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("question", nargs="*", help="one question; omit for the demo set")
     parser.add_argument("--artifacts", default="artifacts")
-    parser.add_argument("--dataset", default="advisory_combined")
-    parser.add_argument("--checkpoint", default="")
+    parser.add_argument("--checkpoint", default="",
+                        help="a candidate to try instead of the one promoted to serve")
     parser.add_argument("--prices", default="data/prices")
     parser.add_argument("--gate", default="artifacts/route_gate.json",
                         help="the routing cut route.py solved for")
@@ -90,14 +94,17 @@ def main():
                         help="judged rows before a solved cut replaces the hand-picked one")
     args = parser.parse_args()
 
-    agent, abstainer, learned = build(Path(args.artifacts), args.dataset, args.checkpoint, args.prices,
-                                      args.gate, args.log, args.wanted, args.warmup, args.price_head)
+    agent, abstainer, learned, served = build(Path(args.artifacts), args.checkpoint, args.prices,
+                                              args.gate, args.log, args.wanted, args.warmup,
+                                              args.price_head)
     # `expected` rather than `wanted`: the 60% bar is not reachable on this checkpoint, so the fit returns
     # the most precise cut its coverage floor allows and reports the shortfall. Printing the bar alone
     # would claim a precision nothing measured.
     solved = (f"solved for {abstainer.wanted:.0%}, expects {abstainer.expected:.0%} on "
               f"{abstainer.coverage:.0%}" if learned else "still hand-picked, too little feedback")
     advisor = agent.market.advisor
+    # Which weights answered, because a turn that cannot be traced to one file cannot be reproduced.
+    print(f"generator {served.name}")
     print(f"routing cut {agent.gate.cut:.3f} for {agent.gate.wanted:.0%} routing precision; "
           f"answer cut {abstainer.cut:.5f} ({solved})")
     # Printed because the artifact, not this script, decides whether the head or the arithmetic answers.

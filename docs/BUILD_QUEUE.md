@@ -303,7 +303,7 @@ dataforge/         unchanged, and still deletable on its own
 | C3 | Price advisory endpoint: version-pinned GRU + point-in-time feature builder | a served feature vector matches one rebuilt from bars up to that date, exactly | **done** — the gate holds at the array level and through `Market.snapshot`, both verified by mutation (standardising over the whole series; taking the window's scale from `bars[-1]`). `models.load` picks the advisor from the artifact's own recorded numbers: on all 28,676 held-out windows the GRU scores **49.1%** against persistence **47.8%** and majority 39.6%, a gap of 4.6 standard errors, so serving uses `gru@62babf47cdd5` (202,755 params). Below one standard error it serves the arithmetic instead. The earlier "tie" (46.9% vs 47.0%) was the head scored on a 1,920-window prefix — 7 of 101 tickers — against a baseline scored on all of them |
 | C4 | News ETL (RSS, dedupe, ticker tag) + sentiment scorer, version pinned | a scored article traces to its source URL and licence in the manifest | **done** — the gate holds in the type: `feed.read` refuses a file the manifest does not describe, so an article that cannot name its URL and licence is unconstructible, and `scripts/news.py` prints one in full. **1,481 articles** over 55 feeds after dedupe, **1,316 tagged**, scorer pinned as a digest of its own word lists (`lexicon@d3e0671ec848`). Validated and **the forecast half is a null**: on 456 scored pairs the polarity's sign agrees with the next day's return **49.6% ± 2.3%** against a 52.6% base rate, so it is not wired into advice. The same-day check separates why — positive minus negative is **+0.90% at 2.6 standard errors** on the publication day, so the lexicon does read the headline and only the forecast fails |
 | C5 | Portfolio and memory service: SQLite for users, conversations, holdings, trades, feedback; session buffer. The reference repo's portfolio UI settles the fields; its accounts could not be copied, because its portfolio is a process-global list and its login page needs a Firebase key | a conversation survives a restart, and a logged-in user sees only their own | **done** — both halves are pinned in `tests/test_database.py`: a turn written before `close()` reads back after reopening the file, and asking for another user's conversation raises `NotYours`. That holds structurally rather than by care: **no method takes a user id**, only a session token it resolves itself, so a cross-user read cannot be written by forgetting a `WHERE`. **A position is not stored** — `holdings` is a fold of the trade log, so the two cannot drift, and a sell that the log would not support is refused before the insert. Feedback stays in the loop's `FeedbackLog`, opened on the same file, so a message holds a real foreign key to the row that judged it |
-| C6 | Model registry + eval gate + promote: nothing ships that fails S14 | a deliberately bad model is refused promotion by the gate | open |
+| C6 | Model registry + eval gate + promote: nothing ships that fails S14 | a deliberately bad model is refused promotion by the gate | **done** — the gate refused a real checkpoint, not a fixture. `scripts/promote.py` measures a candidate on 200 held-out rows of each split with the same counting every published number here uses, and `backend/models/registry.py` promotes it only if its own record clears two standards, both written with `price.beats` so the margin rule is one rule: **S14** — the unsupported-figure rate on the reworded split must sit under 2% by more than the noise at 2% — and **generation, not loss** — it must beat the promoted checkpoint's exact match on the same rows by more than one standard error. The served checkpoint promotes: **4/771 figures (0.5%)** unsupported and **36.0%** exact match on `unseen`, 5/709 and 94.5% on `casual`. The loss-picked `advisory_casual.best.npz` is **refused on both counts** — 40/653 figures (**6.1%**) and 32.5% against 36.0% — which is A1's finding enforced instead of written down. `ask.py` now asks the registry which weights answer rather than carrying a default file name, and the digest is re-checked at serving, so an artifact overwritten in place is refused rather than answering under a record of the bytes it replaced |
 | C7 | FastAPI REST + WebSocket, streaming a turn | the chat loop from B7 runs over the socket | open |
 | C8 | Frontend from the chosen repo, wired to C7 | a question typed in the browser returns a grounded answer with its evidence shown | open |
 
@@ -318,8 +318,8 @@ everything collected.
 
 C3 ships with three limits of its own, all recorded rather than hidden. The head's `outlook_confidence`
 is an **uncalibrated softmax**, where the persistence rule quotes the measured hit rate of the bucket it
-landed in — calibrating the head needs a confusion table from data it did not train on, which is C6's
-eval gate. The served checkpoint is **2,000 steps**, not a converged run; a 6,000-step head measured the
+landed in — calibrating the head needs a confusion table from data it did not train on, which C6's gate
+does not produce: it decides promotions, not calibration. The served checkpoint is **2,000 steps**, not a converged run; a 6,000-step head measured the
 same accuracy, so the serving decision does not turn on it. And the transformer tower has not been
 re-measured on the full held-out set, so the tower comparison in §3.4 still rests on the partial
 evaluation — `--towers transformer` re-runs it when the comparison is worth an hour.
@@ -343,6 +343,14 @@ end 2026-09-17; prices were deliberately not re-fetched, since extending them wo
 splits every number above rests on. And the polarity is **description, not a signal** — reported beside
 an article, never fed into advice — on the strength of its own null. The lexicon was written from general
 finance vocabulary before either measurement was run, so the same-day result is not a fitted one.
+
+C6's bar has two readings and the record carries both, because which one is quoted changes the verdict.
+S14 says *unsupported-figure rate*, and per figure the served checkpoint is **0.5% on the reworded split**
+— comfortably inside 2%. Per *answer* it is **2.4% on both splits**, which is outside it. The gate uses the
+standard's own denominator and stores the counts rather than a rate, so either reading can be recomputed
+from the registry file. Neither number is what a user is exposed to: `guardrails.screen` refuses an answer
+that states a figure the evidence lacks, so the served rate is zero by construction, and that is exactly
+why the bar has to be applied to the decoder — a model can always meet S14 at serving by refusing more.
 
 ## Stage D — publish
 
