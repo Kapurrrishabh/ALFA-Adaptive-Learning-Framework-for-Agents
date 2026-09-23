@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<!-- Source for ALFA_Synopsis.pdf. Rebuild with ./build.sh after editing. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ALFA Synopsis</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Times New Roman", Times, serif; font-size: 11.5pt;
+         line-height: 1.45; color: #000; }
+  .page { width: 210mm; height: 297mm; padding: 24mm 26mm 20mm 26mm; position: relative;
+          page-break-after: always; overflow: hidden; }
+  .page:last-child { page-break-after: auto; }
+  .folio { position: absolute; bottom: 12mm; left: 0; right: 0; text-align: center;
+           font-size: 11pt; }
+
+  h1 { font-size: 13.5pt; text-align: center; text-decoration: underline; margin: 0 0 14pt; }
+  h2 { font-size: 13pt; text-decoration: underline; margin: 0 0 9pt; }
+  h3 { font-size: 12pt; margin: 10pt 0 4pt; }
+  h4 { font-size: 11.5pt; margin: 8pt 0 3pt; }
+  p  { margin: 0 0 7pt; text-align: justify; }
+  ul, ol { margin: 0 0 7pt; padding-left: 20pt; }
+  li { margin-bottom: 2pt; }
+  .tight li { margin-bottom: 0.5pt; }
+  section { margin-bottom: 10pt; }
+
+  table { border-collapse: collapse; width: 100%; margin: 6pt 0 8pt; }
+  th, td { border: 0.6pt solid #000; padding: 3.6pt 6pt; vertical-align: top; font-size: 10pt;
+           text-align: left; }
+  th { font-weight: bold; }
+  table.papers td:nth-child(2), table.papers td:nth-child(3), table.papers td:nth-child(4)
+       { text-align: center; }
+  /* The five-row papers table is what decides whether page 2 fits, so it runs a size tighter. */
+  table.papers th, table.papers td { font-size: 9.5pt; padding: 3pt 5pt; }
+  table.results td:last-child { text-align: left; }
+  /* Ten result rows plus the conclusion have to share page 6, so this table runs a size tighter too. */
+  table.results th, table.results td { font-size: 9pt; padding: 1.5pt 5pt; }
+
+  /* --- title page, laid out to match the reference document ------------------ */
+  .title-page { text-align: center; padding-top: 22mm; }
+  .title-page .heading { font-size: 14pt; font-weight: bold; text-decoration: underline;
+                         letter-spacing: 0.3pt; }
+  .title-page .project { font-size: 12.5pt; font-weight: bold; margin: 13mm 0 11mm; }
+  .people { width: 88%; margin: 0 auto 13mm; }
+  .people td { font-size: 11pt; padding: 6pt 8pt; }
+  .people td.bold { font-weight: bold; }
+  .supervisor { font-size: 12pt; margin-bottom: 6mm; }
+  .supervisor b { font-size: 11pt; }
+  #logo { margin: 0 auto 4mm; height: 62mm; display: flex; align-items: center;
+          justify-content: center; }
+  #logo img { max-height: 62mm; max-width: 78mm; }
+  #logo .hint { border: 1pt dashed #555; color: #444; font-size: 9.5pt; padding: 10mm 8mm;
+                width: 78mm; margin: 0; text-align: center; line-height: 1.35; }
+  .date { font-weight: bold; font-size: 12pt; margin-bottom: 7mm; }
+  .submit { font-weight: bold; font-size: 12pt; margin-bottom: 5mm; }
+  .dept { font-size: 10pt; margin-bottom: 5mm; }
+  .inst { font-weight: bold; font-size: 14.5pt; line-height: 1.5; }
+
+  figure { margin: 4pt 0 6pt; text-align: center; }
+  figure img { width: 148mm; }
+  figcaption { font-style: italic; font-size: 10.5pt; margin-top: 3pt; }
+  .formula { text-align: center; font-style: italic; margin: 6pt 0 8pt; font-size: 11pt; }
+  .note { font-size: 10.5pt; }
+</style>
+</head>
+<body>
+
+<!-- ============================== page 1 ============================== -->
+<div class="page title-page">
+  <div class="heading">TITLE OF PROJECT</div>
+
+  <div class="project">&ldquo;ALFA: Adaptive Learning Framework for Agents &mdash; an agent that learns
+    from its own outcomes, instantiated on a financial corpus&rdquo;</div>
+
+  <table class="people">
+    <tr><th>Name</th><th>Roll No.</th><th>Batch</th></tr>
+    <tr><td>ADITYA PACHOURI</td><td class="bold">23103025</td><td class="bold">B1</td></tr>
+    <tr><td>RISHABH KAPUR</td><td class="bold">23103101</td><td class="bold">B4</td></tr>
+    <tr><td>ADITYA PRATAP SINGH</td><td class="bold">23103091</td><td class="bold">B4</td></tr>
+  </table>
+
+  <div class="supervisor">Under the Supervision: <b>Ms. Silki Kharaliya</b></div>
+
+  <div id="logo">
+    <img src="logo.png" alt="">
+    <p class="hint">JIIT logo goes here &mdash; save the institute logo as
+      <b>docs/synopsis/logo.png</b> and re-run <b>./build.sh</b>. Everything else on this page is
+      already positioned for it.</p>
+  </div>
+
+  <div class="date">May -2026</div>
+  <div class="submit">Submitted in partial fulfilment of the Degree of</div>
+  <div class="submit">Bachelor of Technology in Computer Science Engineering</div>
+  <div class="dept">DEPARTMENT OF COMPUTER SCIENCE ENGINEERING &amp; INFORMATION TECHNOLOGY</div>
+  <div class="inst">JAYPEE INSTITUTE OF INFORMATION TECHNOLOGY,<br>NOIDA</div>
+</div>
+
+<!-- ============================== page 2 ============================== -->
+<div class="page">
+  <section>
+    <h2>1. Motivation Behind the Project</h2>
+    <p>An agent built on a foundation model is frozen on the day it ships. The accepted way to improve one
+      is to retrain or replace the model underneath it &mdash; expensive, and unattributable: when the
+      answers change, nobody can say whether the product improved or the vendor swapped the weights.</p>
+    <p><b>ALFA is a framework, not one application.</b> It is an agent layer that attaches to a body of
+      data, answers questions over it, and <b>improves from its own interaction, outcomes and feedback
+      while the foundation model's weights stay frozen</b>. The domain enters at one seam only &mdash; the
+      documents you add, plus one numeric head per quantity that domain measures (Figure 1) &mdash; so a
+      second domain is a new data pack, not a new agent.</p>
+    <p>It is <b>currently instantiated on a financial corpus</b> we collected ourselves (100.8M tokens,
+      4,674 documents, 101 instruments), because finance is the harshest cheap test of both promises:
+      answers contain numbers that are either right or wrong, and a dated public record exists to check
+      them. Nothing in the loop is financial. The research question is narrow and testable:
+      <i>can an agent improve its decisions and guidance from interaction, outcomes and feedback without
+      continuously retraining its underlying foundation model?</i></p>
+  </section>
+
+  <section>
+    <h2>2. Type of Project</h2>
+    <h4>Research cum Development Project</h4>
+    <ul class="tight">
+      <li><b>Research</b> &rarr; adaptation from feedback with frozen weights, measured against
+        non-learning controls, over a transformer stack written from first principles (hand-derived
+        autograd, no deep-learning framework)</li>
+      <li><b>Development</b> &rarr; the framework packages &mdash; agent core, retrieval, registry,
+        database &mdash; an offline serving layer and a dashboard over it</li>
+      <li><b>Domain-agnostic:</b> one data seam; finance is the reference pack, not the product</li>
+      <li><b>Constraint:</b> no paid API and no API key anywhere &mdash; the model is built, not
+        called</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>3. Critical Analysis of Research Papers &amp; Gaps</h2>
+    <table class="papers">
+      <tr><th>Paper</th><th>Key Idea</th><th>Gap</th><th>One-Line Summary</th></tr>
+      <tr><td>LSTM / GRU forecasting (2020)</td><td>Sequence model over a numeric history</td>
+          <td>Scored against weak baselines, not persistence</td>
+          <td>Useful head, easy to over-credit</td></tr>
+      <tr><td>FinBERT / domain sentiment (2021)</td><td>Domain text classification</td>
+          <td>Score never joined to the decision</td>
+          <td>Strong NLP, unconnected to advice</td></tr>
+      <tr><td>RAG / Fusion-in-Decoder (2020&ndash;22)</td>
+          <td>Generate from retrieved evidence</td>
+          <td>Improves fluency, not truth of figures</td>
+          <td>Grounded in form, not in fact</td></tr>
+      <tr><td>RLHF and adapter tuning (2021&ndash;22)</td><td>Learn from judged outcomes</td>
+          <td>Both change weights by gradient: cost, drift, no attribution</td>
+          <td>Effective, not attributable</td></tr>
+      <tr><td>LLM agent frameworks (2023&ndash;25)</td>
+          <td>Tools and memory around a hosted model</td>
+          <td>Nothing measures whether the agent improved</td>
+          <td>Plumbing, not learning</td></tr>
+    </table>
+  </section>
+  <div class="folio">2</div>
+</div>
+
+<!-- ============================== page 3 ============================== -->
+<div class="page">
+  <section>
+    <h4>Gap Identified:</h4>
+    <p>No framework puts these four together: <b>(i)</b> one data seam, so the same agent serves any
+      corpus, <b>(ii)</b> measurable improvement from its own logged outcomes with the foundation model's
+      weights frozen, <b>(iii)</b> every figure verified against the evidence that produced it, and a
+      named refusal when it is not, and <b>(iv)</b> every claim reported against the strongest cheap
+      baseline, negative results included.</p>
+  </section>
+
+  <section>
+    <h2>4. Overall Design of Project</h2>
+    <h3>Architecture Overview</h3>
+    <figure>
+      <img src="architecture.png" alt="ALFA architecture">
+      <figcaption>Figure 1 (Project Architecture)</figcaption>
+    </figure>
+    <p class="note">The agent core, the guardrails and the learning loop know nothing about finance: a
+      domain reaches them through the bold box &mdash; <i>the documents you add</i> &mdash; and one numeric
+      head per quantity it measures. <b>Dashed boxes are specified and queued</b> (news and sentiment,
+      portfolio and memory, the eval gate, the REST/WebSocket layer, the dashboard); solid boxes run
+      offline in the repository today. The loop is the only path that changes what is served, and what it
+      changes is a threshold, a calibrator and a registry pointer &mdash; never a weight.</p>
+  </section>
+  <div class="folio">3</div>
+</div>
+
+<!-- ============================== page 4 ============================== -->
+<div class="page">
+  <section>
+    <h3>Key Components (Section 4, continued):</h3>
+    <ul class="tight">
+      <li><b>Agent core (domain agnostic):</b> intent router &rarr; context assembler &rarr; generator
+        &rarr; guardrails</li>
+      <li><b>Data pack (finance today):</b> feature builder, GRU volatility head, BM25 index over 44,811
+        chunks</li>
+      <li><b>Models:</b> pure-NumPy transformer encoder&ndash;decoder, 7,472,192 parameters; GRU head,
+        202,755 &mdash; version-pinned in a registry behind an eval gate</li>
+      <li><b>Learning loop:</b> SQLite feedback log &rarr; outcome labeller &rarr; refit of the cut, the
+        calibrator and memory</li>
+      <li><b>Serving and UI:</b> FastAPI REST + WebSocket; Next.js and TypeScript dashboard (in progress)</li>
+      <li><b>Data layer:</b> keyless public endpoints, official APIs and RSS, every URL and licence in a
+        manifest</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>5. Features Built &amp; Languages Used</h2>
+    <h3>Framework Features (domain agnostic)</h3>
+    <ul class="tight">
+      <li>Conversational question answering over the attached corpus, offline, in about 1.3 seconds</li>
+      <li>Intent routing with an out-of-domain gate that refuses questions the data cannot answer</li>
+      <li>Guardrails: one unsupported number turns the answer into a named refusal, and an abstention cut
+        over calibrated confidence decides when to stay quiet</li>
+      <li>Point-in-time discipline: no record later than the as-of stamp is ever read</li>
+      <li>Experience store and per-user memory: one row per interaction &mdash; state, action, outcome,
+        reward, policy version</li>
+      <li>A version-pinned registry with an eval gate; swapping the data pack changes domain, leaving the
+        core, the guards and the loop untouched</li>
+      <li>407 automated tests covering every gate above</li>
+    </ul>
+
+    <h3>Finance Pack (the current instantiation)</h3>
+    <ul class="tight">
+      <li>A 100.8M-token corpus collected politely: robots.txt honoured, one request at a time, licence
+        and URL per file</li>
+      <li>Technical indicators computed by arithmetic, so the facts quoted are exact</li>
+      <li>Week-ahead volatility outlook from a GRU head, served only when it beats arithmetic by more than
+        its own noise; no buy or sell call &mdash; direction measured unpredictable</li>
+      <li>News sentiment, portfolio and holdings memory, and a streaming dashboard (in progress)</li>
+    </ul>
+
+    <h3>Languages &amp; Technologies</h3>
+    <ul class="tight">
+      <li><b>Frontend:</b> React, Next.js, TypeScript</li>
+      <li><b>Backend:</b> Python (FastAPI)</li>
+      <li><b>ML/NLP:</b> NumPy only &mdash; autograd, attention, GRU, tokeniser and optimiser written in
+        the project; no TensorFlow, PyTorch or HuggingFace in the model path</li>
+      <li><b>Database:</b> SQLite &nbsp;&middot;&nbsp; <b>Testing:</b> pytest</li>
+    </ul>
+  </section>
+  <div class="folio">4</div>
+</div>
+
+<!-- ============================== page 5 ============================== -->
+<div class="page">
+
+  <section>
+    <h2>6. Proposed Methodology</h2>
+    <h4>Pipeline Flow:</h4>
+    <ol class="tight">
+      <li>Attach a data pack: a keyless public corpus, URL and licence recorded per file (today 100.8M
+        tokens of prices, filings and news)</li>
+      <li>Pretrain the encoder&ndash;decoder on that corpus as a masked language model</li>
+      <li>Build question&ndash;answer pairs over point-in-time snapshots; split by date, subject, wording</li>
+      <li>Fine-tune with Fusion-in-Decoder cross-attention, so it phrases evidence rather than recalling it</li>
+      <li>Add one numeric head per quantity the domain measures; keep it only if it beats the cheapest
+        baseline</li>
+      <li>Route to an intent, refuse if out of domain, rewrite into the trained phrasing</li>
+      <li>Assemble context from memory, passages and point-in-time state; verify every figure against it</li>
+      <li>Judge the turn, log one experience record, refit the cut and calibrator &mdash; weights frozen</li>
+      <li>Serve over REST and WebSocket; register each artifact behind the eval gate (in progress)</li>
+    </ol>
+    <p class="note">Steps 6&ndash;9 never mention the domain: a second domain repeats steps 1&ndash;5 only.</p>
+  </section>
+
+  <section>
+    <h2>7. Algorithm / Description of Work</h2>
+
+    <h4>What is allowed to learn, and what is not</h4>
+    <p>Four things stay separate, because the experiment collapses if any two are entangled:
+      <b>knowledge</b> (frozen encoder plus retrieved documents), <b>reasoning</b> (code, not weights),
+      <b>policy</b> (whether and when to answer &mdash; the only thing that learns) and <b>memory</b> (per
+      user, never shared). The encoder's parameters never appear in an optimiser &mdash; a testable
+      statement, and it has a test.</p>
+
+    <h4>Adaptation Algorithm (the research contribution)</h4>
+    <p>The agent is given a promise &mdash; <i>answer only where you are at least p likely to be
+      right</i> &mdash; and solves for the threshold that delivers it from its own logged outcomes:</p>
+    <div class="formula">
+      c* = min { c : precision(confidence &ge; c) &ge; p } &nbsp;&nbsp;over the feedback log,
+      &nbsp;&nbsp;with&nbsp; p&#770; = &sigma;( a &middot; logit(confidence) + b )
+    </div>
+    <p>Only <i>c*</i>, <i>a</i> and <i>b</i> are fitted; no gradient is computed. That is what makes an
+      improvement attributable to feedback rather than to retraining.</p>
+
+    <h4>Grounded Generator (frozen, domain agnostic)</h4>
+    <p class="note">7,472,192 parameters; masked-language pretraining, then supervised fine-tuning. The
+      decoder cross-attends to the evidence, and one unsupported number replaces the answer with a
+      refusal.</p>
+
+    <h4>Numeric Head (finance pack)</h4>
+    <p class="note">A 128-bar window with six channels, standardised inside the window so nothing after
+      the as-of date can enter it; the output is the next five days' volatility in three buckets. 202,755
+      parameters over 143,546 windows from 101 instruments, served only when its recorded accuracy beats
+      persistence by more than one standard error. Five-day <i>direction</i> measured unpredictable, so
+      there is no BUY / HOLD / SELL output.</p>
+  </section>
+  <div class="folio">5</div>
+</div>
+
+<!-- ============================== page 6 ============================== -->
+<div class="page">
+
+  <section>
+    <h2>8. Division of Work Among Students</h2>
+    <table>
+      <tr><th>Member</th><th>Role</th><th>Contribution</th></tr>
+      <tr><td><b>Aditya Pachouri</b></td><td>Frontend Developer</td>
+          <td>UI design, dashboard, charts, API integration</td></tr>
+      <tr><td><b>Aditya Pratap Singh</b></td><td>Backend Developer</td>
+          <td>FastAPI REST and WebSocket, data collection, integration</td></tr>
+      <tr><td><b>Rishabh Kapur</b></td><td>ML Engineer</td>
+          <td>Autograd and transformer stack, numeric head, adaptation loop</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>9. Results</h2>
+    <table class="results">
+      <tr><th>What was measured</th><th>Result</th></tr>
+      <tr><td>Feedback-driven adaptation, weights frozen</td>
+          <td>Keeps its stated 60% promise to within <b>8.5 points</b>, vs 16.7 for a fixed threshold and
+            29.2 for answering everything</td></tr>
+      <tr><td>Intent routing, out-of-domain gate</td>
+          <td><b>94.3%</b> correct intent; refuses <b>12/12</b> out-of-domain questions at 88.5%
+            coverage</td></tr>
+      <tr><td>Rewriting into the trained phrasing</td>
+          <td>Exact match <b>33.5% &rarr; 73.5%</b> on held-out wordings, frozen weights</td></tr>
+      <tr><td>Does the generator read its evidence?</td>
+          <td>Blanking the evidence costs <b>+1.04</b> loss, swapping it <b>+1.95</b>; the first version
+            cost +0.018 and was ignoring it</td></tr>
+      <tr><td>Unsupported figures in answers</td>
+          <td><b>1.7%</b> on trained wording, 4.7% on reworded</td></tr>
+      <tr><td>Numeric head, 28,676 held-out windows</td>
+          <td>Volatility: GRU <b>49.1%</b> vs persistence 47.8%, majority 39.6%. Direction 35.7% vs 36.0%
+            &mdash; <b>unpredictable</b>, never advised on</td></tr>
+      <tr><td>Retrieval recall@5, 44,811 chunks</td>
+          <td>BM25 <b>15.5%</b>, hybrid 12.0%, dense 1.5% &mdash; the vector arm was dropped</td></tr>
+      <tr><td>Confidence calibration</td>
+          <td>Calibration error 0.683 &rarr; <b>0.121</b>; ranking AUC 0.740 &plusmn; 0.039</td></tr>
+      <tr><td>System</td>
+          <td><b>407 tests</b> passing; a full answer in ~1.3 s on a laptop CPU, offline, no API key</td></tr>
+    </table>
+
+    <h4>Observation:</h4>
+    <ul class="tight">
+      <li>The thesis holds in a narrow, defensible form: the agent <b>learns when to speak, not what to
+        say</b> &mdash; eight samples give only 1.77 distinct answers, so the wording has nothing to
+        improve.</li>
+      <li>The larger gain came from the input, not the loop: rewriting a question into wording the decoder
+        knows is worth 40 points against the loop's ~4.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>10. Conclusion</h2>
+    <p>ALFA trains its own foundation model and then improves from its logged outcomes without ever
+      retraining it. Every figure in an answer is checkable against the evidence that produced it, refusals
+      name their reason, adaptation is attributable because the weights are frozen, and a new domain
+      attaches at one seam &mdash; the corpus you add. The limitation is measured, not assumed: an
+      unfamiliar sentence <i>shape</i> is handled only 68% of the time. Finance is the first pack, not the
+      product &mdash; the end product is this framework with the news, portfolio, registry and serving
+      stages of Figure 1 completed.</p>
+  </section>
+  <div class="folio">6</div>
+</div>
+
+<script>
+  // The title page is laid out for the institute logo. Drop logo.png beside this file and it appears;
+  // without it, the guidance note takes its place instead of a broken image.
+  window.addEventListener("load", function () {
+    var img = document.querySelector("#logo img");
+    var hint = document.querySelector("#logo .hint");
+    if (img && img.naturalWidth > 0) { hint.remove(); } else if (img) { img.remove(); }
+  });
+</script>
+</body>
+</html>

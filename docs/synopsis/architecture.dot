@@ -1,0 +1,84 @@
+// Figure 1 of the synopsis: the supplied project architecture, folded into portrait so it prints
+// legibly at 150mm. Labels are kept to two short lines for that reason - the wide version rendered
+// at 5.5pt on paper. Dashed boxes are specified and queued (C4 news, C5 portfolio, C6 gate,
+// C7-C8 serving); solid boxes exist in the repo today.
+digraph ALFA {
+  graph [fontname="Helvetica", fontsize=10, nodesep=0.16, ranksep=0.24, splines=true,
+         newrank=true, compound=true];
+  node  [shape=box, style=rounded, fontname="Helvetica", fontsize=10,
+         height=0.30, width=0.95, margin="0.06,0.045"];
+  edge  [arrowsize=0.5, penwidth=0.9, fontname="Helvetica", fontsize=9];
+
+  ui [label="Chat UI  /  REST + WebSocket API", style="rounded,dashed"];
+
+  subgraph cluster_core {
+    label = "Agent core — domain agnostic";
+    fontname = "Helvetica"; fontsize = 9; labeljust = l;
+    style = filled; fillcolor = "#ededed"; color = "#c8c8c8";
+
+    router [label="Intent\nrouter"];
+    ctxa   [label="Context\nassembler"];
+    gen    [label="Generator\n7.47M, frozen"];
+    guard  [label="Guardrails\nfigures + abstain"];
+    { rank=same; router; ctxa; gen; guard; }
+  }
+
+  retr  [label="Retriever: BM25\nas-of filtered"];
+  price [label="Price advisory\nGRU outlook"];
+  news  [label="News sentiment\nscore + drivers", style="rounded,dashed"];
+  port  [label="Portfolio and\nmemory", style="rounded,dashed"];
+
+  index  [label="Chunk +\nindex worker"];
+  gruep  [label="GRU endpoint\nversion pinned"];
+  sentep [label="Sentiment\nendpoint, pinned", style="rounded,dashed"];
+  db     [label="SQLite: users,\nholdings, feedback", shape=cylinder, style=solid, height=0.42];
+
+  docs [label="Documents you add\n— the swap point", penwidth=1.8];
+  feat [label="Feature builder\npoint-in-time"];
+  netl [label="News ETL\ndedupe + tag", style="rounded,dashed"];
+
+  feed [label="Market data\n(keyless)"];
+  rss  [label="News APIs\n/ RSS", style="rounded,dashed"];
+
+  subgraph cluster_loop {
+    label = "Learning loop — the only path that changes what is served";
+    fontname = "Helvetica"; fontsize = 9; labeljust = l;
+    style = filled; fillcolor = "#ededed"; color = "#c8c8c8";
+
+    flog  [label="Feedback\nlog"];
+    olab  [label="Outcome\nlabeller"];
+    tset  [label="Training\nset", shape=cylinder, style=solid, height=0.42];
+    gate  [label="Refit +\neval gate"];
+    regi  [label="Model\nregistry"];
+    { rank=same; flog; olab; tset; gate; regi; }
+    flog -> olab -> tset -> gate -> regi;
+  }
+
+  ui -> router;
+  router -> ctxa -> gen -> guard;
+
+  ctxa -> retr  [label=" retrieve"];
+  ctxa -> price [label=" signal"];
+  ctxa -> news  [label=" signal"];
+  ctxa -> port  [label=" read/write"];
+
+  retr -> index -> docs;
+  price -> gruep -> feat -> feed;
+  news -> sentep -> netl -> rss;
+  port -> db;
+
+  // The dotted edges carry weight 0: they are real dependencies but must not drag boxes sideways.
+  guard -> flog [label=" logs", style=dotted, constraint=false, weight=0];
+  regi -> gruep  [label=" promote", style=dotted, constraint=false, weight=0];
+  regi -> sentep [style=dotted, constraint=false, weight=0];
+  guard -> ui    [label=" answer or\n named refusal", constraint=false, weight=0];
+
+  // The loop belongs under the whole fan-out, left-aligned with it, not beside it.
+  docs -> flog [style=invis, weight=8];
+  feed -> flog [style=invis, weight=8];
+
+  { rank=same; retr; price; news; port; }
+  { rank=same; index; gruep; sentep; db; }
+  { rank=same; docs; feat; netl; }
+  { rank=same; feed; rss; }
+}
