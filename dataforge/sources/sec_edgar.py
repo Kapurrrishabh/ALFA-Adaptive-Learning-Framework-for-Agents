@@ -12,6 +12,7 @@ from ..extract import html_text
 
 ARCHIVES = "https://www.sec.gov/Archives"
 FULL_INDEX = ARCHIVES + "/edgar/full-index/{year}/QTR{quarter}/form.idx"
+COMPANY_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 LICENCE = "US Government work, public domain (17 USC 105)"
 SOURCE = "sec_edgar"
 
@@ -88,10 +89,27 @@ def _select_by_form(rows, limit, form_shares):
     return chosen
 
 
+def company_names(session, manifest, log):
+    """The official symbol-to-company-name table, stored as fetched.
+
+    News headlines name the company and never the symbol -- over 147 collected headlines, matching
+    symbols alone tags none at all -- so tagging an article to an instrument needs this map, and
+    nothing else on disk carries it.
+    """
+    destination = config.RAW_DIR / SOURCE / "company_tickers.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if manifest.already_have(COMPANY_TICKERS, destination):
+        return 0
+    destination.write_text(session.get_text(COMPANY_TICKERS), encoding="utf-8")
+    manifest.record(COMPANY_TICKERS, destination, SOURCE, LICENCE)
+    log(f"  company names: {destination.stat().st_size} bytes")
+    return 1
+
+
 def collect(session, manifest, settings, log):
     destination_root = config.RAW_DIR / SOURCE
     destination_root.mkdir(parents=True, exist_ok=True)
-    fetched = 0
+    fetched = company_names(session, manifest, log)
 
     for year, quarter in settings["sec_quarters"]:
         try:

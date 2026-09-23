@@ -64,6 +64,12 @@ DEFAULT_REQUESTS_PER_SECOND = 1.0
 
 # Press releases and market news. Regulator feeds are the most useful: formal finance language,
 # and no licence ambiguity.
+# Per-instrument feeds, one request per symbol. The topic feeds above are macro and regulator news:
+# over 147 of their headlines, name matching tags only 4 to an instrument the agent holds prices for,
+# so nothing scored from them can be checked against what the price did next. These carry the symbol
+# in the URL, which makes the tag the publisher's own rather than a guess.
+TICKER_FEED = "https://seekingalpha.com/api/sa/combined/{ticker}.xml"
+
 RSS_FEEDS = (
     "https://www.sec.gov/news/pressreleases.rss",
     "https://www.federalreserve.gov/feeds/press_all.xml",
