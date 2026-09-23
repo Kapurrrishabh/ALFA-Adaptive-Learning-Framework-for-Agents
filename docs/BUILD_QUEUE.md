@@ -397,8 +397,8 @@ work, and it belongs with the deferred corpus item.
 
 | id | task | gate | status |
 |---|---|---|---|
-| D1 | Full suite green, every gate above recorded | `pytest tests/ dataforge/ -q` passes and no row is `open` | open |
-| D2 | One commit series pushed to GitHub | remote matches local | open |
+| D1 | Full suite green, every gate above recorded | `pytest tests/ dataforge/ -q` passes and no row is `open` | **done** — **470 passed** in 5.6s, and all 20 rows above carry a measured figure. Five of them record a gate that did not pass: A2 unanswerable as written, B4 tied not beaten, B5 failed outright, and B6 missing its own stated bar. They are left saying so. A queue where every gate passes is a queue whose bars were set after the numbers came in, and the two results this project rests on — a threshold that adapts from feedback alone, and a router that reads a frozen encoder better without fitting a parameter — are worth less if the rows around them are not honest. `frontend/verify_gate.mjs` is deliberately not in this count: it needs two servers running, and a suite that cannot pass from a clean clone is a suite people learn to skip |
+| D2 | One commit series pushed to GitHub | remote matches local | **done** — 7 commits pushed as one series, 177 tracked files, 2.0 MB of history. The 8.1 GB corpus and the 920 MB of checkpoints stay out: both are rebuilt by a script in the repository, and `data/manifest.jsonl` keeps each source's URL and licence so provenance survives without the bytes. Two files are excepted from that and committed — `artifacts/verdicts_given.jsonl` and `artifacts/served_verdicts.jsonl` — because no script can rebuild a judgement, and without them the learning curve is not reproducible from a clone. Scanned before pushing: no token, key, or credential in the tree or in any of the seven diffs |
 
 ## Reference repo, settled
 
