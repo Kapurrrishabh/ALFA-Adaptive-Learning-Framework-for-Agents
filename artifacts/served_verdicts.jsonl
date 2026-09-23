@@ -1,0 +1,17 @@
+{"key": "b304283ad7e5ed67", "is_right": true, "why": "figures match the evidence and the averages are the right way round"}
+{"key": "8d580b6d46f81dc8", "is_right": true, "why": "rsi 65 is inside the 30 to 70 band it calls neither"}
+{"key": "618671d4eed3dec1", "is_right": true, "why": "quotes the outlook and its confidence as the evidence states them"}
+{"key": "1b28efa212b7826e", "is_right": false, "why": "close 366.20 is above both averages, not between them"}
+{"key": "4a9785ab50abb100", "is_right": true, "why": "the evidence holds no direction, and it says so before quoting figures"}
+{"key": "3561a21783f2a167", "is_right": true, "why": "volatility and daily range match the evidence"}
+{"key": "87f7387a7517b795", "is_right": true, "why": "drawdown and the 50 day average match the evidence"}
+{"key": "a2082c6ee0972de9", "is_right": true, "why": "earnings are not in the evidence, so refusing is the right answer"}
+{"key": "27a57a40aa68a60a", "is_right": true, "why": "rsi 52 is inside the band it calls neither"}
+{"key": "2aa5ccc4d6afca5b", "is_right": false, "why": "close 497.75 is above both averages, not between them"}
+{"key": "f4c31a414666dc15", "is_right": true, "why": "outlook, volatility and range match the evidence"}
+{"key": "85f4b379b72a3874", "is_right": false, "why": "answers with momentum bands a question about how tsla is doing"}
+{"key": "450a0cccc460d6bb", "is_right": true, "why": "drawdown and the 50 day average match the evidence"}
+{"key": "b411f7ed5d061bac", "is_right": true, "why": "quotes only what the evidence holds and does not recommend a trade"}
+{"key": "8d7f76aa2a6bf062", "is_right": true, "why": "rsi 45 is inside the band it calls neither"}
+{"key": "c63157ff073d3d6e", "is_right": true, "why": "figures match and the averages are the right way round"}
+{"key": "c46591d4b28b3b89", "is_right": true, "why": "outlook, volatility and range match the evidence"}

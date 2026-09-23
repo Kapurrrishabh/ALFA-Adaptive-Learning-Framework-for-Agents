@@ -43,14 +43,17 @@ from selfagent.learn.teacher import OracleTeacher  # noqa: E402
 from train_generator import load_split  # noqa: E402
 
 
-def adapt(feedback, wanted, warmup):
+def adapt(feedback, wanted, warmup, labeller=ORACLE):
     """(abstainer, calibrator, learned) to serve the next turn with, refitted from the log as it stands.
 
     Below `warmup` judged rows, or before the log holds both a right and a wrong answer, the hand-picked
     cut is served and `learned` says so. A threshold solved from three rows is a coincidence, and serving
     one while calling it learned is the one thing this loop must not do.
+
+    One labeller per fit: a typed question has no gold answer, so the server's judge is the agent rather
+    than the oracle, and a cut fitted across both would be fitted to two different standards at once.
     """
-    rows = feedback.rows(labeller=ORACLE)
+    rows = feedback.rows(labeller=labeller)
     right = np.array([row["is_right"] for row in rows], dtype=bool)
     if len(rows) < warmup or not right.any() or right.all():
         return Abstainer(HAND_PICKED), None, False

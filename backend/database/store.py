@@ -127,7 +127,10 @@ class Store:
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(self.path)
+        # The check this lifts is "one thread per connection", but what it actually enforces is "the
+        # thread that opened it". Every call here runs on the event loop, which is one thread and often
+        # not the one that built the store.
+        self._connection = sqlite3.connect(self.path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._connection.executescript(SCHEMA)
@@ -211,9 +214,9 @@ class Store:
             "INSERT INTO messages (conversation_id, at, question, served, intent, ticker, evidence, "
             "confidence, stated, spoke, because, feedback_id) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (conversation_id, _now(), turn.question, turn.served, turn.intent, turn.ticker or "",
+            (conversation_id, _now(), turn.question, turn.served, turn.intent, turn.ticker,
              turn.evidence, _number(turn.confidence), _number(turn.stated), int(turn.spoke),
-             turn.because or "", feedback_id))
+             turn.because, feedback_id))
         self._connection.commit()
         return cursor.lastrowid
 

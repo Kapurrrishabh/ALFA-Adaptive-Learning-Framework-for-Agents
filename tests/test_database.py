@@ -24,8 +24,9 @@ def _signed_in(store, email="one@example.test", password="a-password"):
     return store.log_in(email, password)
 
 
-def _turn(question="how has aapl been doing ?", served=ANSWER, spoke=True, confidence=0.91):
-    return Turn(question, "recent performance on aapl ?", "AAPL", "performance", served, served,
+def _turn(question="how has aapl been doing ?", served=ANSWER, spoke=True, confidence=0.91,
+          ticker="AAPL", intent="performance"):
+    return Turn(question, "recent performance on aapl ?", ticker, intent, served, served,
                 "aapl closed at 337.00", confidence, confidence, spoke, 0.31, (), "", "2026-09-17")
 
 
@@ -121,6 +122,17 @@ def test_a_refused_turn_is_remembered_with_no_confidence_at_all(tmp_path):
                                                   confidence=float("nan")))
         (message,) = store.recent(token, conversation)
         assert message.spoke == 0 and message.confidence is None
+
+
+def test_a_turn_the_router_never_placed_is_remembered_too(tmp_path):
+    """Refused before routing, so there is no ticker and no intent -- and those columns take no null."""
+    with _store(tmp_path) as store:
+        token = _signed_in(store)
+        conversation = store.start_conversation(token)
+        store.remember(token, conversation, _turn(served="i could not understand you", spoke=False,
+                                                  ticker="", intent=""))
+        (message,) = store.recent(token, conversation)
+        assert (message.ticker, message.intent) == ("", "")
 
 
 def test_a_message_points_at_the_feedback_row_that_judged_it(tmp_path):

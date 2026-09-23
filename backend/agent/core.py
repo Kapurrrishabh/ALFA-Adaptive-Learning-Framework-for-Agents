@@ -94,9 +94,13 @@ class Agent:
         """The chance of being right, in the units B3 fitted. None until a calibrator has been fitted."""
         return None if self.calibrator is None else float(self.calibrator(confidence))
 
-    def _quiet(self, question, served, because, ticker=None, intent=None, evidence="",
+    def _quiet(self, question, served, because, ticker="", intent="", evidence="",
                margin=float("nan"), as_of=None):
-        """A turn that stopped before the model ran. No confidence, because nothing was generated."""
+        """A turn that stopped before the model ran. No confidence, because nothing was generated.
+
+        Empty rather than None for the text a stage never reached: every caller already reads these as
+        "nothing routed", and one of them stores them in columns that refuse a null.
+        """
         return Turn(question, "", ticker, intent, served, "", evidence, float("nan"), None, False,
                     margin, [], because, as_of)
 

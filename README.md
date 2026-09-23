@@ -14,6 +14,9 @@ allowed only under `selfagent/eval/`, for metrics and baselines the model itself
 
 ```bash
 python3 -m pip install numpy pandas matplotlib pytest
+# Only for scripts/serve.py and the tests that drive it. Nothing under selfagent/ imports them: the
+# model runs on NumPy alone, and deleting this line still leaves every measurement reproducible.
+python3 -m pip install fastapi "uvicorn[standard]" httpx websockets
 ```
 
 ## Run

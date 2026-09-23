@@ -45,7 +45,9 @@ class FeedbackLog:
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(self.path)
+        # Served from an event loop, the thread using this is not the thread that opened it. Callers
+        # still use it from one thread at a time.
+        self._connection = sqlite3.connect(self.path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._connection.executescript(SCHEMA)
         self._connection.commit()

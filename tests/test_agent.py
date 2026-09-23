@@ -246,6 +246,8 @@ def test_no_instrument_named_stops_before_the_decoder(market, router):
     turn = agent(market, router, model=ExplodingModel()).answer("how is TSLA doing ?")
     assert turn.because == "no subject" and not turn.spoke
     assert turn.served == finance.NO_SUBJECT
+    # Empty, not None: a caller storing this turn has columns that refuse a null.
+    assert (turn.ticker, turn.intent, turn.asked) == ("", "", "")
 
 
 def test_a_thin_routing_margin_stops_before_the_decoder(market, router):
