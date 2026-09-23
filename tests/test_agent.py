@@ -11,15 +11,26 @@ from datetime import date, timedelta
 import numpy as np
 import pytest
 
+from backend import models
 from backend.agent import Router, assemble, finance, lexical
 from backend.agent.core import Agent, answered
-from selfagent.data import advisory
+from selfagent import pretrained
+from selfagent.config import ModelConfig
+from selfagent.data import advisory, prices
 from selfagent.data.encode import build_sources
 from selfagent.learn.abstain import Abstainer
+from selfagent.models import PriceWindowClassifier
 from selfagent.tokenizer.wordpiece import pretokenize
 
 LENGTH = 128
 FIRST_BAR = date(2020, 1, 1)
+
+# Small enough to build in a test, and 6 channels because that is what the feature builder produces:
+# five indicators plus the window's own logged scale.
+OUTLOOK = ModelConfig(price_channels=6, price_window=32, dim=32, num_heads=2, ffn_dim=64, price_layers=1)
+
+# Distinct rows, so which bucket was read is visible in what comes back.
+TABLE = ((0.7, 0.2, 0.1), (0.2, 0.6, 0.2), (0.1, 0.2, 0.7))
 
 
 def price_file(directory, name, bars=advisory.BARS_NEEDED):
@@ -237,3 +248,139 @@ def test_the_decoder_is_given_the_trained_wording_not_the_users(market, router):
 def test_a_stated_chance_is_absent_until_a_calibrator_is_fitted(market, router):
     turn = agent(market, router, written="it is doing fine .").answer("how is AAPL doing ?")
     assert turn.stated is None
+
+
+# --- the week-ahead outlook -------------------------------------------------
+
+def head(config=OUTLOOK, tower="gru"):
+    """An untrained head. Every test here compares two of its outputs, never their value."""
+    return models.PriceHead(PriceWindowClassifier(config, recurrent=True), config, tower)
+
+
+def rule(window=20):
+    return models.Persistence((0.01, 0.02), TABLE, window)
+
+
+def alternating_bars(count, step=0.01):
+    """Closes whose log returns are exactly +/- `step`, so the trailing volatility is known rather than
+    measured: the standard deviation of that over 20 returns is step * sqrt(20 / 19)."""
+    closes = 100.0 * np.exp(step * (np.arange(count) % 2))
+    return np.stack([closes, closes, closes, closes, np.full(count, 1e6)], axis=-1)
+
+
+def artifact(tmp_path, accuracy, persistence=0.47, evaluated=28676, tower="gru", drop=()):
+    """A served file, written the way scripts/train_price_head.py writes one."""
+    recorded = {"tower": tower, "target": "volatility", "horizon": 5, "edges": [0.011, 0.019],
+                "accuracy": accuracy, "evaluated": evaluated, "persistence": persistence,
+                "trailing_edges": [0.01, 0.02], "table": [list(row) for row in TABLE]}
+    for name in drop:
+        del recorded[name]
+    path = tmp_path / f"{tower}.npz"
+    pretrained.save(path, PriceWindowClassifier(OUTLOOK, recurrent=True), OUTLOOK, metadata=recorded)
+    return path
+
+
+def test_a_served_window_matches_one_rebuilt_from_bars_up_to_that_date():
+    """C3's gate, and the reason the window standardises inside itself. Standardising over the whole
+    series, or taking the scale from bars[-1], both produce plausible numbers that no longer match what
+    a backtest at that date could have computed."""
+    rng = np.random.default_rng(0)
+    closes = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.02, 300)))
+    bars = np.stack([closes, closes + 1.0, closes - 1.0, closes, np.full(300, 1e6)], axis=-1)
+    truncated = bars[: 201]
+    assert np.array_equal(prices.window_at(bars, 200, 128),
+                          prices.window_at(truncated, len(truncated) - 1, 128))
+
+
+class RecordingAdvisor:
+    """Keeps the window it was asked to score. The evidence line rounds an outlook to a class name and a
+    whole percent, so comparing rendered text would pass on windows that are not the same array."""
+
+    bars_needed = OUTLOOK.price_window + 2
+
+    def __init__(self):
+        self.windows = []
+
+    def probabilities(self, bars, end):
+        self.windows.append(prices.window_at(bars, end, OUTLOOK.price_window))
+        return np.asarray(TABLE[0])
+
+
+def test_the_window_a_snapshot_scores_is_the_one_a_truncated_file_produces(tmp_path):
+    """The same rule through the served path, where the as-of date also has to resolve to the same bar."""
+    price_file(tmp_path, "AAPL", bars=80)
+    shorter = tmp_path / "shorter"
+    shorter.mkdir()
+    price_file(shorter, "AAPL", bars=61)
+    watcher = RecordingAdvisor()
+    _, _, taken_at = finance.Market(tmp_path, watcher).snapshot(
+        "AAPL", as_of=(FIRST_BAR + timedelta(days=60)).isoformat())
+    _, _, rebuilt_at = finance.Market(shorter, watcher).snapshot("AAPL")
+    served, rebuilt = watcher.windows
+    assert taken_at == rebuilt_at and np.array_equal(served, rebuilt)
+
+
+def test_persistence_quotes_the_measured_hit_rate_of_the_bucket_it_lands_in():
+    # 1% alternating returns put the 20 day volatility at 1.03%, between the 1% and 2% edges.
+    assert np.array_equal(rule().probabilities(alternating_bars(40), 39), np.asarray(TABLE[1]))
+
+
+def test_a_table_that_does_not_cover_every_bucket_is_refused_at_construction():
+    # Three edges make four buckets, and the missing row would only be missed on the values that reach it.
+    with pytest.raises(ValueError, match="expected"):
+        models.Persistence((0.01, 0.02, 0.03), TABLE)
+
+
+def test_too_little_history_for_the_advisor_leaves_the_outlook_out_rather_than_scoring_it(tmp_path):
+    """A head needs more bars than the indicators do. Scoring a short window returns a class, and the
+    answer would then quote a figure computed off half the history it claims."""
+    price_file(tmp_path, "AAPL")
+    _, shown, _ = finance.Market(tmp_path, rule(window=200)).snapshot("AAPL")
+    assert "outlook" not in shown
+
+
+def test_the_risk_intent_answers_once_an_advisor_is_loaded(tmp_path, router):
+    """The other half of the refusal above: loading one advisor turns this intent on everywhere, with
+    no second switch to forget."""
+    price_file(tmp_path, "AAPL")
+    market = finance.Market(tmp_path, rule())
+    turn = agent(market, router, written="it looks calm .", confidence=0.99).answer(
+        "how risky is AAPL over the next week ?")
+    assert turn.intent == "risk" and turn.spoke and "outlook calm" in turn.evidence
+
+
+def test_a_head_that_beat_the_rule_on_held_out_data_is_what_serving_loads(tmp_path):
+    advisor = models.load(artifact(tmp_path, accuracy=0.52))
+    assert isinstance(advisor, models.PriceHead) and advisor.version.startswith("gru@")
+
+
+def test_a_head_that_wins_by_less_than_its_own_measurement_noise_is_not_served(tmp_path):
+    """The case the first comparison was decided on: 0.1 points, where one standard error on 28,676
+    windows is 0.3. A head that has not cleared one line of arithmetic must not be what answers."""
+    assert isinstance(models.load(artifact(tmp_path, accuracy=0.471)), models.Persistence)
+
+
+def test_the_same_gap_becomes_a_win_once_enough_windows_have_measured_it(tmp_path):
+    # The gap alone cannot decide it, which is why the count is in the file: 0.1 points is noise on 28,676
+    # windows and a real edge on 2.5 million.
+    advisor = models.load(artifact(tmp_path, accuracy=0.471, evaluated=2_500_000))
+    assert isinstance(advisor, models.PriceHead)
+
+
+def test_an_artifact_missing_what_serving_needs_names_the_script_that_writes_it(tmp_path):
+    with pytest.raises(ValueError, match="train_price_head.py"):
+        models.load(artifact(tmp_path, accuracy=0.52, drop=("table", "trailing_edges")))
+
+
+def test_a_tower_this_loader_cannot_rebuild_is_an_error(tmp_path):
+    # Refused rather than rebuilt as the default tower, which would serve weights of a different shape.
+    with pytest.raises(ValueError, match="cannot"):
+        models.load(artifact(tmp_path, accuracy=0.52, tower="lstm"))
+
+
+def test_a_window_the_head_was_not_trained_on_is_refused_not_scored():
+    """Adding a feature channel changes the input the tower was fitted to. Without this the first layer
+    still multiplies, because a weight matrix does not know which channel is which."""
+    with pytest.raises(ValueError, match="retrain or rebuild"):
+        head(ModelConfig(price_channels=5, price_window=32, dim=32, num_heads=2, ffn_dim=64,
+                         price_layers=1)).probabilities(alternating_bars(60), 59)

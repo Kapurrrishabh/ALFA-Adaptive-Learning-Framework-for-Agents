@@ -65,6 +65,32 @@ def window_at(bars, end, window):
     return xp.concatenate([features, xp.full((features.shape[0], 1), scale)], axis=-1)
 
 
+def index_on_or_before(dates, as_of):
+    """The last bar dated on or before `as_of`, or the last bar on file when `as_of` is None.
+
+    The as-of rule in one place. Two callers each writing their own search is how a served figure and a
+    rebuilt one come to disagree about which bar "that date" means.
+    """
+    if as_of is None:
+        return len(dates) - 1
+    for index in range(len(dates) - 1, -1, -1):
+        if dates[index] <= as_of:
+            return index
+    raise ValueError(f"no bar on or before {as_of}; the earliest on file is {dates[0]}")
+
+
+def trailing_volatility(bars, end, window=20):
+    """Standard deviation of the daily log returns over the `window` bars up to and including `end`.
+
+    The one line of arithmetic the price head has to beat, and the same computation on both sides of
+    that comparison: bucketing by this alone scored 47.0% held out where the GRU scored 46.9%.
+    """
+    closes = xp.asarray(bars[max(0, end - window) : end + 1, 3], dtype=xp.float64)
+    if len(closes) < window + 1:
+        raise ValueError(f"need {window + 1} bars up to {end}, got {len(closes)}")
+    return float(xp.diff(xp.log(closes)).std(ddof=1))
+
+
 def label_at(bars, end, horizon):
     """Forward log return from bar `end` to `horizon` bars later."""
     closes = bars[end : end + horizon + 1, 3]

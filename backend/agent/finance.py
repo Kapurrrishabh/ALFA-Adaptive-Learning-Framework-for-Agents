@@ -36,14 +36,19 @@ class Market:
 
     Bars are read per question rather than held in memory: 101 files of ten years is small, and a cache
     that went stale against a re-download would be a wrong figure served confidently.
+
+    `advisor` is what produces the week-ahead outlook, from `backend/models/price.py`. Given here rather
+    than per question so that loading one turns the risk intent on everywhere at once; left out, the
+    evidence simply does not carry the figure and the core refuses the one intent that quotes it.
     """
 
-    def __init__(self, price_dir):
+    def __init__(self, price_dir, advisor=None):
         self.paths = {path.stem.upper(): path for path in sorted(price_dir.glob("*.csv"))}
         if not self.paths:
             raise ValueError(f"no price files under {price_dir}; the agent would have no evidence to read")
         # "RELIANCE" should find RELIANCE.NS, but only when no plain RELIANCE.csv exists to prefer.
         self.aliases = {name.split(".")[0]: name for name in self.paths if "." in name}
+        self.advisor = advisor
 
     def resolve(self, text):
         """The ticker a question names, or None. Matched against what is on disk, never guessed."""
@@ -55,32 +60,25 @@ class Market:
                 return self.aliases[symbol]
         return None
 
-    def snapshot(self, ticker, as_of=None, outlook=None):
+    def snapshot(self, ticker, as_of=None):
         """(evidence text, the figures it states, the date it was taken at) for one instrument.
 
         `as_of` is the last date the snapshot may read, and the default is the last bar on file. The
         filter is the same leakage rule the training snapshots obey: no bar after the one asked for.
         """
         dates, bars = prices.load_bars(self.paths[ticker])
-        end = len(bars) - 1 if as_of is None else _last_bar_on_or_before(dates, as_of)
+        end = prices.index_on_or_before(dates, as_of)
         if end < advisory.BARS_NEEDED - 1:
             raise ValueError(
                 f"{ticker} has {end + 1} bars up to {as_of or dates[-1]}, and a snapshot needs "
                 f"{advisory.BARS_NEEDED}; the indicators would be computed from a shorter window"
             )
         shown = advisory.as_text(advisory.snapshot(bars, end))
-        # The week-ahead call is the price head's to make, and it is not loaded here. Absent, the
-        # evidence simply does not carry it, and the core refuses the one intent that quotes it.
-        if outlook is not None:
-            shown.update(advisory.risk_outlook(outlook))
+        # A head needs more history than the indicators do, and short of it the honest move is to leave
+        # the figure out and let the core name it in the refusal, not to score a partial window.
+        if self.advisor is not None and end + 1 >= self.advisor.bars_needed:
+            shown.update(advisory.risk_outlook(self.advisor.probabilities(bars, end)))
         return advisory.render_evidence(ticker, shown), shown, dates[end]
-
-
-def _last_bar_on_or_before(dates, as_of):
-    for index in range(len(dates) - 1, -1, -1):
-        if dates[index] <= as_of:
-            return index
-    raise ValueError(f"no bar on or before {as_of}; the earliest on file is {dates[0]}")
 
 
 def examples():

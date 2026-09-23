@@ -17,16 +17,19 @@ period. Class boundaries come from the training period alone.
 import argparse
 import sys
 import time
+from collections import namedtuple
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from backend import models  # noqa: E402
+from selfagent import pretrained  # noqa: E402
 from selfagent.autograd import functional as F  # noqa: E402
 from selfagent.autograd import no_grad  # noqa: E402
 from selfagent.config import ModelConfig  # noqa: E402
-from selfagent.data import prices  # noqa: E402
+from selfagent.data import advisory, prices  # noqa: E402
 from selfagent.models import PriceWindowClassifier  # noqa: E402
 from selfagent.optim import AdamW, clip_grad_norm  # noqa: E402
 
@@ -71,34 +74,61 @@ def batch_of(bars, samples, rows, window, horizon, edges, target):
 
 
 def accuracy(model, bars, samples, window, horizon, edges, batch_size, batches, target):
+    """(held-out accuracy, how many windows it was measured on).
+
+    The count travels with the figure because serving compares this against the persistence baseline,
+    and a 0.1 point gap means one thing on 1,920 windows and another on 28,676.
+    """
     model.eval()
     right = total = 0
+    limit = min(len(samples), batches * batch_size) if batches else len(samples)
     with no_grad():
-        for start in range(0, min(len(samples), batches * batch_size), batch_size):
+        for start in range(0, limit, batch_size):
             rows = range(start, min(start + batch_size, len(samples)))
             windows, wanted = batch_of(bars, samples, list(rows), window, horizon, edges, target)
             predicted = model(windows).data.argmax(axis=-1)
             right += int((predicted == wanted).sum())
             total += len(wanted)
     model.train()
-    return right / max(total, 1)
+    return right / max(total, 1), total
 
 
 def persistence(bars, train, validation, args, edges):
-    """What one line of arithmetic already scores: bucket the label by the trailing value alone.
+    """What one line of arithmetic already scores, and the table that lets it state a confidence.
 
     This, not the majority class, is the bar. Volatility persists, so a head that only rediscovers
     persistence has added nothing to a system that could compute it directly.
+
+    The table is the row-normalised confusion over the **training** period: how often each trailing
+    bucket was followed by each forward class. That is what `backend/models/price.py` quotes as the
+    outlook confidence, so it is a measured hit rate rather than an uncalibrated softmax. On this data it
+    comes out diagonal -- 58.3%, 41.5%, 61.3% -- so the rule is "the bucket you are in", measured.
     """
-    trailing = lambda t, end: float(  # noqa: E731
-        np.diff(np.log(bars[t][end - 20 : end + 1, 3])).std(ddof=1)
-    )
+    trailing = lambda t, end: prices.trailing_volatility(bars[t], end)  # noqa: E731
     own_edges = prices.tertile_edges([trailing(t, end) for t, end in train[::7]])
-    predicted = prices.to_tertile([trailing(t, end) for t, end in validation[::7]], own_edges)
-    wanted = prices.to_tertile(
-        [target_of(bars[t], end, args.horizon, args.target) for t, end in validation[::7]], edges
+    buckets = prices.to_tertile([trailing(t, end) for t, end in train[::7]], own_edges)
+    truth = prices.to_tertile(
+        [target_of(bars[t], end, args.horizon, args.target) for t, end in train[::7]], edges
     )
-    return float(np.mean(np.asarray(predicted) == np.asarray(wanted)))
+    counts = np.zeros((3, 3))
+    for bucket, actual in zip(buckets, truth):
+        counts[bucket, actual] += 1
+    if (counts.sum(axis=1) == 0).any():
+        raise ValueError(f"a trailing bucket has no training rows: {counts.sum(axis=1).tolist()}; the "
+                         f"edges {own_edges.tolist()} are degenerate and the table would be a guess")
+    table = counts / counts.sum(axis=1, keepdims=True)
+
+    # Scored the way serving reads it -- the class the bucket's table row peaks on, over every held-out
+    # row. The rule's number has to be the number the served rule gets, on the rows the head is scored on.
+    held = prices.to_tertile([trailing(t, end) for t, end in validation], own_edges)
+    predicted = table.argmax(axis=1)[held]
+    wanted = prices.to_tertile(
+        [target_of(bars[t], end, args.horizon, args.target) for t, end in validation], edges
+    )
+    return float(np.mean(predicted == np.asarray(wanted))), own_edges, table
+
+
+Measured = namedtuple("Measured", "name accuracy evaluated parameters model")
 
 
 def run(name, recurrent, config, bars, train, validation, args, edges):
@@ -123,15 +153,39 @@ def run(name, recurrent, config, bars, train, validation, args, edges):
             print(f"  step {step}/{args.steps}  loss {loss.item():.4f}  "
                   f"{step / (time.monotonic() - started):.2f} step/s")
 
-    held = accuracy(model, bars, validation, config.price_window, args.horizon, edges,
-                    args.batch_size, args.eval_batches, target)
-    print(f"  {name} held-out accuracy {held:.1%}")
-    return name, held, parameters
+    held, evaluated = accuracy(model, bars, validation, config.price_window, args.horizon, edges,
+                               args.batch_size, args.eval_batches, target)
+    print(f"  {name} held-out accuracy {held:.1%} on {evaluated:,} windows")
+    return Measured(name, held, evaluated, parameters, model)
+
+
+def save(path, results, config, args, edges, trailing, trailing_edges, table, baseline):
+    """The served artifact: the head's weights, and everything serving needs to decide what to do.
+
+    Both accuracies go in the same file so `backend/models/price.py` compares the head against the
+    baseline it was actually measured against, rather than against a number typed in somewhere else.
+    """
+    measured = next(row for row in results if row.name == models.RECURRENT_TOWER)
+    pretrained.save(path, measured.model, config, metadata={
+        "tower": measured.name, "target": args.target, "horizon": args.horizon, "cutoff": args.cutoff,
+        "window": config.price_window, "channels": config.price_channels, "steps": args.steps,
+        "classes": list(advisory.RISK_NAMES), "edges": [float(edge) for edge in edges],
+        "accuracy": measured.accuracy, "evaluated": measured.evaluated, "majority": float(baseline),
+        "persistence": trailing, "trailing_edges": [float(edge) for edge in trailing_edges],
+        "table": [[float(value) for value in row] for row in table],
+    })
+    advisor = models.load(path)
+    print(f"\nsaved {measured.name} to {path}; serving will use {advisor.version}")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--prices", default="data/prices")
+    parser.add_argument("--artifacts", default="artifacts")
+    parser.add_argument("--towers", nargs="+", choices=models.TOWERS, default=list(models.TOWERS),
+                        help="both by default, so the tower comparison stays reproducible")
+    parser.add_argument("--save", default="", help="filename under --artifacts for the served "
+                                                   f"artifact; needs the {models.RECURRENT_TOWER} tower")
     parser.add_argument("--cutoff", default="2021-01-01", help="validation starts on this date")
     parser.add_argument("--horizon", type=int, default=5, help="bars ahead the label looks")
     parser.add_argument("--stride", type=int, default=5, help="bars between consecutive windows")
@@ -139,10 +193,16 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--log-every", type=int, default=200)
-    parser.add_argument("--eval-batches", type=int, default=60)
+    parser.add_argument("--eval-batches", type=int, default=0,
+                        help="0 scores every held-out window, which is what makes a small gap readable")
     parser.add_argument("--target", choices=("direction", "volatility"), default="volatility",
                         help="volatility is the default because direction measured unpredictable")
     args = parser.parse_args()
+    # Checked before indexing rather than after training: the head is the only tower that gets served,
+    # so asking to save without it is an hour of work that ends in a KeyError.
+    if args.save and models.RECURRENT_TOWER not in args.towers:
+        parser.error(f"--save writes the {models.RECURRENT_TOWER} tower, which --towers "
+                     f"{' '.join(args.towers)} does not train")
 
     config = ModelConfig()
     print(f"indexing {args.prices}")
@@ -160,23 +220,25 @@ def main():
     print(f"  {args.target} class edges from training period: {edges[0]:+.4f}, {edges[1]:+.4f}")
 
     held_labels = prices.to_tertile(
-        [target_of(bars[t], end, args.horizon, args.target) for t, end in validation[::7]], edges
+        [target_of(bars[t], end, args.horizon, args.target) for t, end in validation], edges
     )
     counts = np.bincount(held_labels, minlength=3)
     baseline = counts.max() / counts.sum()
     print(f"  held-out class counts {counts.tolist()}, majority baseline {baseline:.1%}")
 
-    trailing = persistence(bars, train, validation, args, edges)
+    trailing, trailing_edges, table = persistence(bars, train, validation, args, edges)
     print(f"  persistence baseline from the trailing value alone {trailing:.1%}")
 
-    results = [
-        run("transformer", False, config, bars, train, validation, args, edges),
-        run("gru", True, config, bars, train, validation, args, edges),
-    ]
+    results = [run(name, name == models.RECURRENT_TOWER, config, bars, train, validation, args, edges)
+               for name in args.towers]
     print("\n=== verdict ===")
-    for name, held, parameters in results:
-        print(f"  {name:12s} {held:.1%}  ({held - baseline:+.1%} vs majority, "
-              f"{held - trailing:+.1%} vs persistence)  {parameters:,} params")
+    for row in results:
+        print(f"  {row.name:12s} {row.accuracy:.1%}  ({row.accuracy - baseline:+.1%} vs majority, "
+              f"{row.accuracy - trailing:+.1%} vs persistence)  {row.parameters:,} params")
+
+    if args.save:
+        save(Path(args.artifacts) / args.save, results, config, args, edges, trailing,
+             trailing_edges, table, baseline)
 
 
 if __name__ == "__main__":

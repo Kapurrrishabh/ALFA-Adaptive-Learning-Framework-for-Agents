@@ -57,7 +57,7 @@ class Agent:
         self.temperature = temperature
         self.top_p = top_p
 
-    def answer(self, question, as_of=None, outlook=None):
+    def answer(self, question, as_of=None):
         """One turn. Never raises on a question it cannot handle — it says which stage stopped it."""
         ticker = self.market.resolve(question)
         if ticker is None:
@@ -68,7 +68,7 @@ class Agent:
             return self._quiet(question, self.domain.UNKNOWN_QUESTION, "unclear question",
                                ticker=ticker, margin=route.margin)
 
-        evidence, shown, taken_at = self.market.snapshot(ticker, as_of, outlook)
+        evidence, shown, taken_at = self.market.snapshot(ticker, as_of)
         missing = [fact for fact in self.domain.needs(route.label) if fact not in shown]
         if missing:
             return self._quiet(question, self.domain.REFUSAL, f"missing {', '.join(missing)}",

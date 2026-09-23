@@ -22,6 +22,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from backend import models  # noqa: E402
 from backend.agent import Agent, Router, finance, semantic  # noqa: E402
 from chat import adapt  # noqa: E402
 from check_answers import load_model  # noqa: E402
@@ -40,7 +41,7 @@ DEMO = (
 )
 
 
-def build(artifacts, dataset, checkpoint, prices, gate, log, wanted, warmup):
+def build(artifacts, dataset, checkpoint, prices, gate, log, wanted, warmup, price_head):
     """The served agent, with every threshold loaded from what solved for it."""
     tokenizer, model, config = load_model(artifacts, dataset, checkpoint)
     known = finance.examples()
@@ -48,7 +49,8 @@ def build(artifacts, dataset, checkpoint, prices, gate, log, wanted, warmup):
         [text for _, _, text in known], model, tokenizer, config.max_text_length))
     with FeedbackLog(log) as feedback:
         abstainer, calibrator, learned = adapt(feedback, wanted, warmup)
-    return Agent(finance, finance.Market(Path(prices)), router, Abstainer.load(gate), tokenizer,
+    advisor = models.load(Path(price_head)) if price_head else None
+    return Agent(finance, finance.Market(Path(prices), advisor), router, Abstainer.load(gate), tokenizer,
                  model, config, abstainer, calibrator,
                  np.random.default_rng(config.seed)), abstainer, learned
 
@@ -79,6 +81,9 @@ def main():
                         help="the routing cut route.py solved for")
     parser.add_argument("--log", default="artifacts/chat.sqlite",
                         help="the feedback log the answer cut and the calibrator are refitted from")
+    parser.add_argument("--price-head", default="artifacts/price_head.npz",
+                        help="the artifact the week-ahead outlook comes from; empty leaves the risk "
+                             "intent with nothing to quote, which is a refusal not a guess")
     parser.add_argument("--as-of", default=None, help="the last date a snapshot may read")
     parser.add_argument("--wanted", type=float, default=0.6, help="the stated chance of being right")
     parser.add_argument("--warmup", type=int, default=10,
@@ -86,14 +91,17 @@ def main():
     args = parser.parse_args()
 
     agent, abstainer, learned = build(Path(args.artifacts), args.dataset, args.checkpoint, args.prices,
-                                      args.gate, args.log, args.wanted, args.warmup)
+                                      args.gate, args.log, args.wanted, args.warmup, args.price_head)
     # `expected` rather than `wanted`: the 60% bar is not reachable on this checkpoint, so the fit returns
     # the most precise cut its coverage floor allows and reports the shortfall. Printing the bar alone
     # would claim a precision nothing measured.
     solved = (f"solved for {abstainer.wanted:.0%}, expects {abstainer.expected:.0%} on "
               f"{abstainer.coverage:.0%}" if learned else "still hand-picked, too little feedback")
+    advisor = agent.market.advisor
     print(f"routing cut {agent.gate.cut:.3f} for {agent.gate.wanted:.0%} routing precision; "
           f"answer cut {abstainer.cut:.5f} ({solved})")
+    # Printed because the artifact, not this script, decides whether the head or the arithmetic answers.
+    print(f"week-ahead outlook from {advisor.version if advisor else 'nothing loaded'}")
 
     questions = [" ".join(args.question)] if args.question else DEMO
     turns = [agent.answer(question, as_of=args.as_of) for question in questions]
