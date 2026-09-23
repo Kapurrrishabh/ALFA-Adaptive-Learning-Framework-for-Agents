@@ -269,6 +269,12 @@ TRAINED = "trained"
 # What the router is short of is shapes to match against, not weights — fine-tuning the encoder for this
 # measured 68% -> 32%. These are matched against and never trained on, and a question they catch is
 # rewritten into the intent's canonical phrasing, so what the decoder reads does not change.
+#
+# The last three of each intent are the clipped fragment with its auxiliary dropped, the shape a person
+# types into a chat box. Nothing else here is shorter than five words, and a served question of three
+# scored a margin an order of magnitude below a full one, so which side of the gate it fell on was a coin
+# toss. The two strings that actually failed in serving are deliberately not among these: the fix has to
+# carry to a short question it has not seen, not look up the ones that exposed it.
 _PARAPHRASES = {
     "performance": (
         "recent performance on {t} ?",
@@ -342,45 +348,55 @@ _PARAPHRASES = {
     ),
 }
 
-# Three shape families deliberately left out of the pool above, so that widening it does not leave the
+# Four shape families deliberately left out of the pool above, so that widening it does not leave the
 # project without an unseen shape to measure on: a leading subordinate clause, a two-clause aside that
-# states a situation before it asks, and an opening admission of not knowing. Held out here means the
-# router never matches against them, the same contract `_HELD_OUT_FRAMES` holds for training.
+# states a situation before it asks, an opening admission of not knowing, and the copula dropped down to a
+# bare adjective. That last one is three words where every other frame in this file is a full sentence,
+# and its adjective appears nowhere else here, so placing it has to come from the shape rather than from a
+# shared term. Held out here means the router never matches against them, the same contract
+# `_HELD_OUT_FRAMES` holds for training.
 _HELD_OUT_PARAPHRASES = {
     "performance": (
         "given how the market has been , where has {t} ended up ?",
         "i am looking at {t} and i cannot tell how it has done .",
         "not sure what {t} has been doing , can you fill me in ?",
+        "{t} up or down ?",
     ),
     "overbought": (
         "given the run it has had , is {t} overbought ?",
         "i keep hearing {t} is overbought and i want to check .",
         "not sure if {t} is overbought , what does the rsi say ?",
+        "{t} too hot ?",
     ),
     "volatility": (
         "given how the market has been , how volatile is {t} ?",
         "i am sizing a position in {t} and i need its volatility .",
         "not sure how much {t} swings around , can you check ?",
+        "{t} shaky lately ?",
     ),
     "drawdown": (
         "given the peak it made , how far has {t} fallen ?",
         "i am holding {t} and i want to see the worst of the fall .",
         "not sure how deep the fall in {t} went , can you check ?",
+        "{t} beaten down ?",
     ),
     "risk": (
         "given how it has traded , how risky is {t} next week ?",
         "i am deciding whether to hold {t} through next week and i need the risk .",
         "not sure what the week ahead looks like for {t} , can you read it ?",
+        "{t} dicey next week ?",
     ),
     "buy": (
         "given where it is trading , should i buy {t} ?",
         "i have cash sitting idle and i am looking at {t} .",
         "not sure whether to buy {t} , what do you think ?",
+        "{t} a bargain ?",
     ),
     "unsupported": (
         "given the results season , when does {t} report ?",
         "i am building a spreadsheet and i need the book value of {t} .",
         "not sure what sector {t} is in , can you check ?",
+        "{t} profitable ?",
     ),
 }
 

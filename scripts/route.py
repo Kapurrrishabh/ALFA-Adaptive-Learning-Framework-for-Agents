@@ -79,7 +79,12 @@ CASUAL = "casual"
 # The pool now carries paraphrase shapes, so `frame` measures an unseen frame inside a family the pool
 # does cover, and `shape` is the one measuring a family it does not. Read them as two different questions.
 SHAPE = "shape"
-AXES = (advisory.TRAINED, "word", "frame", "word and frame", CASUAL, SHAPE)
+
+# The cross the other two miss, and where a typed question actually lives: a shape the pool does not
+# carry, typed the way somebody types it. `casual` renders trained shapes the pool holds verbatim and
+# scores 100%, which read alone says register is solved when only register on familiar shapes is.
+CASUAL_SHAPE = "casual shape"
+AXES = (advisory.TRAINED, "word", "frame", "word and frame", CASUAL, SHAPE, CASUAL_SHAPE)
 
 # One ticker for every question. The intent has to be read off the wording, and it is then stripped back
 # out exactly as serving strips it, so the router is measured on the text it is actually given.
@@ -120,6 +125,9 @@ def rows(seed):
                 asked.append((intent, CASUAL, _asked(intent, phrasing, rng)))
         for frame in advisory.held_out_paraphrases(intent):
             asked.append((intent, SHAPE, finance.without_subject(frame.format(t=TICKER), TICKER)))
+            # Roughed up from the frame, not the finished question, so the ticker survives to be stripped.
+            asked.append((intent, CASUAL_SHAPE,
+                          finance.without_subject(advisory.casual(frame, rng).format(t=TICKER), TICKER)))
     return asked
 
 

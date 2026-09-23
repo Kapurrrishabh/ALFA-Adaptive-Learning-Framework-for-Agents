@@ -298,7 +298,7 @@ dataforge/         unchanged, and still deletable on its own
 | id | task | gate | status |
 |---|---|---|---|
 | C1 | Agent core: intent router → context assembler → generator → guardrails, domain agnostic | one call answers a free-text question end to end, no network | **done** — `scripts/ask.py` answers a typed question offline. Rewriting into the routed trained phrasing takes held-out exact match **33.5% → 74.5%** with frozen weights (C1a); the routing gate refuses 12/12 out-of-domain questions at 88.6% coverage. Routing is still what is left: 22.5 of the remaining 25.5 points |
-| C1a | Router: sum the frozen cosine with the share of the question's own term weight that the known phrasings match | an unseen sentence shape routes better than the served scorer managed, and no out-of-domain question is answered | **done** — `combined` serves. Routing **92.6% → 95.3%** overall, an unseen sentence shape **67% → 90%**, an unseen frame 68% → 76%, gate coverage at the same 97% precision bar 80.6% → **88.6%**, 12/12 out-of-domain still refused, and held-out exact match **68.0% → 74.5%** against the semantic scorer on the same pool. No parameter was fitted: the frozen encoder is read exactly as it was |
+| C1a | Router: sum the frozen cosine with the share of the question's own term weight that the known phrasings match | an unseen sentence shape routes better than the served scorer managed, and no out-of-domain question is answered | **done** — `combined` serves. Routing **92.6% → 95.3%** overall, an unseen sentence shape **67% → 90%**, an unseen frame 68% → 76%, gate coverage at the same 97% precision bar 80.6% → **88.6%**, 12/12 out-of-domain still refused, and held-out exact match **68.0% → 74.5%** against the semantic scorer on the same pool. No parameter was fitted: the frozen encoder is read exactly as it was. Measured on the axes as they stood; a short unseen family added after C7 makes it a harder test, and the figures on that are below |
 | C2 | Retriever: hybrid lexical + vector, as-of filtered, local index; chunk and embed worker | recall@5 beats the lexical baseline, or the vector half is dropped and that is recorded | **done** — the gate's second branch. On 400 queries over a 44,811-chunk index: lexical **15.5%**, hybrid 12.0%, vector **1.5%**, random 0.0%, so `SERVED = LEXICAL` and `scripts/eval_retrieval.py` prints the verdict. Cause diagnosed: no contrastive objective, mean-embedding norm 0.942 of 1. Only `sec_edgar` and `fed_press` carry real dates, so the other nine sources are excluded rather than dated by download |
 | C3 | Price advisory endpoint: version-pinned GRU + point-in-time feature builder | a served feature vector matches one rebuilt from bars up to that date, exactly | **done** — the gate holds at the array level and through `Market.snapshot`, both verified by mutation (standardising over the whole series; taking the window's scale from `bars[-1]`). `models.load` picks the advisor from the artifact's own recorded numbers: on all 28,676 held-out windows the GRU scores **49.1%** against persistence **47.8%** and majority 39.6%, a gap of 4.6 standard errors, so serving uses `gru@62babf47cdd5` (202,755 params). Below one standard error it serves the arithmetic instead. The earlier "tie" (46.9% vs 47.0%) was the head scored on a 1,920-window prefix — 7 of 101 tickers — against a baseline scored on all of them |
 | C4 | News ETL (RSS, dedupe, ticker tag) + sentiment scorer, version pinned | a scored article traces to its source URL and licence in the manifest | **done** — the gate holds in the type: `feed.read` refuses a file the manifest does not describe, so an article that cannot name its URL and licence is unconstructible, and `scripts/news.py` prints one in full. **1,481 articles** over 55 feeds after dedupe, **1,316 tagged**, scorer pinned as a digest of its own word lists (`lexicon@d3e0671ec848`). Validated and **the forecast half is a null**: on 456 scored pairs the polarity's sign agrees with the next day's return **49.6% ± 2.3%** against a 52.6% base rate, so it is not wired into advice. The same-day check separates why — positive minus negative is **+0.90% at 2.6 standard errors** on the publication day, so the lexicon does read the headline and only the forecast fails |
@@ -365,6 +365,33 @@ volatile is TSLA right now ?"* were both refused as unclear while near-identical
 answered, and *"hows tsla lookin"* was routed to the momentum band rather than performance — it is the one
 wrong answer among the 14 the agent spoke. Routing, not wording, is still what is left, exactly as C1's
 row says.
+
+Chasing those three cost three hypotheses and bought one thing, which is worth recording because two of
+them were wrong. They are short questions, so the first guess was chat register: `scripts/route.py` grew a
+`casual shape` axis that renders an unseen shape the way somebody types it, and it scored **19/21, the same
+as the clean unseen shape** — register is not the cause, and the axis stays because it rules that out. The
+second guess was that the pool holds no short shapes, which is true: its 183 entries run 2 to 11 words and
+the 9 shortest are all noun fragments like *"rsi on X ?"*, never a clipped verb. Adding a clipped-verb
+family across all 7 intents changed unseen-shape routing **not at all** (23/28 and 21/28, identical) and
+cost coverage **86.5% → 81.9%**, because short entries match each other across intents and squeeze the
+runner-up closer rather than further. It was reverted. The third was that the margin's scale depends on
+length: it correlates **-0.426** with word count, but the median margin of a question of four words or
+fewer is **0.558 against 0.544** for a longer one, so the correlation is a tail and not a shift, and a
+scale-free `(best - runner) / best` margin moved coverage 81.9% → 82.9% at identical precision. Sweeping
+the coverage weight over eight values confirms the served **0.5** is already the peak at 93.0%.
+
+What the measuring did find is where the error actually is. Of the questions the gate answers, a long one
+is right **100.0%** of the time and a short one **90.9%** — every surviving routing error is short, and the
+margin cannot see it. So the fourth held-out family is a short one, the copula dropped to a bare adjective
+(*"AAPL too hot ?"*), uniform across all 7 intents and using adjectives that appear nowhere else in
+`advisory.py` so a hit cannot come from a shared term. Only **4 of 7** place correctly against 19/21 for
+the long unseen families, and 2 of 7 in chat register. Putting that family in the fit is the improvement:
+the cut rises **0.0877 → 0.111**, and *"hows tsla lookin"* — the one wrong answer of the 14 — scored
+**0.1098**, so it now falls below the cut and is refused. The correct short question refused at 0.0847 was
+already refused, so nothing right was lost. The cost is stated: coverage **88.7% → 86.5%**, and held-out
+routing precision reads 98.8% against 99.4% because the same seven hard rows are in the held-out half too,
+which makes it a harder test rather than a worse router. Fixing those 4-of-7 is encoder work, not pool
+work, and it belongs with the deferred corpus item.
 
 ## Stage D — publish
 
