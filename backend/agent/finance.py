@@ -81,15 +81,24 @@ class Market:
         return advisory.render_evidence(ticker, shown), shown, dates[end]
 
 
-def examples():
-    """(intent, phrasing, text) for every trained phrasing, as the router's known questions.
+def examples(paraphrased=True):
+    """(intent, phrasing, text) for every trained phrasing and every routing-only paraphrase.
 
     The instrument is stripped out of both sides: the intent is carried by the rest of the wording, and
     leaving one ticker in would make every question about a different instrument slightly unfamiliar.
+
+    A paraphrase carries the intent's canonical phrasing as its key, so a question matched on shape is
+    still answered in wording the decoder trained on. `paraphrased=False` is the control the paraphrases
+    are measured against, and nothing but a measurement should pass it.
     """
-    return [(intent, phrasing, _squeeze(advisory.ask(intent, "", phrasing)))
-            for intent in advisory.INTENTS
-            for phrasing in advisory.trained_phrasings(intent)]
+    known = [(intent, phrasing, _squeeze(advisory.ask(intent, "", phrasing)))
+             for intent in advisory.INTENTS
+             for phrasing in advisory.trained_phrasings(intent)]
+    if not paraphrased:
+        return known
+    return known + [(intent, advisory.canonical_phrasing(intent), _squeeze(frame.format(t="")))
+                    for intent in advisory.INTENTS
+                    for frame in advisory.paraphrases(intent)]
 
 
 def without_subject(text, ticker):

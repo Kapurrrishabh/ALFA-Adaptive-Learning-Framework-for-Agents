@@ -13,15 +13,24 @@ has seen. That is a large win available with the weights frozen, and it is bough
 confident answer to the wrong question. So the router carries a threshold and says nothing when the
 margin is thin, fitted from routing outcomes by `scripts/route.py` exactly as B4 fits the answer cut.
 
-The scorer is a seam with two implementations because which one wins is a measurement, not an opinion:
+The scorer is a seam with three implementations because which one wins is a measurement, not an opinion:
 `lexical` needs no weights and nothing loaded, `semantic` runs the frozen encoder, which
-`scripts/probe_intents.py` measured placing a novel word 15/15 and a novel sentence shape 28/41.
+`scripts/probe_intents.py` measured placing a novel word 15/15 and a novel sentence shape 28/41, and
+`combined` sums them. `combined` is what serves: the two halves are wrong on disjoint rows, and summing
+them takes routing 92.6% -> 95.3% overall and an unseen sentence shape 67% -> 90%, with the frozen
+encoder read exactly as it was and no parameter fitted anywhere.
 """
 
 from collections import namedtuple
 
 from selfagent.backend import xp
 from selfagent.models.retriever import BM25, embed
+from selfagent.tokenizer.wordpiece import pretokenize
+
+# How much of the score the term-coverage half carries. Swept over the axes it is quoted on, which is
+# in-sample for this one number; 0.25 and 1.0 land within a row of it on both hard axes, so the choice is
+# flat rather than knife-edge. `scripts/route.py --weight` reprints the sweep.
+COVERAGE_WEIGHT = 0.5
 
 # What the router decided, with the evidence for the decision attached. `margin` is the score of the
 # best example minus the best scoring example carrying a different label, so it measures how nearly
@@ -41,6 +50,32 @@ def semantic(texts, model, tokenizer, length):
     # einsum rather than @: numpy 2.0.2 on Apple's Accelerate BLAS raises spurious overflow flags for a
     # float64 matmul whose result is correct to 1.3e-15.
     return lambda text: xp.einsum("kd,d->k", known, embed(model, tokenizer, [text], length)[0])
+
+
+def combined(texts, model, tokenizer, length, weight=COVERAGE_WEIGHT):
+    """Cosine plus the share of the query's own term weight that the known phrasings could match.
+
+    The two halves fail on disjoint rows, which is what makes summing them worth the second scorer: the
+    cosine places a novel word 15/15 and is decided by sentence shape, so a wrong-intent phrasing of the
+    same shape beats a right-intent one of another; term overlap has no shape to be fooled by and no way
+    to relate an unseen synonym to anything. Measured together they beat either alone on every axis.
+
+    Raw BM25 cannot be summed, because its margin is unbounded and unmatched query words cost it nothing
+    — that is why it serves a poem as a performance question. Dividing by the total weight of the query's
+    own terms turns it into the fraction of the question that was recognised, which is bounded, is
+    comparable across questions, and is exactly what an out-of-domain question lacks.
+    """
+    cosine = semantic(texts, model, tokenizer, length)
+    index = BM25(texts, pretokenize)
+    # An unseen term is as rare as a term can be, so it is charged the highest weight the index holds.
+    unseen = max(index.inverse_document_frequency.values())
+
+    def score(text):
+        terms = set(pretokenize(text))
+        asked = sum(index.inverse_document_frequency.get(term, unseen) for term in terms) or 1.0
+        return cosine(text) + weight * index.scores(text) / asked
+
+    return score
 
 
 class Router:

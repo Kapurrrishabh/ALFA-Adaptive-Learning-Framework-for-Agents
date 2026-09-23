@@ -263,6 +263,127 @@ _HELD_OUT_WORDS = {
 
 TRAINED = "trained"
 
+# Routing-only paraphrases, and the fix for the largest weakness left: the router places a sentence shape
+# it has never seen 68% of the time, which is 23.5 of the 26.5 points of wrong answers. Every frame above
+# is a direct question, so an indirect request, a fragment or an imperative has nothing near it to match.
+# What the router is short of is shapes to match against, not weights — fine-tuning the encoder for this
+# measured 68% -> 32%. These are matched against and never trained on, and a question they catch is
+# rewritten into the intent's canonical phrasing, so what the decoder reads does not change.
+_PARAPHRASES = {
+    "performance": (
+        "recent performance on {t} ?",
+        "any idea how {t} has been trading ?",
+        "could you tell me how {t} has been doing ?",
+        "walk me through the recent move in {t} .",
+        "i would like to know how {t} has traded lately .",
+        "{t} price action lately ?",
+        "catch me up on {t} .",
+        "anything to say about how {t} is trading ?",
+    ),
+    "overbought": (
+        "rsi on {t} ?",
+        "any idea whether {t} is overbought ?",
+        "could you check momentum on {t} ?",
+        "show me where the rsi sits on {t} .",
+        "i would like to know if {t} is overbought .",
+        "{t} momentum reading ?",
+        "talk me through the rsi on {t} .",
+        "anything in the rsi for {t} ?",
+    ),
+    "volatility": (
+        "volatility on {t} ?",
+        "any idea how much {t} moves around ?",
+        "could you tell me how volatile {t} is ?",
+        "walk me through the daily swings in {t} .",
+        "i would like to know how volatile {t} is .",
+        "{t} daily range ?",
+        "give me the volatility picture on {t} .",
+        "anything unusual in how much {t} moves ?",
+    ),
+    "drawdown": (
+        "drawdown on {t} ?",
+        "any idea how far {t} is off its high ?",
+        "could you tell me the worst fall in {t} ?",
+        "show me how much {t} has dropped from its peak .",
+        "i would like to know the deepest fall in {t} .",
+        "{t} off its high ?",
+        "talk me through the last drop in {t} .",
+        "anything to say about how far {t} has fallen ?",
+    ),
+    "risk": (
+        "week ahead on {t} ?",
+        "any idea how risky {t} looks next week ?",
+        "could you tell me what to expect from {t} next week ?",
+        "walk me through the risk in {t} for the week ahead .",
+        "i would like to know how risky {t} is next week .",
+        "{t} risk for the coming week ?",
+        "give me your read on {t} for next week .",
+        "anything to watch in {t} this coming week ?",
+    ),
+    "buy": (
+        "buy {t} ?",
+        "any idea whether i should buy {t} ?",
+        "could you tell me if {t} is worth buying ?",
+        "talk me through whether to buy {t} .",
+        "i would like to know if i should buy {t} .",
+        "{t} a buy here ?",
+        "give me your view on buying {t} .",
+        "anything stopping me from buying {t} ?",
+    ),
+    "unsupported": (
+        "earnings on {t} ?",
+        "any idea what {t} earned last quarter ?",
+        "could you tell me who runs {t} ?",
+        "show me the analyst ratings on {t} .",
+        "i would like to know the dividend yield on {t} .",
+        "{t} market capitalisation ?",
+        "give me the price target on {t} .",
+        "anything on when {t} reports next ?",
+    ),
+}
+
+# Three shape families deliberately left out of the pool above, so that widening it does not leave the
+# project without an unseen shape to measure on: a leading subordinate clause, a two-clause aside that
+# states a situation before it asks, and an opening admission of not knowing. Held out here means the
+# router never matches against them, the same contract `_HELD_OUT_FRAMES` holds for training.
+_HELD_OUT_PARAPHRASES = {
+    "performance": (
+        "given how the market has been , where has {t} ended up ?",
+        "i am looking at {t} and i cannot tell how it has done .",
+        "not sure what {t} has been doing , can you fill me in ?",
+    ),
+    "overbought": (
+        "given the run it has had , is {t} overbought ?",
+        "i keep hearing {t} is overbought and i want to check .",
+        "not sure if {t} is overbought , what does the rsi say ?",
+    ),
+    "volatility": (
+        "given how the market has been , how volatile is {t} ?",
+        "i am sizing a position in {t} and i need its volatility .",
+        "not sure how much {t} swings around , can you check ?",
+    ),
+    "drawdown": (
+        "given the peak it made , how far has {t} fallen ?",
+        "i am holding {t} and i want to see the worst of the fall .",
+        "not sure how deep the fall in {t} went , can you check ?",
+    ),
+    "risk": (
+        "given how it has traded , how risky is {t} next week ?",
+        "i am deciding whether to hold {t} through next week and i need the risk .",
+        "not sure what the week ahead looks like for {t} , can you read it ?",
+    ),
+    "buy": (
+        "given where it is trading , should i buy {t} ?",
+        "i have cash sitting idle and i am looking at {t} .",
+        "not sure whether to buy {t} , what do you think ?",
+    ),
+    "unsupported": (
+        "given the results season , when does {t} report ?",
+        "i am building a spreadsheet and i need the book value of {t} .",
+        "not sure what sector {t} is in , can you check ?",
+    ),
+}
+
 # Every frame above is a clean, punctuated, single clause, and nobody types that way. The corpus is
 # already half conversational English and the encoder places an unseen word 15/15, so the register is
 # the gap the task data leaves open rather than anything pretraining is missing.
@@ -456,6 +577,25 @@ def trained_phrasings(intent):
     answered in its own words, because the decoder scores 90.5% exact on wording it trained on and
     28.5% on wording it did not."""
     return tuple(p for p in range(phrasings(intent)) if not is_held_out(intent, p))
+
+
+def canonical_phrasing(intent):
+    """The phrasing a paraphrase is rewritten into: the intent's plainest trained wording.
+
+    One wording rather than the nearest of several, because the decoder answers every trained phrasing
+    at 90.5% and choosing between them would be a second ranking nobody has measured.
+    """
+    return trained_phrasings(intent)[0]
+
+
+def paraphrases(intent):
+    """Frames the router matches against and nothing trains on. `{t}` is the instrument, as above."""
+    return _PARAPHRASES[intent]
+
+
+def held_out_paraphrases(intent):
+    """Frames in shape families the router's pool does not carry, to measure the widened pool on."""
+    return _HELD_OUT_PARAPHRASES[intent]
 
 
 def is_held_out(intent, phrasing):

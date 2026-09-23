@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from backend import models  # noqa: E402
-from backend.agent import Agent, Router, finance, semantic  # noqa: E402
+from backend.agent import Agent, Router, combined, finance  # noqa: E402
 from chat import adapt  # noqa: E402
 from check_answers import load_model  # noqa: E402
 from selfagent.learn import FeedbackLog  # noqa: E402
@@ -45,7 +45,7 @@ def build(artifacts, dataset, checkpoint, prices, gate, log, wanted, warmup, pri
     """The served agent, with every threshold loaded from what solved for it."""
     tokenizer, model, config = load_model(artifacts, dataset, checkpoint)
     known = finance.examples()
-    router = Router(known, semantic(
+    router = Router(known, combined(
         [text for _, _, text in known], model, tokenizer, config.max_text_length))
     with FeedbackLog(log) as feedback:
         abstainer, calibrator, learned = adapt(feedback, wanted, warmup)

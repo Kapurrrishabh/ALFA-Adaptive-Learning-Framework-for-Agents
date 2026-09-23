@@ -62,7 +62,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from backend.agent import Router, finance, lexical, semantic  # noqa: E402
+from backend.agent import Router, combined, finance, lexical, semantic  # noqa: E402
+from backend.agent.router import COVERAGE_WEIGHT  # noqa: E402
 from check_answers import answer_rows, load_model  # noqa: E402
 from prepare_advisory import OUTLOOK_CONCENTRATION  # noqa: E402
 from selfagent import pretrained  # noqa: E402
@@ -74,7 +75,11 @@ from selfagent.tokenizer.vocab import CLS_ID, PAD_ID, SEP_ID  # noqa: E402
 from selfagent.tokenizer.wordpiece import WordPiece, pretokenize  # noqa: E402
 
 CASUAL = "casual"
-AXES = (advisory.TRAINED, "word", "frame", "word and frame", CASUAL)
+
+# The pool now carries paraphrase shapes, so `frame` measures an unseen frame inside a family the pool
+# does cover, and `shape` is the one measuring a family it does not. Read them as two different questions.
+SHAPE = "shape"
+AXES = (advisory.TRAINED, "word", "frame", "word and frame", CASUAL, SHAPE)
 
 # One ticker for every question. The intent has to be read off the wording, and it is then stripped back
 # out exactly as serving strips it, so the router is measured on the text it is actually given.
@@ -113,6 +118,8 @@ def rows(seed):
             asked.append((intent, axis, _asked(intent, phrasing)))
             if axis == advisory.TRAINED:
                 asked.append((intent, CASUAL, _asked(intent, phrasing, rng)))
+        for frame in advisory.held_out_paraphrases(intent):
+            asked.append((intent, SHAPE, finance.without_subject(frame.format(t=TICKER), TICKER)))
     return asked
 
 
@@ -120,7 +127,7 @@ def _asked(intent, phrasing, rng=None):
     return finance.without_subject(advisory.ask(intent, TICKER, phrasing, rng), TICKER)
 
 
-def scorers(artifacts, checkpoint, known):
+def scorers(artifacts, checkpoint, known, weight):
     """The scorers to compare, each as (name, score function over the known phrasings)."""
     texts = [text for _, _, text in known]
     built = [("lexical", lexical(texts, pretokenize))]
@@ -133,6 +140,7 @@ def scorers(artifacts, checkpoint, known):
         model.load_pretrained_encoder(weights)
         model.eval()
         built.append(("semantic", semantic(texts, model, tokenizer, config.max_text_length)))
+        built.append(("combined", combined(texts, model, tokenizer, config.max_text_length, weight)))
     return built
 
 
@@ -260,18 +268,22 @@ def main():
                         help="also load the decoder and score held-out wordings rewritten against typed")
     parser.add_argument("--dataset", default="advisory_combined", help="the decoder --payoff scores")
     parser.add_argument("--prices", default="data/prices")
+    parser.add_argument("--pool", choices=("wide", "trained"), default="wide",
+                        help="'trained' drops the routing paraphrases: the control the fix is read against")
+    parser.add_argument("--weight", type=float, default=COVERAGE_WEIGHT,
+                        help="how much of the combined score is term coverage rather than cosine")
     parser.add_argument("--payoff-rows", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=8)
     args = parser.parse_args()
 
     artifacts = Path(args.artifacts)
-    known = finance.examples()
+    known = finance.examples(args.pool == "wide")
     asked = rows(args.seed)
     print(f"{len(known)} known phrasings over {len(advisory.INTENTS)} intents, "
           f"{len(asked)} questions asked, {len(OUT_OF_DOMAIN)} of them out of domain\n")
 
     fitted = {}
-    for name, score in scorers(artifacts, args.checkpoint, known):
+    for name, score in scorers(artifacts, args.checkpoint, known, args.weight):
         router = Router(known, score)
         measured = measure(router, asked)
         overall = np.mean([right for _, right, _ in measured])
@@ -303,7 +315,7 @@ def main():
                            args.payoff_rows, args.batch_size, args.seed)
 
     if args.save:
-        name = "semantic" if "semantic" in fitted else "lexical"
+        name = next(n for n in ("combined", "semantic", "lexical") if n in fitted)
         fitted[name].save(artifacts / args.save)
         print(f"\n{name} gate -> {artifacts / args.save}")
 

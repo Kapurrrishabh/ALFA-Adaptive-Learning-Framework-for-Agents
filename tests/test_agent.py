@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from backend import models
-from backend.agent import Router, assemble, finance, lexical
+from backend.agent import Router, assemble, combined, finance, lexical
 from backend.agent.core import Agent, answered
 from selfagent import pretrained
 from selfagent.config import ModelConfig
@@ -86,6 +86,16 @@ class FakeModel:
         return np.array([self.value])
 
 
+class FlatEncoder:
+    """Reads every text as the same vector, so the cosine half of `combined` carries no information.
+
+    What is left is the term-coverage half alone, which is the part being tested.
+    """
+
+    def text(self, ids, keep):
+        return type("States", (), {"data": np.ones((len(ids), ids.shape[1], 4))})()
+
+
 class ExplodingModel:
     """Any call means the core ran the decoder on a turn it should have stopped before."""
 
@@ -123,6 +133,44 @@ def test_the_margin_is_against_a_different_intent_not_the_next_example(router):
 def test_a_router_without_examples_fails_at_construction():
     with pytest.raises(ValueError, match="labelled examples"):
         Router([], lambda text: [])
+
+
+def test_unknown_query_words_cost_the_combined_scorer_its_margin():
+    """The defect `combined` divides out: raw BM25 charges nothing for words it does not know.
+
+    That is why its margin serves a poem as a performance question. Dividing by the query's own total
+    term weight makes an unrecognised word cost the score, which is the only reason the summed scorer
+    can share a gate with the cosine.
+    """
+    known = finance.examples()
+    texts = [text for _, _, text in known]
+    clean = "how volatile is it at the moment ?"
+    padded = f"{clean} zzzz qqqq wwww vvvv yyyy xxxx"
+
+    raw = Router(known, lexical(texts, pretokenize))
+    assert raw.route(padded).margin == raw.route(clean).margin
+
+    scored = Router(known, combined(texts, FlatEncoder(), FakeTokenizer(), LENGTH))
+    assert scored.route(padded).margin < 0.5 * scored.route(clean).margin
+    # Nothing recognised at all still has to report no margin, or the argmax is whatever came first.
+    assert scored.route("zzzz qqqq wwww").margin == 0.0
+
+
+def test_every_router_example_rewrites_into_a_phrasing_the_decoder_trained_on():
+    """The invariant the whole rewrite rests on, and it fails silently: a paraphrase keyed to a
+    held-out phrasing would hand the decoder wording it never saw, and exact match would fall from
+    90.5% to 28.5% with nothing in the serving path saying so."""
+    for intent, phrasing, _ in finance.examples():
+        assert not advisory.is_held_out(intent, phrasing), f"{intent} example keyed to {phrasing}"
+
+
+def test_the_shapes_the_router_is_measured_on_are_not_in_its_pool():
+    """`shape` measures a family the pool does not carry, so a paraphrase leaking into both would turn
+    that measurement into a lookup of itself."""
+    pool = {text for _, _, text in finance.examples()}
+    for intent in advisory.INTENTS:
+        for frame in advisory.held_out_paraphrases(intent):
+            assert finance.without_subject(frame.format(t="AAPL"), "AAPL") not in pool
 
 
 def test_the_ticker_gap_is_not_itself_the_mismatch(market, router):
