@@ -299,7 +299,7 @@ dataforge/         unchanged, and still deletable on its own
 |---|---|---|---|
 | C1 | Agent core: intent router → context assembler → generator → guardrails, domain agnostic | one call answers a free-text question end to end, no network | **done** — `scripts/ask.py` answers a typed question offline. Rewriting into the routed trained phrasing takes held-out exact match **33.5% → 73.5%** with frozen weights; the routing gate refuses 12/12 out-of-domain questions at 88.5% coverage. Routing is now 23.5 of the remaining 26.5 points |
 | C2 | Retriever: hybrid lexical + vector, as-of filtered, local index; chunk and embed worker | recall@5 beats the lexical baseline, or the vector half is dropped and that is recorded | **done** — the gate's second branch. On 400 queries over a 44,811-chunk index: lexical **15.5%**, hybrid 12.0%, vector **1.5%**, random 0.0%, so `SERVED = LEXICAL` and `scripts/eval_retrieval.py` prints the verdict. Cause diagnosed: no contrastive objective, mean-embedding norm 0.942 of 1. Only `sec_edgar` and `fed_press` carry real dates, so the other nine sources are excluded rather than dated by download |
-| C3 | Price advisory endpoint: version-pinned GRU + point-in-time feature builder | a served feature vector matches one rebuilt from bars up to that date, exactly | open |
+| C3 | Price advisory endpoint: version-pinned GRU + point-in-time feature builder | a served feature vector matches one rebuilt from bars up to that date, exactly | **done** — the gate holds at the array level and through `Market.snapshot`, both verified by mutation (standardising over the whole series; taking the window's scale from `bars[-1]`). `models.load` picks the advisor from the artifact's own recorded numbers: on all 28,676 held-out windows the GRU scores **49.1%** against persistence **47.8%** and majority 39.6%, a gap of 4.6 standard errors, so serving uses `gru@62babf47cdd5` (202,755 params). Below one standard error it serves the arithmetic instead. The earlier "tie" (46.9% vs 47.0%) was the head scored on a 1,920-window prefix — 7 of 101 tickers — against a baseline scored on all of them |
 | C4 | News ETL (RSS, dedupe, ticker tag) + sentiment scorer, version pinned | a scored article traces to its source URL and licence in the manifest | open |
 | C5 | Portfolio and memory service: SQLite for users, conversations, holdings, trades, feedback; session buffer. The reference repo already has login/auth and a portfolio UI, so the schema follows what that UI asks for rather than being invented here | a conversation survives a restart, and a logged-in user sees only their own | open |
 | C6 | Model registry + eval gate + promote: nothing ships that fails S14 | a deliberately bad model is refused promotion by the gate | open |
@@ -314,6 +314,14 @@ Near-duplicate chunks (~11%, on top of the 3.8% exact ones that are dropped) nee
 corpus — 44,811 chunks of a possible ~13.4M, because the whole corpus is ~19 hours of encoder passes —
 with the share of each source recorded in `artifacts/index.sources.json` so no number reads as covering
 everything collected.
+
+C3 ships with three limits of its own, all recorded rather than hidden. The head's `outlook_confidence`
+is an **uncalibrated softmax**, where the persistence rule quotes the measured hit rate of the bucket it
+landed in — calibrating the head needs a confusion table from data it did not train on, which is C6's
+eval gate. The served checkpoint is **2,000 steps**, not a converged run; a 6,000-step head measured the
+same accuracy, so the serving decision does not turn on it. And the transformer tower has not been
+re-measured on the full held-out set, so the tower comparison in §3.4 still rests on the partial
+evaluation — `--towers transformer` re-runs it when the comparison is worth an hour.
 
 ## Stage D — publish
 

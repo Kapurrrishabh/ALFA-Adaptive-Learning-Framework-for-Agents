@@ -168,17 +168,19 @@ shortens the sequence and lets attention work on short trends instead of single 
   of the old state to keep, and a *reset* gate deciding how much of it to use when forming the new
   candidate. **201,216 params** — 8× smaller.
 
-**`PriceWindowClassifier`** is the tower plus a classification head. **1,605,891 params.**
+**`PriceWindowClassifier`** is the tower plus a classification head: **1,605,891 params** over the
+transformer tower, **202,755** over the GRU, which is the one that gets saved (§5.14).
 
-**Measured result — and this is a negative result, which you must present as a finding, not a failure.**
+**Measured result. One half of it is a negative result, and the other half was a measurement bug I made
+and later found — present both as findings.**
 
-Tested on 101 tickers, 143,546 training and 28,676 held-out windows, split by date at 2021-01-01,
-6,000 steps each:
+Tested on 101 tickers, 143,546 training and 28,676 held-out windows, split by date at 2021-01-01:
 
 | Task | Majority baseline | Persistence baseline | Transformer | GRU |
 |---|---|---|---|---|
-| 5-day **direction** (up/flat/down) | 36.0% | — | **35.7%** | 33.5% |
-| 5-day **volatility** bucket | 40.0% | **47.0%** | 45.7% | 46.9% |
+| 5-day **direction** (up/flat/down), 6,000 steps | 36.0% | — | **35.7%** | 33.5% |
+| 5-day **volatility** bucket, 6,000 steps, part of the held-out set | 40.0% | 47.0% | 45.7% | 46.9% |
+| 5-day **volatility** bucket, 2,000 steps, **all 28,676 held-out windows** | 39.6% | 47.8% | — | **49.1%** |
 
 Two conclusions:
 
@@ -186,9 +188,12 @@ Two conclusions:
    run. The model learned nothing. This is not a bug — short-horizon direction is close to
    unpredictable, and the correct response is to **never give directional advice**. That decision is
    now hardcoded into the agent's answers.
-2. **Volatility is learnable but not beatable.** The bar is *persistence* — literally
-   `np.diff(np.log(closes[-21:])).std()`, one line of arithmetic — which scores 47.0%. The GRU gets
-   46.9%. It ties one line of arithmetic. So the neural price head has **not earned its place**.
+2. **Volatility is learnable, and on a like-for-like comparison the GRU does beat the rule** — 49.1%
+   against 47.8%, a gap of 4.6 standard errors. The middle row of that table is why this took two
+   attempts to see: the head was scored on the first 1,920 held-out windows, which is **7 of the 101
+   tickers**, while persistence was scored on a 1-in-7 sample of all of them. Two numbers on two
+   different sets of rows, differing by 0.1 points, read as a tie. §5.14 is the repair and the rule that
+   now decides which of the two answers.
 
 **The critical viva point about honest baselines.** The naive comparison is against the majority class
 (40.0%), which the model "beats" by 7 points. That comparison is misleading, because volatility
@@ -484,7 +489,7 @@ that matrix is *also* the decoder's output layer, so freezing it by name would s
 to write at all. This tests the probe's other finding: that task training is what *destroys* the
 encoder's handling of unseen shapes (28/41 → 13/41).
 
-**391 tests pass** (`tests/` and `dataforge/` together).
+**407 tests pass** (`tests/` and `dataforge/` together).
 
 ### 5.8 Scoring both models on the real human Q&A data
 
@@ -856,6 +861,72 @@ slot. Handing it five retrieved chunks would be out of distribution and would ma
 C2 ends at a measured retriever and the wiring waits for a decoder trained on multiple passages. Shipping
 the retrieval into the answer path now would have been the kind of unmeasured improvement §5.5 is about.
 
+### 5.14 The served price head — and the third measurement mistake
+
+Until this section the agent could not answer *"how risky is AAPL next week?"* at all. It routed the
+question, assembled the evidence, then refused with `missing outlook`, because nothing produced the
+figure: `train_price_head.py` measured towers and never saved one. C3 is the artifact, the loader, and the
+rule that decides what serves.
+
+**The two candidates, and why the file chooses between them.** `backend/models/price.py` holds both: the
+trained GRU (`PriceHead`, 202,755 params) and one line of arithmetic (`Persistence` — bucket the trailing
+20-day volatility). `load` reads the accuracies **recorded in the artifact itself** and returns whichever
+the measurement supports. Neither a flag nor a caller decides it, because a comparison against a number
+typed somewhere else is a comparison that goes stale the next time either side is retrained.
+
+**The measurement that changed the verdict.** The old reading was GRU 46.9% against persistence 47.0% — a
+tie, and the basis for "the price head has not earned its place", repeated in §3.4, §6 and the summary.
+It was wrong, and not by a little:
+
+| | rows scored | what they cover |
+|---|---|---|
+| The head, before | first 1,920 held-out windows | **7 of 101 tickers** — the index is built ticker by ticker |
+| Persistence, before | `validation[::7]`, 4,097 windows | all 101 tickers |
+| Both, now | **all 28,676 held-out windows** | all 101 tickers |
+
+On the same rows: **GRU 49.1%, persistence 47.8%, majority 39.6%.** The head wins by 1.4 points, which is
+4.6 standard errors of its own accuracy, and it does so at 2,000 steps rather than 6,000. The lesson is
+the one §5.5 already teaches in a different costume: *a number is only a comparison if both sides were
+measured on the same rows.* `--eval-batches` defaulted to 60 batches for speed, and 60 batches of a
+ticker-ordered index is a handful of tickers, not a sample. It now defaults to every held-out window.
+
+**The margin rule, so the served advisor cannot flip on noise.** `beats(accuracy, rule, evaluated)`
+requires the head to clear the rule by more than one standard error of its own accuracy — 0.3 points at
+49% on 28,676 windows. The measured gap of 1.4 clears it; the old gap of 0.1 would not have, and a rule
+that served on 0.1 points would have been deciding on two windows in a thousand. The count is in the
+artifact for exactly this reason: the same 0.1-point gap is noise on 28,676 windows and real on 2.5
+million, so the threshold cannot be a constant.
+
+**The point-in-time gate, and the two ways it breaks quietly.** A served window is built by
+`prices.window_at`, which slices `bars[end - window : end + 1]` and standardises *inside* that slice, so
+a vector served on a date equals one rebuilt later from a file truncated to that date — exactly, array to
+array. `tests/test_agent.py` pins it twice, at the array level and through `Market.snapshot`, and both
+were verified by mutation: standardising over the whole series, and taking the window's scale from
+`bars[-1]`. Each produces a perfectly plausible number and each makes every backtest built on it
+worthless.
+
+**Why the rule quotes a table and the head quotes a softmax.** `Persistence` states the row-normalised
+confusion of its own buckets over the **training** period — on this data 58.3% / 41.5% / 61.3%, diagonal,
+so "the bucket you are in" is the rule and 58% is a measured hit rate. The head has no such table, so the
+`outlook_confidence 38%` it serves is an **uncalibrated softmax**, and B3 measured what those are worth on
+this stack — the generator's needed a fit to be readable at all. That is a named limitation of C3, not a
+measured figure: calibrating the head the same way needs a confusion table from data it did not train on,
+and the honest place for it is the C6 eval gate.
+
+**What it looks like served.** `scripts/ask.py --price-head` loads the artifact; `Market` takes it once at
+construction, so one switch turns the intent on everywhere:
+
+```
+> how risky is AAPL over the next week ?
+  routed to risk (margin 0.297)
+  evidence  ticker AAPL ; close 337.00 ; ... ; outlook normal ; outlook_confidence 38%
+  ANSWER    the model reads the week ahead as normal , at 38% confidence . over the last 20 days
+            annualised volatility was 22.9% and the average daily range 7.41 on a price of 337.00 .
+```
+
+Without the artifact the same question still refuses with `missing outlook`, and a head needing more
+history than a file holds leaves the figure out rather than scoring a partial window — both pinned.
+
 ---
 
 ## 6. Why this design, versus the alternatives
@@ -878,13 +949,14 @@ This is the first question an examiner will ask. Answers, strongest first:
 | Against | We lose because |
 |---|---|
 | A real LLM | 7.5M parameters versus hundreds of billions. Fluency and paraphrase understanding are not comparable, and §5.4 measures exactly where ours breaks |
-| A tuned gradient-boosted model on price features | Our price head ties a one-line persistence baseline (§3.4). A GBM with good features would likely beat it |
+| A tuned gradient-boosted model on price features | Our price head beats a one-line persistence baseline by 1.4 points (§5.14), which is a real edge and a small one. A GBM with good features would likely beat both |
 | A production RAG stack | No trained dense retriever and no reranker. There is a vector index, and it was **measured at 1.5% recall@5 against BM25's 15.5%** and dropped (§5.13) |
 
 **Say this plainly in the viva.** The value is not "our model is best". It is that **every claim is
-measured against an honest baseline, and the negative results are reported**. A project that says "the
-neural price head ties one line of arithmetic, so it has not earned its place" is more credible than
-one claiming to beat the market.
+measured against an honest baseline, the negative results are reported, and a wrong measurement was
+found and corrected rather than kept because it sounded humble**. The price head's story is both halves:
+direction is unpredictable and stays unanswered, volatility beats one line of arithmetic by 1.4 points
+and no more, and the first comparison that said otherwise was scored on 7 of 101 tickers (§5.14).
 
 ### 6.3 Why it is genuinely good as research
 
@@ -896,8 +968,11 @@ one claiming to beat the market.
    passed a model that fails on any rewording.
 4. **Structural faithfulness.** The slot path makes fabrication *impossible* rather than *unlikely*. For
    any system giving financial guidance that is the correct design.
-5. **Negative results reported.** Direction is unpredictable; the price head does not beat persistence;
-   the reranker was not worth building. Each saved effort and each is defensible.
+5. **Negative results reported.** Direction is unpredictable; the dense retriever lost to BM25 and was
+   dropped; the reranker was not worth building. Each saved effort and each is defensible.
+6. **A mis-measurement found by re-measuring.** The price head's "tie" with arithmetic came from scoring
+   the two sides on different rows, and the fix moved the result *against* the project's own modesty
+   (§5.14). Re-running a comparison you already believe is the habit that catches this.
 
 ---
 
@@ -1043,7 +1118,16 @@ domain would supply its own module with the same surface and nothing in `core.py
 - **`core.py`** — `Agent.answer` → `Turn`, plus `answered` and `routing_margins`. Four stages and five
   named stops.
 - **`finance.py`** — the domain: `Market` (`resolve`, `snapshot` with the as-of rule), `examples`,
-  `ask`, `without_subject`, `needs`, and the three refusal strings.
+  `ask`, `without_subject`, `needs`, and the three refusal strings. `Market` takes its `advisor` once, at
+  construction, so loading one turns the week-ahead intent on everywhere rather than per question.
+
+### `backend/models/` — what produces the week-ahead outlook (§5.14)
+
+- **`price.py`** — `PriceHead` (the trained GRU, pinned to the config that shaped it), `Persistence` (one
+  line of arithmetic plus the training confusion table it quotes a confidence from), `beats` (the margin
+  rule), and `load`, which reads the artifact's own recorded numbers and returns whichever of the two the
+  measurement supports. `REQUIRED` names every field a served file must carry; a file missing one is
+  refused rather than served with a default.
 
 ### `backend/retrieval/` — the corpus retriever (§5.13)
 
@@ -1064,7 +1148,7 @@ domain would supply its own module with the same surface and nothing in `core.py
 | `train_pretrain.py` | Trains the MLM → `pretrained.npz` |
 | `prepare_generator.py` | The Stack Exchange generator dataset; `build_sources` packs question + passages |
 | `train_generator.py` | Trains the GroundedGenerator; `load_split` is reused by the eval scripts |
-| `train_price_head.py` | Trains the price tower against the baselines |
+| `train_price_head.py` | Trains the price tower against the baselines, and `--save` writes the served artifact with both accuracies in it so serving can pick between them |
 | `prepare_advisory.py` | Builds the advisory dataset; `--slots` for the slot variant |
 | `ablate_generator.py` | **Does the decoder read its evidence?** Blanks and swaps it and reports the cost. `evidence_starts`, `blanked`, `swapped`, `answerable` |
 | `check_answers.py` | **Generate-and-check** — exact match, unsupported figures, abstention, false refusal, repeated 4-grams |
@@ -1078,7 +1162,7 @@ domain would supply its own module with the same surface and nothing in `core.py
 | `learning_curve.py` | **The thesis as a curve** — the miss against the stated bar versus how much feedback the cut was solved from, beside two flat controls and a ceiling |
 | `chat.py` | The loop, one turn at a time: ask, answer, judge, adapt, show what moved |
 | `route.py` | **Which question is this?** Lexical against semantic on intent, on out-of-domain rejection, and with `--payoff` on what rewriting into the routed phrasing is worth. Fits and saves the routing cut |
-| `ask.py` | The served agent end to end, offline: one typed question in, one answer or one named refusal out |
+| `ask.py` | The served agent end to end, offline: one typed question in, one answer or one named refusal out. `--price-head` loads the week-ahead outlook; without it the risk intent refuses |
 | `build_index.py` | Chunks the dated corpus, embeds it with the frozen encoder, writes one index. Shares a **chunk budget** out smallest-source-first and records what share of each source survived |
 | `eval_retrieval.py` | **Does the vector half earn its place beside BM25?** Lexical, vector and hybrid on the same 400 queries against a random floor, and it prints the gate's verdict. It does not (§5.13) |
 
@@ -1087,7 +1171,7 @@ templated, so most positions are boilerplate a model can predict without reading
 handful of digit positions that actually need the evidence are lost in the average. Generate-and-check
 is the number that decides whether the system works.
 
-### `tests/` — 391 passing
+### `tests/` — 407 passing
 
 - **`test_gradcheck.py`** — every operation's analytic gradient against a numerical finite-difference
   gradient. **The most important tests in the repo**: a wrong derivative still trains to a plausible
@@ -1176,7 +1260,7 @@ module's docstring.
 |---|---|
 | `RecurrentPriceTower` (GRU) | 201,216 |
 | `PriceTower` (transformer) | 1,605,120 |
-| `PriceWindowClassifier` | 1,605,891 |
+| `PriceWindowClassifier` | 1,605,891 transformer, 201,987 GRU — **202,755 as served**, on the 6 channels the feature builder produces |
 | `TextTower` | 5,240,832 |
 | `MaskedLanguageModel` | 5,315,136 |
 | `FinanceAgentModel` | 6,847,491 |
@@ -1189,7 +1273,9 @@ module's docstring.
 | MLM validation loss | 3.03 vs 8.99 uniform (perplexity 20.7) |
 | Corpus | 100.8M tokens, 48,000 steps |
 | 5-day direction | 35.7% vs 36.0% baseline — **dead** |
-| 5-day volatility | GRU 46.9% vs persistence 47.0% — **ties one line of arithmetic** |
+| 5-day volatility, all 28,676 held-out windows | GRU **49.1%** vs persistence 47.8% vs majority 39.6% — **beats arithmetic by 4.6 standard errors** |
+| The same comparison, scored on a 1,920-window prefix | 46.9% vs 47.0% — **7 of 101 tickers, and a wrong verdict** (§5.14) |
+| Served advisor | `gru@62babf47cdd5`, 202,755 params, 2,000 steps; the artifact's own numbers choose it |
 | Old generator, evidence blanked | +0.018 — **ignored its evidence** |
 | Content words present in input, old task | 30.7% — **unlearnable as posed** |
 | New generator, evidence blanked | **+1.0420** |
@@ -1224,7 +1310,7 @@ module's docstring.
 | Centring the embeddings | cosine 0.925 → **0.142**, recall moves **half a point** — a geometric fix, not a retrieval one |
 | Index | 44,811 chunks over 4,674 documents, 2006-01-03 to 2026-09-18; 3.8% exact duplicates dropped |
 | Dated sources, of everything collected | **2 of 11** — `sec_edgar` and `fed_press`; the other nine carry only a download time |
-| Tests | 391 passing |
+| Tests | 407 passing |
 
 ---
 
@@ -1292,6 +1378,16 @@ decoder the trained phrasing it matched takes exact match on held-out wordings f
 the weights loaded once and never touched. That is a 40-point gain against the loop's ~4, and it is the
 largest frozen-weight lever in the repo. See §5.12.
 
+**"You reported that your price head ties a baseline, and now it beats one. Which is true?"**
+The second, and the reason the first was wrong is the more useful answer. The head was scored on the first
+1,920 held-out windows — the index is built ticker by ticker, so that prefix is **7 of the 101 tickers** —
+while persistence was scored on a sample of all 101. Two numbers on different row sets, 0.1 points apart,
+read as a tie. Scored on the same 28,676 windows it is 49.1% against 47.8%: a real edge, 4.6 standard
+errors, and still a small one. The repair is in the code, not just the write-up — `--eval-batches` now
+defaults to every window, and the count is saved in the artifact so `beats()` requires the head to clear
+the rule by more than one standard error of its own accuracy. Without that margin, a 0.1-point gap would
+decide which advisor answers. See §5.14.
+
 **"Your retriever's vector half is near chance — why keep the code?"**
 Because it is the evidence for the claim. Deleting it would leave a sentence in the write-up with nothing
 behind it, and `scripts/eval_retrieval.py` re-runs the comparison in minutes. `SERVED = LEXICAL` is a
@@ -1312,9 +1408,11 @@ cleverer fit; (4) train the slot variant and compare unsupported-figure rates.
 Stated plainly: no LoRA; no trained dense retriever (the corpus index is BM25, measured — §5.13); no
 FastAPI backend or frontend; retrieved passages are **not** wired into the answer path, because the
 decoder was trained with exactly one passage slot and five would be out of distribution; the slot dataset
-is built but untrained; and the reranker is built but **measured not to pay** on this model. The learning
-loop is built and measured (§5.11), the serving layer it wraps (§5.12) and the retriever over the corpus
-(§5.13) — what remains is the API and UI around them.
+is built but untrained; the reranker is built but **measured not to pay** on this model; and the served
+head's `outlook_confidence` is an **uncalibrated softmax** where the persistence rule quotes a measured
+hit rate (§5.14) — calibrating it belongs with the eval gate. The learning loop is built and measured
+(§5.11), the serving layer it wraps (§5.12), the retriever over the corpus (§5.13) and the price advisory
+path (§5.14) — what remains is the API and UI around them.
 
 ---
 
@@ -1326,10 +1424,13 @@ outlook; both become an evidence passage; an encoder–decoder with Fusion-in-De
 phrases an answer over that evidence; a guardrail verifies every figure and refuses otherwise.
 
 The findings that matter are the negative ones. Five-day direction is unpredictable (35.7% vs 36.0%),
-so the agent refuses to give directional advice. The neural price head only ties a one-line persistence
-baseline, so it has not earned its place. The first generator was fluent and completely unfaithful —
-proven by ablation, caused by a task where 69% of each answer was invisible in the input. Rebuilding
-the task so every figure is copyable fixed it: blanking the evidence now costs 58× what it did.
+so the agent refuses to give directional advice. Volatility is learnable but barely: the head reaches
+49.1% against a one-line persistence baseline's 47.8%, and the artifact's own recorded numbers serve the
+rule instead whenever the head's edge is inside its own measurement noise. The first generator was fluent
+and completely unfaithful — proven by ablation, caused by a task where 69% of each answer was invisible in
+the input. Rebuilding the task so every figure is copyable fixed it: blanking the evidence now costs 58×
+what it did. And one of these findings was itself wrong: the head's "tie" with arithmetic came from
+scoring the two sides on different rows, which re-measuring found (§5.14).
 
 The thesis itself comes out positive but narrow. Asked to promise a chance of being right, the agent
 solves for that threshold from its own logged outcomes and keeps the promise to within 8.5 points, where
