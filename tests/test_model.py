@@ -442,7 +442,7 @@ def test_wordpiece_keeps_finance_shapes_whole():
 def test_decode_puts_back_the_spacing_pretokenize_dropped():
     """Served answers read this, and a space before every piece gave users "reliance . ns , - 5.6%".
     The range in the second assert is why a sign needs its left side checked too: binding it to any
-    following digit invented a "-2000", which cost 15 of 747 figures on the human Q&A set."""
+    following digit invented a "-2000", 4 of the 15 figures that clause costs on the human Q&A set."""
     line = "it fell -5.6% to 1242.30 . a stop-loss doesn't help from 1993 - 2000 ."
     # Repeated past the word and character frequency floors, or every piece trains away to [UNK].
     tokenizer = WordPiece.train([line] * 12, vocab_size=300, log=lambda *_: None)

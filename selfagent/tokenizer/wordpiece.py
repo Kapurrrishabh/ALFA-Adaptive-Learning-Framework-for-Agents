@@ -210,9 +210,15 @@ class WordPiece:
         """Text a user can read, putting back the spacing `pretokenize` dropped.
 
         A space before every piece is what served answers "reliance . ns" and "it does not : it tries".
-        A sign binds to a following digit only when a number does not precede it, so "-5.6%" reads as
-        one figure while "1993 - 2000" stays a range. Without that second condition the range decodes
-        as "1993 -2000" and invents a negative figure, which cost 15 of 747 figures on the human Q&A set.
+        Putting the punctuation back costs nothing measurable -- 523 of 747 unsupported figures on the
+        human Q&A set either way.
+
+        The `_SIGNS` clause is the whole cost, and is the one judgement here. It buys served answers a
+        readable "-5.6%" in place of "- 5.6%" for 11 of those 747 figures, because prose puts a dash
+        before a number for reasons that are not a minus sign; requiring a non-number to its left as
+        well, so "1993 - 2000" stays a range, recovers 4 of the 15 it costs unguarded. Advisory, the
+        arm that is actually served, measures identically with it and without. Delete the clause to
+        take the trade back.
         """
         pieces = [self.pieces[token_id] for token_id in ids]
         out = []
