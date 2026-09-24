@@ -65,11 +65,16 @@ def published_on(name):
     return f"{century}{year}-{month}-{day}"
 
 
-def documents(manifest, text_dir, sources=DATED_SOURCES):
-    """Every dated document with extracted text on disk, in manifest order.
+def documents(manifest, text_dir, sources=DATED_SOURCES, undated=False):
+    """Every document with extracted text on disk, in manifest order.
 
     Skips an entry whose text was never extracted -- an unreadable PDF is logged by the extractor and
     leaves no cache file -- rather than failing the whole index over one of 18,000 documents.
+
+    `undated=True` keeps documents that carry no publication date, with `day` empty. It has to be asked
+    for, because an empty date read as a date would answer a 2020 question from a 2026 release. The
+    index refuses to show an undated chunk under an as-of filter; that rule lives in `Hybrid.visible`
+    and this flag only decides whether such a chunk exists to be filtered.
     """
     manifest, text_dir = Path(manifest), Path(text_dir)
     if not manifest.exists():
@@ -84,7 +89,9 @@ def documents(manifest, text_dir, sources=DATED_SOURCES):
                 continue
             day = published_on(Path(entry["path"]).name)
             if day is None:
-                continue
+                if not undated:
+                    continue
+                day = ""
             # The extractor names its cache by the raw file's hash, which is also the document's id:
             # the same filing fetched from two URLs is one document, not two.
             key = entry["sha256"][:16]
@@ -92,5 +99,6 @@ def documents(manifest, text_dir, sources=DATED_SOURCES):
             if path.exists():
                 built.append(Document(key, entry["url"], entry["licence"], entry["source"], day, path))
     if not built:
-        raise ValueError(f"no dated documents from {sorted(wanted)} under {text_dir}")
+        kind = "documents" if undated else "dated documents"
+        raise ValueError(f"no {kind} from {sorted(wanted)} under {text_dir}")
     return built

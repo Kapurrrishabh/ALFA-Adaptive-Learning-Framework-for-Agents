@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import uvicorn  # noqa: E402
 
-from ask import build  # noqa: E402
+from ask import build, reference_from  # noqa: E402
 from backend.database import Store  # noqa: E402
 from backend.main import create_app  # noqa: E402
 from chat import adapt  # noqa: E402
@@ -32,8 +32,11 @@ def app_from(args):
     """The app, the store it writes to, and the teacher holding the verdicts that shaped the cut."""
     # One file for the accounts and the feedback, so a stored message can point at the row that judged
     # it, and the cuts are refitted from that same log.
-    agent, _, _, served = build(Path(args.artifacts), args.checkpoint, args.prices, args.gate,
-                                args.store, args.wanted, args.warmup, args.price_head)
+    artifacts = Path(args.artifacts)
+    agent, _, _, served = build(artifacts, args.checkpoint, args.prices, args.gate, args.store,
+                                args.wanted, args.warmup, args.price_head,
+                                reference_from(artifacts, args.reference_index,
+                                               args.reference_checkpoint))
     teacher = AgentTeacher(args.verdicts)
     store = Store(args.store)
     app = create_app(agent, store,
@@ -52,6 +55,9 @@ def main():
     parser.add_argument("--prices", default="data/prices")
     parser.add_argument("--gate", default="artifacts/route_gate.json")
     parser.add_argument("--price-head", default="artifacts/price_head.npz")
+    parser.add_argument("--reference-index", default="reference_index.npz",
+                        help="empty serves the seven routed intents and refuses everything else")
+    parser.add_argument("--reference-checkpoint", default="generator.npz")
     parser.add_argument("--store", default="artifacts/served.sqlite",
                         help="accounts, conversations and the feedback this deployment learns from")
     parser.add_argument("--verdicts", default="artifacts/served_verdicts.jsonl")

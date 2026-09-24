@@ -23,20 +23,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from selfagent.config import ModelConfig  # noqa: E402
 from selfagent.data import qa_pairs  # noqa: E402
 from selfagent.data.encode import build_sources  # noqa: E402
+from selfagent.data.qa_pairs import PASSAGES, QUESTION_TOKENS  # noqa: E402
 from selfagent.models.retriever import BM25  # noqa: E402
 from selfagent.tokenizer.vocab import CLS_ID, PAD_ID, SEP_ID  # noqa: E402
 from selfagent.tokenizer.wordpiece import WordPiece, pretokenize  # noqa: E402
-
-# Of the 128-token window, the question gets the smaller share: it is one question, and the passages
-# are what the answer has to be built out of.
-QUESTION_TOKENS = 48
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--qa", default="data/qa")
     parser.add_argument("--artifacts", default="artifacts")
-    parser.add_argument("--passages", type=int, default=4, help="passages retrieved per question")
+    parser.add_argument("--passages", type=int, default=PASSAGES,
+                        help="passages retrieved per question")
     parser.add_argument("--validation", type=int, default=2000)
     parser.add_argument("--limit", type=int, default=0, help="cap the pairs, for a smoke run")
     args = parser.parse_args()

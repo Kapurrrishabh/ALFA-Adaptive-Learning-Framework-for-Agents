@@ -37,6 +37,15 @@ def test_a_figure_is_read_whole(figure):
     assert guardrails.unsupported_figures(f"it is {figure} .", f"value {figure}") == []
 
 
+@pytest.mark.parametrize("text", ["the range was 0.4-0.6 of the index .", "a contribution for 2017.",
+                                  "it fell to 0. then it recovered ."])
+def test_a_text_always_supports_itself(text):
+    """The reference path serves a quote of its evidence when it cannot trust the paraphrase, so a quote
+    failing its own source would turn every such answer into a refusal. Three real shapes did: a figure
+    ending a sentence, and a signed one whose minus sign follows a digit."""
+    assert guardrails.unsupported_figures(text, text) == []
+
+
 def test_a_refusal_has_nothing_to_support():
     assert guardrails.unsupported_figures(advisory.UNSUPPORTED, "") == []
 

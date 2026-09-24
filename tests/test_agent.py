@@ -12,12 +12,15 @@ import numpy as np
 import pytest
 
 from backend import models
-from backend.agent import Router, assemble, combined, finance, lexical
+from backend.agent import PARAPHRASED, QUOTED, Reference, Router, assemble, combined, finance, lexical
 from backend.agent.core import Agent, answered
+from backend.retrieval import Chunk, Hybrid
 from selfagent import pretrained
 from selfagent.config import ModelConfig
 from selfagent.data import advisory, prices
 from selfagent.data.encode import build_sources
+from selfagent.data.qa_pairs import PASSAGES, QUESTION_TOKENS
+from selfagent.models.generator import ANSWER_TEMPERATURE, ANSWER_TOP_P
 from selfagent.learn.abstain import Abstainer
 from selfagent.models import PriceWindowClassifier
 from selfagent.tokenizer.wordpiece import pretokenize
@@ -110,9 +113,10 @@ class Config:
     max_text_length = LENGTH
 
 
-def agent(market, router, written="", confidence=0.999, cut=0.9, gate_cut=0.01, model=None):
+def agent(market, router, written="", confidence=0.999, cut=0.9, gate_cut=0.01, model=None,
+          reference=None):
     return Agent(finance, market, router, Abstainer(gate_cut), FakeTokenizer(written),
-                 model or FakeModel(confidence), Config, Abstainer(cut))
+                 model or FakeModel(confidence), Config, Abstainer(cut), reference=reference)
 
 
 # --- routing ----------------------------------------------------------------
@@ -298,6 +302,71 @@ def test_the_decoder_is_given_the_trained_wording_not_the_users(market, router):
 def test_a_stated_chance_is_absent_until_a_calibrator_is_fitted(market, router):
     turn = agent(market, router, written="it is doing fine .").answer("how is AAPL doing ?")
     assert turn.stated is None
+
+
+# --- reading an answer out of the documents ---------------------------------
+
+PASSAGE = "A stop loss order sells a holding automatically once its price falls to a level you set."
+
+
+def reference(written, confidence=0.5, floor=0.0):
+    """The retrieval path over a four-chunk index, with the decoder writing one fixed answer.
+
+    Its own tokenizer, not the advisory one: what the two decoders write is what these tests vary, and a
+    shared fake would make one of the two answers stand for both.
+    """
+    held = [Chunk(PASSAGE, [], "d0", "2021-06-01"),
+            Chunk("The committee voted to hold the target range at this meeting.", [], "d1", "2021-06-02"),
+            Chunk("Dividends are paid out of retained earnings after tax.", [], "d2", "2021-06-03"),
+            Chunk("A limit order buys only at the price you name or better.", [], "d3", "2021-06-04")]
+    return Reference(Hybrid(held, pretokenize), FakeTokenizer(written), FakeModel(confidence), Config,
+                     QUESTION_TOKENS, PASSAGES, ANSWER_TEMPERATURE, ANSWER_TOP_P, floor=floor)
+
+
+def test_a_question_naming_no_instrument_is_answered_from_the_documents(market, router):
+    """The point of the path. "no subject" means the price snapshot cannot answer it, not that we hold
+    nothing on it, and the model reads the words the user typed because there is no intent to rewrite."""
+    written = "a stop loss sells your holding once the price falls to a level you set ."
+    turn = agent(market, router, reference=reference(written)).answer("what is a stop loss order ?")
+    assert turn.spoke and turn.served == written and turn.intent == f"reference {PARAPHRASED}"
+    assert turn.asked == turn.question and turn.ticker == ""
+    assert PASSAGE in turn.evidence and "published 2021-06-01" in turn.evidence
+
+
+def test_a_paraphrase_stating_a_figure_the_passages_lack_is_replaced_by_the_passage(market, router):
+    """What makes this path servable while its generator is not: 57.1% of the figures that generator
+    writes are unsupported, and a quote of the source cannot state a figure the source does not."""
+    turn = agent(market, router, reference=reference("it triggers at 4242.42 .")).answer(
+        "what is a stop loss order ?")
+    assert turn.spoke and turn.served == PASSAGE and turn.intent == f"reference {QUOTED}"
+    assert turn.unsupported == ["4242.42"] and turn.answer == "it triggers at 4242.42 ."
+
+
+def test_a_reference_turn_states_no_chance_of_being_right(market, router):
+    """A confidence is reported but never calibrated here. The calibrator maps one to a correctness rate
+    measured on the advisory generator, so running it on these weights would quote a fitted likelihood."""
+    turn = agent(market, router, reference=reference("a stop loss sells your holding .")).answer(
+        "what is a stop loss order ?")
+    assert turn.stated is None and turn.confidence == 0.5
+
+
+def test_a_question_the_router_cannot_place_keeps_its_ticker_and_margin(market, router):
+    """The second of the two places a reference answer is tried. The turn still records what routing
+    found, because a thin margin is why this answer came from the documents rather than the figures."""
+    turn = agent(market, router, gate_cut=1e9,
+                 reference=reference("a stop loss sells your holding .")).answer(
+        "should i set a stop loss on AAPL ?")
+    assert turn.spoke and turn.intent == f"reference {PARAPHRASED}"
+    assert turn.ticker == "AAPL" and 0.0 <= turn.margin < 1e9
+
+
+def test_retrieving_nothing_leaves_the_refusal_exactly_as_it_was(market, router):
+    """The path is additive or it is not safe to add. A question the corpus cannot match has to come back
+    as the same named refusal the agent gave before this existed, not as a fifth kind of silence."""
+    turn = agent(market, router, model=ExplodingModel(),
+                 reference=reference("never written")).answer("zzzz qqqq wwww ?")
+    assert turn.because == "no subject" and not turn.spoke
+    assert (turn.served, turn.ticker, turn.intent, turn.asked) == (finance.NO_SUBJECT, "", "", "")
 
 
 # --- the week-ahead outlook -------------------------------------------------

@@ -23,13 +23,16 @@ def figures(text):
 
 
 def unsupported_figures(answer, evidence):
-    """Figures the answer states that the evidence does not, in the order they appear."""
-    return [figure for figure in figures(answer) if not _states(evidence, figure)]
+    """Figures the answer states that the evidence does not, in the order they appear.
 
-
-def _states(evidence, figure):
-    # Bounded on both sides, so 18.2 does not count as supported by an evidence line reading 18.25.
-    return re.search(rf"(?<![\d.]){re.escape(figure)}(?![\d.])", evidence) is not None
+    Both sides are read by the same extractor, which is what makes `unsupported_figures(text, text)`
+    empty for every text. Searching the evidence as a string instead did not: a figure ending a sentence
+    there is followed by a full stop, and the bounded search that stopped 18.2 passing for 18.25 also
+    refused 2017 against evidence reading "for 2017." -- so a quote of the evidence failed against it.
+    Comparing extracted figures keeps the 18.25 case, because that is not a figure the evidence states.
+    """
+    stated = set(figures(evidence))
+    return [figure for figure in figures(answer) if figure not in stated]
 
 
 def is_refusal(text, refusal):

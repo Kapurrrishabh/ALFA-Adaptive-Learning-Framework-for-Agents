@@ -20,6 +20,13 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 # which is a worse lesson than no lesson: 51% of our questions have no accepted answer.
 MINIMUM_FALLBACK_SCORE = 1
 
+# The window shape this dataset's generator learned, and the reason it lives here rather than in the
+# script that prepared it: a served row has to be laid out like a trained one, and the serving path
+# would otherwise re-declare both numbers and be free to drift. Of the 128-token window the question
+# gets the smaller share -- it is one question, and the passages are what the answer is built out of.
+QUESTION_TOKENS = 48
+PASSAGES = 4
+
 
 def load_threads(qa_root):
     """(questions, answers_by_key) over every data/qa/<site> directory.

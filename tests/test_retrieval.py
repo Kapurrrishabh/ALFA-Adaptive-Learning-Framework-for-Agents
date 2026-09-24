@@ -118,6 +118,15 @@ def test_a_sentence_longer_than_the_window_is_truncated_not_dropped(tmp_path):
     assert len(built) == 1 and len(built[0].ids) == 10
 
 
+def test_a_truncated_sentence_cuts_its_text_too_and_not_only_its_ids(tmp_path):
+    """7% of a 77-token index overflowed its own window because only the ids were cut. The text is what
+    gets stored, re-encoded and read by the decoder, so a longer one is refused there as too big."""
+    tokenizer = FakeTokenizer()
+    built = chunks(document(tmp_path, " ".join(f"word{n}" for n in range(20))), tokenizer, 10,
+                   min_tokens=1)
+    assert len(tokenizer.encode(built[0].text)) == 10
+
+
 def test_a_chunk_inherits_its_documents_key_and_date(tmp_path):
     built = chunks(document(tmp_path, "the committee met and agreed to hold.", key="abc", day=LATE),
                   FakeTokenizer(), 10, min_tokens=1)
@@ -183,6 +192,16 @@ def test_the_as_of_mask_runs_before_ranking_not_after(tmp_path):
     assert all(index.cite(found).day == LATE for found in index.search("inflation report", 5))
     visible = index.search("inflation report", 5, as_of=EARLY)
     assert len(visible) == 5 and all(index.cite(found).day == EARLY for found in visible)
+
+
+def test_an_undated_chunk_is_visible_only_when_no_as_of_is_in_play():
+    """What makes indexing the undated sources safe. An empty day sorts below every real date, so a plain
+    `<=` would let a textbook page we cannot date answer a question asked in 2020 -- the look-ahead the
+    corpus rule forbids. Excluded from a dated question, and retrievable for one that names no date."""
+    held = dated_chunks() + [Chunk("inflation report from a textbook", [], "u0", "")]
+    index = Hybrid(held, pretokenize)
+    assert 10 in index.search("inflation report", 11)
+    assert 10 not in index.search("inflation report", 11, as_of=LATE)
 
 
 def test_a_question_older_than_every_chunk_returns_nothing(tmp_path):

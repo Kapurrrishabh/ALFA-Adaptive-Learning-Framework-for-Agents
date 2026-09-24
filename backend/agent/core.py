@@ -15,6 +15,13 @@ returning a generic refusal:
 
 The last two are B's work reused unchanged, and nothing in this file fits a parameter. What adapts is
 the cut and the calibrator, both loaded from what the feedback log solved for.
+
+The first two of those five are also where a **reference** answer gets its chance. A question naming no
+instrument, or one the router cannot place, is not necessarily a question we hold nothing on -- it is one
+the price snapshot cannot answer. So before either refusal is returned, `reference` is asked to find it in
+the documents. It is tried there and nowhere else on purpose: an intent the router did place is answered
+from the figures, because that is the path whose faithfulness is measured. With no `reference` given, both
+branches refuse exactly as they did before it existed.
 """
 
 from collections import namedtuple
@@ -24,6 +31,7 @@ from selfagent.backend import xp
 from selfagent.models.generator import ANSWER_TEMPERATURE, ANSWER_TOP_P
 
 from .context import assemble
+from .reference import REFERENCE
 
 # Everything the turn did, so a caller can log it, show it, or judge it without re-running anything.
 # `served` is what a user reads; `answer` is what the model wrote, which differ exactly when a guard
@@ -40,10 +48,14 @@ class Agent:
     """
 
     def __init__(self, domain, market, router, gate, tokenizer, model, config, abstainer,
-                 calibrator=None, rng=None, temperature=ANSWER_TEMPERATURE, top_p=ANSWER_TOP_P):
+                 calibrator=None, rng=None, temperature=ANSWER_TEMPERATURE, top_p=ANSWER_TOP_P,
+                 reference=None):
         self.domain = domain
         self.market = market
         self.router = router
+        # Optional, and the default is the behaviour that was measured without it: the advisory path is
+        # what C6's numbers are on, and this only takes over questions that path was going to refuse.
+        self.reference = reference
         # Two cuts, on two different quantities, fitted the same way: `gate` on the routing margin and
         # `abstainer` on the answer's own confidence. A question can be understood and the answer still
         # not worth saying, and the reverse, so one cut could not stand for both.
@@ -61,12 +73,14 @@ class Agent:
         """One turn. Never raises on a question it cannot handle — it says which stage stopped it."""
         ticker = self.market.resolve(question)
         if ticker is None:
-            return self._quiet(question, self.domain.NO_SUBJECT, "no subject")
+            return (self._looked_up(question, as_of)
+                    or self._quiet(question, self.domain.NO_SUBJECT, "no subject"))
 
         route = self.router.route(self.domain.without_subject(question, ticker))
         if not bool(self.gate.answers([route.margin])[0]):
-            return self._quiet(question, self.domain.UNKNOWN_QUESTION, "unclear question",
-                               ticker=ticker, margin=route.margin)
+            return (self._looked_up(question, as_of, ticker=ticker, margin=route.margin)
+                    or self._quiet(question, self.domain.UNKNOWN_QUESTION, "unclear question",
+                                   ticker=ticker, margin=route.margin))
 
         evidence, shown, taken_at = self.market.snapshot(ticker, as_of)
         missing = [fact for fact in self.domain.needs(route.label) if fact not in shown]
@@ -89,6 +103,27 @@ class Agent:
         return Turn(question, asked, ticker, route.label, served if speaks else self.domain.REFUSAL,
                     written, evidence, confidence, self._stated(confidence), speaks, route.margin,
                     unsupported, because, taken_at)
+
+    def _looked_up(self, question, as_of, ticker="", margin=float("nan")):
+        """A turn read out of the documents, or None when there is nothing to read one from.
+
+        None, not a refusal, so a caller that gets nothing back still returns the refusal it already had.
+        The question is passed to the model as the user typed it: this path has no canonical phrasings to
+        rewrite it into, which is the point of it.
+
+        `stated` stays None even though a confidence was reported. The calibrator maps a confidence to a
+        chance of being right using the advisory generator's record, and these are other weights on
+        another task, so running it here would quote a likelihood nothing has measured. `as_of` carries the
+        passage's own publication date, which is the date of the evidence actually served.
+        """
+        if self.reference is None:
+            return None
+        looked = self.reference.look_up(question, as_of)
+        if looked is None:
+            return None
+        return Turn(question, question, ticker, f"{REFERENCE} {looked.how}", looked.served,
+                    looked.answer, looked.evidence, looked.confidence, None, True, margin,
+                    looked.unsupported, "", looked.day or None)
 
     def _stated(self, confidence):
         """The chance of being right, in the units B3 fitted. None until a calibrator has been fitted."""

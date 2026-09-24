@@ -67,6 +67,22 @@ def deduplicate(chunks):
     return kept
 
 
+def truncated(sentence, tokenizer, size):
+    """The longest run of whole words from the start of `sentence` that encodes within `size` tokens.
+
+    A prefix of the original text, not a decode of the truncated ids: this text is stored, re-encoded, and
+    shown to a reader as a quote, and a round trip through the vocabulary lowercases it and loses its
+    punctuation. Summing per word is exact because pretokenisation never merges across whitespace.
+    """
+    kept, total = [], 0
+    for word in sentence.split():
+        total += len(tokenizer.encode(word))
+        if total > size:
+            break
+        kept.append(word)
+    return " ".join(kept)
+
+
 def chunks(document, tokenizer, size, overlap=1, min_tokens=MIN_TOKENS):
     """`Chunk`s covering one `Document`, each at most `size` tokens, overlapping by `overlap` sentences.
 
@@ -85,7 +101,15 @@ def chunks(document, tokenizer, size, overlap=1, min_tokens=MIN_TOKENS):
                                [i for _, ids in held for i in ids], document.key, document.day))
 
     for sentence in sentences(document.text):
-        ids = tokenizer.encode(sentence)[:size]
+        ids = tokenizer.encode(sentence)
+        if len(ids) > size:
+            # The text is cut where the ids were, not left whole. It is re-encoded downstream to be read
+            # by the decoder, and a text longer than the budget it was measured against overflows that
+            # window -- which the caller can only meet by refusing the passage outright.
+            sentence = truncated(sentence, tokenizer, size)
+            if not sentence:
+                continue
+            ids = tokenizer.encode(sentence)
         if held and sum(len(kept) for _, kept in held) + len(ids) > size:
             close()
             # Carried as whole sentences, not as tokens: a chunk starting mid-sentence reads as noise to

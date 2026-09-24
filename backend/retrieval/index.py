@@ -130,10 +130,15 @@ class Hybrid:
         self.days = xp.array([chunk.day for chunk in self.chunks])
 
     def visible(self, as_of=None):
-        """A 1/0 mask over the chunks: what a question asked on `as_of` is allowed to see."""
+        """A 1/0 mask over the chunks: what a question asked on `as_of` is allowed to see.
+
+        An undated chunk carries an empty day, which compares below every real date, so a plain `<=`
+        would let one answer a dated question -- the look-ahead the corpus rule exists to stop. Excluded
+        explicitly here instead, which leaves it retrievable for a question that names no date at all.
+        """
         if as_of is None:
             return xp.ones(len(self.chunks), dtype=bool)
-        return self.days <= as_of
+        return (self.days != "") & (self.days <= as_of)
 
     def search(self, query, top_k, as_of=None, arm=SERVED):
         """Chunk indices, best first, for one arm. Shorter than `top_k` when little enough matched."""
@@ -156,6 +161,14 @@ class Hybrid:
     def cite(self, index):
         """The chunk at `index` with its document key and date, for the answer's evidence line."""
         return self.chunks[index]
+
+    def relevance(self, query, index):
+        """The lexical score of one chunk for one query, for a caller deciding whether to use it at all.
+
+        Separate from `search`, which returns positions only: a rank is comparable between the two arms
+        and a BM25 score is not, so a score belongs to the arm that produced it.
+        """
+        return float(self.lexical.scores(query)[index])
 
     def _lexical(self, query, top_k, allowed):
         scores = self.lexical.scores(query) * allowed

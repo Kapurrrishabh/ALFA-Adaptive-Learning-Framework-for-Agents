@@ -105,6 +105,12 @@ def main():
     parser.add_argument("--manifest", default="data/manifest.jsonl")
     parser.add_argument("--text", default="data/text")
     parser.add_argument("--sources", nargs="+", default=list(DATED_SOURCES))
+    parser.add_argument("--undated", action="store_true",
+                        help="keep documents carrying no publication date; they answer only questions "
+                             "that name no date, and the index enforces that")
+    # A passage has to fit the slot the generator reads it in, which is the window less the question's
+    # share. Default 0 means the whole window, which is what an index built only to be searched wants.
+    parser.add_argument("--chunk-tokens", type=int, default=0)
     # 40k chunks is ~3 minutes of encoder passes and a ~40 MB index. The corpus would be 5.1M, which is
     # 19 hours; nothing about this number is optimal, it is the largest one that keeps a rebuild cheap.
     parser.add_argument("--budget", type=int, default=40000, help="chunks to index, across all sources")
@@ -118,14 +124,15 @@ def main():
     config, weights = pretrained.load(artifacts / (args.checkpoint or "advisory_combined.npz"))
     rng = np.random.default_rng(args.seed)
 
-    every = documents(args.manifest, args.text, args.sources)
+    every = documents(args.manifest, args.text, args.sources, args.undated)
+    size = args.chunk_tokens or config.max_text_length
     by_source = {name: [document for document in every if document.source == name]
                  for name in args.sources}
     by_source = {name: docs for name, docs in by_source.items() if docs}
-    print(f"{len(every)} dated documents over {len(by_source)} sources, "
-          f"budget {args.budget} chunks at {config.max_text_length} tokens")
+    print(f"{len(every)} documents over {len(by_source)} sources, "
+          f"budget {args.budget} chunks at {size} tokens")
 
-    taken, sizes = share(by_source, args.budget, tokenizer, config.max_text_length, rng)
+    taken, sizes = share(by_source, args.budget, tokenizer, size, rng)
     for name in sorted(taken):
         whole = len(by_source[name])
         print(f"  {name:11s} {len(taken[name]):>6}/{whole:<6} documents "
@@ -134,12 +141,13 @@ def main():
     built = []
     for name in sorted(taken):
         print(f"  chunking {name}")
-        built += build(taken[name], tokenizer, config.max_text_length, print)
+        built += build(taken[name], tokenizer, size, print)
     whole = len(built)
     built = deduplicate(built)
+    dated = [chunk.day for chunk in built if chunk.day]
+    span = f"{min(dated)} to {max(dated)}" if dated else "no dated chunk"
     print(f"{len(built)} chunks after dropping {whole - len(built)} exact duplicates "
-          f"({(whole - len(built)) / whole:.1%}), {min(c.day for c in built)} to "
-          f"{max(c.day for c in built)}")
+          f"({(whole - len(built)) / whole:.1%}), {len(built) - len(dated)} undated, {span}")
 
     embedded = None
     if args.checkpoint:
@@ -156,7 +164,7 @@ def main():
     print(f"\n{len(built)} chunks -> {out} ({out.stat().st_size / 1e6:.1f} MB)")
     with open(out.with_suffix(".sources.json"), "w", encoding="utf-8") as handle:
         json.dump({"budget": args.budget, "checkpoint": args.checkpoint,
-                   "chunks": len(built), "window": config.max_text_length,
+                   "chunks": len(built), "window": size, "undated": args.undated,
                    "documents": {name: [len(taken[name]), len(by_source[name])] for name in taken}},
                   handle, indent=2)
 
