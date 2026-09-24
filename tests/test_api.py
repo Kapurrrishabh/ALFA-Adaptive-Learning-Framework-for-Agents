@@ -36,10 +36,15 @@ class Scripted:
 
     def __init__(self, served=ANSWER, spoke=True, written=None):
         self.served, self.spoke, self.written = served, spoke, written
-        self.market = SimpleNamespace(advisor=SimpleNamespace(version="persistence@20d"))
+        self.market = SimpleNamespace(advisor=SimpleNamespace(version="persistence@20d"),
+                                      paths={"AAPL": Path("AAPL.csv")}, snapshot=self._snapshot)
         self.gate = SimpleNamespace(cut=0.088)
         self.abstainer, self.calibrator = Abstainer(HAND_PICKED), None
         self.asked = []
+
+    @staticmethod
+    def _snapshot(ticker, as_of=None):
+        return EVIDENCE, {"close": "337.00", "rsi_14": "65"}, "2026-09-17"
 
     def answer(self, question, as_of=None):
         self.asked.append(question)
@@ -197,6 +202,42 @@ def test_the_model_route_names_what_is_answering(tmp_path):
     assert client.get("/model").json() == {"generator": "advisory_combined.npz",
                                            "outlook": "persistence@20d",
                                            "routing_cut": 0.088, "answer_cut": HAND_PICKED}
+
+
+def test_an_instrument_serves_the_snapshot_and_an_unknown_one_is_a_404(tmp_path):
+    """The dashboard reads this, and it must show the figures the agent was given, not others."""
+    client, _, _ = _app(tmp_path)
+    _, headers = _signed_in(client)
+    assert client.get("/instruments", headers=headers).json() == ["AAPL"]
+    assert client.get("/instruments/aapl", headers=headers).json() == {
+        "symbol": "AAPL", "as_of": "2026-09-17", "facts": {"close": "337.00", "rsi_14": "65"},
+        "evidence": EVIDENCE}
+
+    missing = client.get("/instruments/NOSUCH", headers=headers)
+    assert missing.status_code == 404 and "no price file for NOSUCH" in missing.json()["detail"]
+
+
+def test_learned_counts_only_the_asking_users_own_turns(tmp_path):
+    """The feedback table has no user column, so the join is the only thing keeping these apart."""
+    client, _, _ = _app(tmp_path, judge=_verdicts(True, False, True))
+    mine_token, mine = _signed_in(client, "mine@example.test")
+    theirs_token, theirs = _signed_in(client, "theirs@example.test")
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": mine_token})
+        socket.receive_json()
+        _ask(socket, "is AAPL overbought ?")
+        _ask(socket, "and now ?")
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": theirs_token})
+        socket.receive_json()
+        _ask(socket, "is AAPL overbought ?")
+
+    ours = client.get("/learned", headers=mine).json()
+    assert (ours["asked"], ours["spoke"], ours["right"], ours["wrong"]) == (2, 2, 1, 1)
+    # Their one turn is in the same log the cut was fitted from, and still not in our counts.
+    assert client.get("/learned", headers=theirs).json()["asked"] == 1
+    assert ours["log_rows"] == 3 and ours["answer_cut"] != HAND_PICKED
 
 
 @pytest.mark.parametrize("email", ["one@example.test"])

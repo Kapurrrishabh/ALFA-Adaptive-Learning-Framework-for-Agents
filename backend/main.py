@@ -98,6 +98,39 @@ def create_app(agent, store, judge, refit, served):
         return {"trade": store.record_trade(_bearer(token), new.symbol, new.side, new.quantity,
                                             new.price)}
 
+    @app.get("/instruments")
+    async def instruments(token=Header(default="", alias="Authorization")):
+        """What can be asked about, from the price files on disk. There is no other universe."""
+        _bearer(token)
+        return sorted(agent.market.paths)
+
+    @app.get("/instruments/{symbol}")
+    async def instrument(symbol: str, as_of: str = None,
+                         token=Header(default="", alias="Authorization")):
+        """The same snapshot the agent is given for this instrument, and nothing the agent cannot see.
+
+        Deliberately the figures only: putting a generated read here would be a second answering path
+        beside `/chat`, measured by nothing, and the guard that screens figures runs in that one.
+        """
+        _bearer(token)
+        held = symbol.upper()
+        if held not in agent.market.paths:
+            raise HTTPException(404, f"no price file for {symbol}; ask /instruments for the universe")
+        evidence, shown, taken_at = agent.market.snapshot(held, as_of)
+        return {"symbol": held, "as_of": str(taken_at), "facts": shown, "evidence": evidence}
+
+    @app.get("/learned")
+    async def learned(token=Header(default="", alias="Authorization")):
+        """What this user's feedback has done to the agent, and what it was fitted from.
+
+        `answer_cut` and `log_rows` are the deployment's, not this user's: one cut is fitted from the
+        whole log. Saying so here is the point -- the page has to show which part is yours.
+        """
+        mine = store.learning(_bearer(token))
+        agreed, of = store.feedback.agreement()
+        return {**mine._asdict(), "answer_cut": agent.abstainer.cut, "routing_cut": agent.gate.cut,
+                "log_rows": len(store.feedback), "judges_agreed": agreed, "judges_compared": of}
+
     @app.get("/model")
     async def model():
         """What is answering, so a client can show it rather than trusting the deployment."""

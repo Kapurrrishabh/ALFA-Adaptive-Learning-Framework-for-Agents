@@ -90,6 +90,7 @@ ROUNDS = 200_000
 BUFFER_TURNS = 10
 
 Position = namedtuple("Position", "symbol quantity average_price")
+Learning = namedtuple("Learning", "asked spoke right wrong unjudged withheld")
 Message = namedtuple("Message", "at question served intent ticker evidence confidence stated spoke "
                                 "because feedback_id")
 
@@ -119,6 +120,27 @@ def fold_positions(trades):
         held[symbol] = (have, average if have else 0.0)
     return [Position(symbol, have, average) for symbol, (have, average) in sorted(held.items())
             if have]
+
+
+def fold_learning(turns):
+    """What one user's turns amount to: coverage, verdicts, and which stage withheld the rest.
+
+    Free of the database for the same reason as the fold above. `right` and `wrong` count only turns a
+    judge actually ruled on, so they do not add up to `spoke` and are not meant to.
+    """
+    withheld = {}
+    right = wrong = unjudged = 0
+    for spoke, because, is_right in turns:
+        if not spoke:
+            withheld[because] = withheld.get(because, 0) + 1
+        if is_right is None:
+            unjudged += 1
+        elif is_right:
+            right += 1
+        else:
+            wrong += 1
+    return Learning(len(turns), sum(1 for spoke, _, _ in turns if spoke), right, wrong, unjudged,
+                    dict(sorted(withheld.items(), key=lambda pair: -pair[1])))
 
 
 class Store:
@@ -252,6 +274,19 @@ class Store:
         return [tuple(row) for row in self._connection.execute(
             "SELECT at, symbol, side, quantity, price FROM trades WHERE user_id = ? "
             "ORDER BY id", (self.user_of(token),))]
+
+    def learning(self, token):
+        """This user's own coverage and verdicts, over every conversation they have had.
+
+        The feedback table carries no user, so the join through their conversations is what makes this
+        theirs rather than the deployment's. A turn the decoder never reached has no feedback row, which
+        is why the verdict is left-joined instead of filtered on.
+        """
+        return fold_learning([tuple(row) for row in self._connection.execute(
+            "SELECT m.spoke, m.because, f.is_right FROM messages m"
+            " JOIN conversations c ON c.id = m.conversation_id"
+            " LEFT JOIN feedback f ON f.id = m.feedback_id"
+            " WHERE c.user_id = ? ORDER BY m.id", (self.user_of(token),))])
 
     def _trades_of(self, user_id):
         return [tuple(row) for row in self._connection.execute(

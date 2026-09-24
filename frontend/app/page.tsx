@@ -217,6 +217,13 @@ export default function ChatPage() {
     if (!loading && !user) router.push("/login");
   }, [loading, user, router]);
 
+  // Arriving from the dashboard prefills its question rather than sending it, so it stays editable.
+  // Read off the location instead of useSearchParams, which would need a Suspense boundary here.
+  useEffect(() => {
+    const asked = new URLSearchParams(window.location.search).get("ask");
+    if (asked) setQuestion(asked);
+  }, []);
+
   useEffect(() => {
     if (!user) return;
     fetcher<Model>("/model").then(setModel).catch(() => setModel(null));

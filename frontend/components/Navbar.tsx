@@ -8,9 +8,11 @@ import toast from "react-hot-toast";
 
 import { useAuth } from "@/hooks/useAuth";
 
-// Only the two the backend can serve. A link to a page whose endpoints do not exist is worse than no link.
+// Only what the backend can serve. A link to a page whose endpoints do not exist is worse than no link.
 const NAV_LINKS = [
   { name: "Ask", path: "/" },
+  { name: "Instruments", path: "/dashboard" },
+  { name: "Learning", path: "/learned" },
   { name: "Portfolio", path: "/portfolio" },
 ];
 

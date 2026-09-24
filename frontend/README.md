@@ -9,6 +9,12 @@ removed rather than shipped returning errors.
   answer, the evidence it was given, the routing margin and confidence, and the verdict once the turn
   is stored. When the agent's confidence sits under the cut it fitted from past feedback, the answer
   is withheld and the page says so; that threshold is the only thing in the system that learns.
+- `/dashboard` — the snapshot `GET /instruments/{symbol}` hands the agent for one instrument, labelled and
+  with the evidence line it becomes. The figures only: a generated read here would be a second answering
+  path beside `/chat`, and the guard that screens figures runs in that one.
+- `/learned` — what your feedback has done to the agent, from `GET /learned`. Your coverage and verdicts,
+  which stage withheld the rest, and the abstention cut those were fitted into. It says plainly which
+  numbers are yours and which are the deployment's, because one cut is fitted from the whole log.
 - `/portfolio` — simulated positions folded from the trade log at average cost. No money moves.
 - `/login` — register and log in against `POST /auth/register|login`. The token lives in
   `localStorage`; there is no third-party identity provider.
