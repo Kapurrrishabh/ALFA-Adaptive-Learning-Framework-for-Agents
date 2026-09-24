@@ -28,7 +28,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend.retrieval import chunks, deduplicate, documents, save  # noqa: E402
+from backend.retrieval import answers, chunks, deduplicate, documents, save  # noqa: E402
 from backend.retrieval.corpus import DATED_SOURCES  # noqa: E402
 from selfagent import pretrained  # noqa: E402
 from selfagent.models import GroundedGenerator  # noqa: E402
@@ -55,8 +55,7 @@ def estimate(docs, tokenizer, size, rng, sampled=SAMPLED):
     is not the length of a 2024 one.
     """
     picked = [docs[index] for index in rng.permutation(len(docs))[:sampled]]
-    counts = [len(chunks(document, tokenizer, size)) for document in picked]
-    return max(1.0, float(np.mean(counts)))
+    return max(1.0, float(np.mean([len(chunks(document, tokenizer, size)) for document in picked])))
 
 
 def share(by_source, budget, tokenizer, size, rng, weighting=BY_SOURCE):
@@ -120,14 +119,19 @@ def main():
     parser.add_argument("--undated", action="store_true",
                         help="keep documents carrying no publication date; they answer only questions "
                              "that name no date, and the index enforces that")
-    # A passage has to fit the slot the generator reads it in, which is the window less the question's
-    # share. Default 0 means the whole window, which is what an index built only to be searched wants.
+    # What the window costs is measured, on whether the index finds the answer a question's asker
+    # accepted: 192 tokens found 29.4% of them in the top 5, against 26.2% at 77 and 27.2% at 384. A
+    # passage wider than the generator's slot is cut to it and only for the paraphrase, which is not
+    # served. Default 0 means the whole encoder window, for an index built to be embedded.
     parser.add_argument("--chunk-tokens", type=int, default=0)
     # 40k chunks is ~3 minutes of encoder passes and a ~40 MB index. The corpus would be 5.1M, which is
     # 19 hours; nothing about this number is optimal, it is the largest one that keeps a rebuild cheap.
     parser.add_argument("--budget", type=int, default=40000, help="chunks to index, across all sources")
     parser.add_argument("--weighting", choices=WEIGHTINGS, default=BY_SOURCE,
                         help="how the budget is divided between sources")
+    parser.add_argument("--qa", default="",
+                        help="the data/qa root; indexes the answer each collected thread endorsed, as "
+                             "one source per site, instead of the thread text with its question in it")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", default="index.npz")
@@ -139,10 +143,15 @@ def main():
     rng = np.random.default_rng(args.seed)
 
     every = documents(args.manifest, args.text, args.sources, args.undated)
+    if args.qa:
+        if not args.undated:
+            raise ValueError("--qa records carry no publication date, so --undated must be given with "
+                             "them; without it they would be indexed as answerable on any date")
+        every = every + answers(args.manifest, args.qa)
     size = args.chunk_tokens or config.max_text_length
-    by_source = {name: [document for document in every if document.source == name]
-                 for name in args.sources}
-    by_source = {name: docs for name, docs in by_source.items() if docs}
+    by_source = {}
+    for document in every:
+        by_source.setdefault(document.source, []).append(document)
     print(f"{len(every)} documents over {len(by_source)} sources, "
           f"budget {args.budget} chunks at {size} tokens")
 
@@ -178,6 +187,7 @@ def main():
     print(f"\n{len(built)} chunks -> {out} ({out.stat().st_size / 1e6:.1f} MB)")
     with open(out.with_suffix(".sources.json"), "w", encoding="utf-8") as handle:
         json.dump({"budget": args.budget, "checkpoint": args.checkpoint, "weighting": args.weighting,
+                   "qa": args.qa,
                    "chunks": len(built), "window": size, "undated": args.undated,
                    "documents": {name: [len(taken[name]), len(by_source[name])] for name in taken}},
                   handle, indent=2)

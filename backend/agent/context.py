@@ -16,10 +16,23 @@ from selfagent.data.encode import build_sources
 Context = namedtuple("Context", "question evidence source keep")
 
 
-def assemble(tokenizer, question, passages, length, question_tokens, slots=1):
-    """The model input for one turn, and the text it was built from."""
+def assemble(tokenizer, question, passages, length, question_tokens, slots=1, cut=False):
+    """The model input for one turn, and the text it was built from.
+
+    `cut` is for the caller whose passages are sized for retrieval rather than for this decoder: it feeds
+    each one's opening `room` tokens and reports those as the evidence. Cut here rather than left to
+    `build_sources`, which drops the same tokens but not from the evidence line, and a figure checked
+    against text the model never read is not checked.
+    """
     passage_ids = [tokenizer.encode(passage) for passage in passages]
     room = length - question_tokens - 3
+    if cut:
+        shortened = [ids[:room] for ids in passage_ids]
+        # Only what was actually cut is decoded back: encoding and decoding a passage that already fits
+        # would round-trip its casing and spacing for nothing.
+        passages = [text if len(ids) <= room else tokenizer.decode(short)
+                    for text, ids, short in zip(passages, passage_ids, shortened)]
+        passage_ids = shortened
     over = [len(ids) for ids in passage_ids if len(ids) > room]
     if over:
         raise ValueError(

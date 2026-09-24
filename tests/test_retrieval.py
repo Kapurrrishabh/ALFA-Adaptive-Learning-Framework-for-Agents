@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from backend.retrieval import (ARMS, HYBRID, LEXICAL, SERVED, VECTOR, Chunk, Document, Hybrid,  # noqa: E402
-                               chunks, deduplicate, documents, fuse, load, published_on, save)
+                               answers, chunks, deduplicate, documents, fuse, load, published_on, save)
 from backend.retrieval.index import RRF_K, centred, without  # noqa: E402
 from eval_retrieval import queries  # noqa: E402
 from selfagent.tokenizer.wordpiece import pretokenize  # noqa: E402
@@ -321,3 +321,89 @@ def test_the_most_distinctive_sentence_is_the_query_not_a_random_one():
     asked = queries(held, np.random.default_rng(0), 1,
                     lambda text: np.mean([rare.get(term, 0.0) for term in pretokenize(text)] or [0.0]))
     assert asked[0][0].startswith("The repo corridor")
+
+
+# --- the answers, indexed instead of the threads holding them ----------------
+
+
+def qa(tmp_path, questions, answers):
+    """A `data/qa/<site>` tree in the shape `dataforge` leaves it, one site."""
+    site = tmp_path / "qa" / "money"
+    site.mkdir(parents=True, exist_ok=True)
+    for name, records in (("questions", questions), ("answers", answers)):
+        with (site / f"{name}.jsonl").open("w", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record) + "\n")
+    return tmp_path / "qa"
+
+
+def thread(question_id, accepted=None):
+    """Ids are strings and the site is its full domain, which is how the collector writes them."""
+    return {"site": "money.stackexchange.com", "id": str(question_id), "title": "what is a stop loss ?",
+            "text": "asked badly", "accepted_answer_id": accepted}
+
+
+def reply(answer_id, question_id, text, score=0):
+    return {"site": "money.stackexchange.com", "id": str(answer_id), "question_id": str(question_id),
+            "text": text, "score": score}
+
+
+def threaded(sha256, question_id):
+    """A manifest row for a collected thread, whose URL is what the key is looked up by."""
+    return {"source": "stackexchange", "path": "data/raw/stackexchange/t.json", "sha256": sha256,
+            "url": f"https://money.stackexchange.com/questions/{question_id}",
+            "licence": "CC BY-SA 4.0", "fetched_at": "2026-09-22T00:00:00Z"}
+
+
+def test_an_indexed_answer_holds_the_answers_words_and_not_the_questions(tmp_path):
+    """The whole reason this path exists. Indexing the flattened thread put the asker's words in the
+    corpus, so a question retrieved a question: measured, `what is a stop loss order ?` served a
+    stranger's wash-sale question while the passages below it were all on topic."""
+    manifest, _ = corpus(tmp_path, [threaded("a" * 64, 11)])
+    root = qa(tmp_path, [thread(11, accepted=99)], [reply(99, 11, "it sells at the stop price.")])
+    built, = answers(manifest, root)
+    assert built.text == "it sells at the stop price."
+    assert "asked badly" not in built.text and "stop loss ?" not in built.text
+
+
+def test_an_indexed_answer_is_keyed_by_the_manifest_row_that_licences_it(tmp_path):
+    """A citation resolves through the document key, so a key this corpus invented would attribute a
+    CC BY-SA answer to nothing."""
+    manifest, _ = corpus(tmp_path, [threaded("b" * 64, 11)])
+    built, = answers(manifest, qa(tmp_path, [thread(11, accepted=99)],
+                                  [reply(99, 11, "it sells at the stop price.")]))
+    assert built.key == "b" * 16 and built.source == "qa_money"
+
+
+def test_an_answer_nobody_endorsed_is_not_indexed(tmp_path):
+    """Retrieving the wrong answer is the failure this path can still have, so the corpus holds only the
+    ones the asker accepted or the site voted up."""
+    manifest, _ = corpus(tmp_path, [threaded("a" * 64, 11), threaded("b" * 64, 12)])
+    root = qa(tmp_path, [thread(11, accepted=99), thread(12)],
+              [reply(99, 11, "accepted."), reply(98, 12, "downvoted.", score=-2)])
+    assert [built.text for built in answers(manifest, root)] == ["accepted."]
+
+
+def test_a_thread_the_manifest_never_recorded_is_skipped_not_indexed_unattributable(tmp_path):
+    manifest, _ = corpus(tmp_path, [threaded("a" * 64, 11)])
+    root = qa(tmp_path, [thread(11, accepted=99), thread(12, accepted=98)],
+              [reply(99, 11, "recorded."), reply(98, 12, "collected in another run.")])
+    assert [built.key for built in answers(manifest, root)] == ["a" * 16]
+
+
+def test_no_thread_matching_the_manifest_at_all_is_an_error_not_an_empty_corpus(tmp_path):
+    """Silently indexing nothing would look like a corpus with no endorsed answers in it."""
+    manifest, _ = corpus(tmp_path, [threaded("a" * 64, 11)])
+    root = qa(tmp_path, [thread(12, accepted=98)], [reply(98, 12, "another run.")])
+    with pytest.raises(ValueError, match="collected from different runs"):
+        answers(manifest, root)
+
+
+def test_an_answer_carries_no_date_so_it_answers_only_undated_questions(tmp_path):
+    """The records hold no creation date. An answer dated by its collection would be evidence the index
+    served for a day nobody could show it was true on."""
+    manifest, _ = corpus(tmp_path, [threaded("a" * 64, 11)])
+    built, = answers(manifest, qa(tmp_path, [thread(11, accepted=99)], [reply(99, 11, "no date.")]))
+    assert built.day == ""
+    held = chunks(built, FakeTokenizer(), 10, min_tokens=1)
+    assert Hybrid(held, pretokenize).search("no date", 1, as_of=LATE) == []

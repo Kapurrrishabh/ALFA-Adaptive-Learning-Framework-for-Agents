@@ -88,8 +88,11 @@ class Reference:
             # whose words these are. The confidence is absent because the model chose none of them.
             return Looked(quote, evidence, QUOTED, [], float("nan"), quote, chunks[0].day)
 
+        # Cut to the slot: the index is chunked for retrieval, at a window measured on whether it finds
+        # the endorsed answer, and that window is wider than this decoder's. Quoting serves the passage
+        # whole; only the measured paraphrase is limited to the opening of it.
         context = assemble(self.tokenizer, question, [chunk.text for chunk in chunks],
-                           self.config.max_text_length, self.question_tokens, self.passages)
+                           self.config.max_text_length, self.question_tokens, self.passages, cut=True)
         produced = self.model.generate(context.source, context.keep, self.temperature, self.top_p,
                                        self.rng)
         confidence = float(self.model.confidence(context.source, produced, context.keep)[0])

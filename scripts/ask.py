@@ -28,7 +28,6 @@ from backend.models import registry  # noqa: E402
 from backend.retrieval import Hybrid, load  # noqa: E402
 from chat import adapt  # noqa: E402
 from check_answers import load_model  # noqa: E402
-from selfagent.config import ModelConfig  # noqa: E402
 from selfagent.data.qa_pairs import PASSAGES, QUESTION_TOKENS  # noqa: E402
 from selfagent.learn import FeedbackLog  # noqa: E402
 from selfagent.learn.abstain import Abstainer  # noqa: E402
@@ -62,9 +61,10 @@ def reference_from(artifacts, index_name, checkpoint, paraphrase=False):
     path = artifacts / index_name
     if not path.exists():
         raise FileNotFoundError(
-            f"no reference index at {path}; build one with scripts/build_index.py "
-            f"--undated --checkpoint '' --out {index_name} "
-            f"--chunk-tokens {ModelConfig.max_text_length - QUESTION_TOKENS - 3}"
+            f"no reference index at {path}; build one with scripts/build_index.py --qa data/qa "
+            f"--undated --checkpoint '' --chunk-tokens 192 --weighting by-documents --budget 500000 "
+            f"--sources wikipedia openstax ncert rbi sebi fed_press sec_edgar gutenberg "
+            f"--out {index_name}"
         )
     chunks, _ = load(path)
     # Lexical only, which is what the index serves by: the vector arm measured 1.5% recall against 15.5%,

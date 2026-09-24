@@ -73,7 +73,12 @@ class FakeTokenizer:
         return [self.ids.setdefault(word, len(self.ids) + 5) for word in pretokenize(text)]
 
     def decode(self, ids):
-        return self.written
+        # Its own words back when the fake was told to write nothing, because a cut passage decodes ids
+        # that came from real text rather than from the model.
+        if self.written:
+            return self.written
+        words = {value: word for word, value in self.ids.items()}
+        return " ".join(words[one] for one in ids)
 
 
 class FakeModel:
@@ -242,6 +247,19 @@ def test_evidence_too_long_for_the_window_is_refused_not_truncated():
     with pytest.raises(ValueError, match="exceeds"):
         assemble(FakeTokenizer(), "how is it doing ?", [" ".join(["word"] * LENGTH)], LENGTH,
                  finance.QUESTION_TOKENS)
+
+
+def test_a_cut_passage_reports_the_part_the_model_read_as_its_evidence():
+    """What `cut` is for, and the failure it avoids. The reference index is chunked at the window that
+    finds answers, which is wider than this decoder's slot, so its passages have to be cut somewhere.
+    `build_sources` would cut them anyway and leave the evidence line whole -- and a figure checked
+    against text the model never read is not checked."""
+    tokenizer = FakeTokenizer()
+    room = LENGTH - finance.QUESTION_TOKENS - 3
+    words = [f"{first}{second}" for first in "abcdefghij" for second in "abcdefghijklm"]
+    context = assemble(tokenizer, "how is it doing ?", [" ".join(words)], LENGTH,
+                       finance.QUESTION_TOKENS, cut=True)
+    assert context.evidence == " ".join(words[:room])
 
 
 # --- the five ways a turn stops --------------------------------------------

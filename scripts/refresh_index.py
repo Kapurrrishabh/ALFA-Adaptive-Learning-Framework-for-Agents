@@ -34,7 +34,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from backend.retrieval import deduplicate, documents, load, save  # noqa: E402
+from backend.retrieval import answers, deduplicate, documents, load, save  # noqa: E402
 from build_index import BY_SOURCE, build, share, vectors  # noqa: E402
 from selfagent import pretrained  # noqa: E402
 from selfagent.models import GroundedGenerator  # noqa: E402
@@ -101,6 +101,10 @@ def main():
           f"over {len(sources)} sources, {how}")
 
     every = documents(args.manifest, args.text, sources, built["undated"])
+    if built.get("qa"):
+        # Indexed as answers rather than thread text, so a refresh has to read them the same way or it
+        # would append the question text this index was built to keep out.
+        every = every + answers(args.manifest, built["qa"])
     by_source = fresh(every, {chunk.document for chunk in existing})
     if not by_source:
         print(f"nothing new in {args.manifest}; collect first, then run this again")
@@ -108,8 +112,6 @@ def main():
     print(f"{sum(len(docs) for docs in by_source.values())} new documents over "
           f"{len(by_source)} sources, budget {args.budget} chunks")
 
-    # An index written before the flag existed was built the one way there was, which is a fact about those
-    # files rather than a default chosen here.
     taken, sizes = share(by_source, args.budget, tokenizer, size, rng,
                          built.get("weighting", BY_SOURCE))
     for name in sorted(taken):
