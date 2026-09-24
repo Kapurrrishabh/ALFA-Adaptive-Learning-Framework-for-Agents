@@ -36,7 +36,7 @@ def app_from(args):
     agent, _, _, served = build(artifacts, args.checkpoint, args.prices, args.gate, args.store,
                                 args.wanted, args.warmup, args.price_head,
                                 reference_from(artifacts, args.reference_index,
-                                               args.reference_checkpoint))
+                                               args.reference_checkpoint, args.paraphrase))
     teacher = AgentTeacher(args.verdicts)
     store = Store(args.store)
     app = create_app(agent, store,
@@ -58,6 +58,8 @@ def main():
     parser.add_argument("--reference-index", default="reference_index.npz",
                         help="empty serves the seven routed intents and refuses everything else")
     parser.add_argument("--reference-checkpoint", default="generator.npz")
+    parser.add_argument("--paraphrase", action="store_true",
+                        help="serve the reference generator's words rather than the passage it read")
     parser.add_argument("--store", default="artifacts/served.sqlite",
                         help="accounts, conversations and the feedback this deployment learns from")
     parser.add_argument("--verdicts", default="artifacts/served_verdicts.jsonl")

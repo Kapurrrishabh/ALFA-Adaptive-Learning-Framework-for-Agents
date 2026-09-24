@@ -109,7 +109,9 @@ def main():
     parser.add_argument("--show", type=int, default=5, help="answers to print in full, for reading")
     args = parser.parse_args()
 
-    reference = reference_from(Path(args.artifacts), args.index, args.checkpoint)
+    # Paraphrasing on, whatever serving does. This run is what decided serving quotes instead, and a
+    # measurement that stopped generating could no longer tell anyone whether that is still the right call.
+    reference = reference_from(Path(args.artifacts), args.index, args.checkpoint, paraphrase=True)
     rng = np.random.default_rng(args.seed)
     questions = sampled(args.qa, args.questions, rng)
     print(f"{len(reference.index.chunks)} chunks, {len(questions)} questions, {args.checkpoint}")

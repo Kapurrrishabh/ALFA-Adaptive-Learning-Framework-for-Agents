@@ -309,7 +309,7 @@ def test_a_stated_chance_is_absent_until_a_calibrator_is_fitted(market, router):
 PASSAGE = "A stop loss order sells a holding automatically once its price falls to a level you set."
 
 
-def reference(written, confidence=0.5, floor=0.0):
+def reference(written, confidence=0.5, floor=0.0, paraphrase=False, model=None):
     """The retrieval path over a four-chunk index, with the decoder writing one fixed answer.
 
     Its own tokenizer, not the advisory one: what the two decoders write is what these tests vary, and a
@@ -319,24 +319,38 @@ def reference(written, confidence=0.5, floor=0.0):
             Chunk("The committee voted to hold the target range at this meeting.", [], "d1", "2021-06-02"),
             Chunk("Dividends are paid out of retained earnings after tax.", [], "d2", "2021-06-03"),
             Chunk("A limit order buys only at the price you name or better.", [], "d3", "2021-06-04")]
-    return Reference(Hybrid(held, pretokenize), FakeTokenizer(written), FakeModel(confidence), Config,
-                     QUESTION_TOKENS, PASSAGES, ANSWER_TEMPERATURE, ANSWER_TOP_P, floor=floor)
+    return Reference(Hybrid(held, pretokenize), FakeTokenizer(written),
+                     model or FakeModel(confidence), Config, QUESTION_TOKENS, PASSAGES,
+                     ANSWER_TEMPERATURE, ANSWER_TOP_P, floor=floor, paraphrase=paraphrase)
 
 
 def test_a_question_naming_no_instrument_is_answered_from_the_documents(market, router):
-    """The point of the path. "no subject" means the price snapshot cannot answer it, not that we hold
-    nothing on it, and the model reads the words the user typed because there is no intent to rewrite."""
-    written = "a stop loss sells your holding once the price falls to a level you set ."
-    turn = agent(market, router, reference=reference(written)).answer("what is a stop loss order ?")
-    assert turn.spoke and turn.served == written and turn.intent == f"reference {PARAPHRASED}"
+    """The point of the path, and what it serves by default: the source's own sentence, cited. "no
+    subject" means the price snapshot cannot answer it, not that we hold nothing on it. An exploding
+    decoder is what pins the other half of the claim -- quoting does not run the model at all, so there
+    is no confidence to report."""
+    turn = agent(market, router, reference=reference("never written", model=ExplodingModel())).answer(
+        "what is a stop loss order ?")
+    assert turn.spoke and turn.served == PASSAGE and turn.intent == f"reference {QUOTED}"
     assert turn.asked == turn.question and turn.ticker == ""
     assert PASSAGE in turn.evidence and "published 2021-06-01" in turn.evidence
+    assert turn.confidence != turn.confidence and turn.stated is None
+
+
+def test_paraphrasing_serves_the_models_words_rather_than_the_passage(market, router):
+    """The branch the --paraphrase flag exists for. The generator's behaviour has to stay demonstrable
+    next to the decision to stop serving it, so asking for it has to actually change what is served."""
+    written = "a stop loss sells your holding once the price falls to a level you set ."
+    turn = agent(market, router, reference=reference(written, paraphrase=True)).answer(
+        "what is a stop loss order ?")
+    assert turn.spoke and turn.served == written and turn.intent == f"reference {PARAPHRASED}"
 
 
 def test_a_paraphrase_stating_a_figure_the_passages_lack_is_replaced_by_the_passage(market, router):
-    """What makes this path servable while its generator is not: 57.1% of the figures that generator
-    writes are unsupported, and a quote of the source cannot state a figure the source does not."""
-    turn = agent(market, router, reference=reference("it triggers at 4242.42 .")).answer(
+    """Why paraphrasing is not served by default, and what still guards it when it is asked for: 57.1% of
+    the figures that generator writes are unsupported, and a quote cannot state a figure its source does
+    not."""
+    turn = agent(market, router, reference=reference("it triggers at 4242.42 .", paraphrase=True)).answer(
         "what is a stop loss order ?")
     assert turn.spoke and turn.served == PASSAGE and turn.intent == f"reference {QUOTED}"
     assert turn.unsupported == ["4242.42"] and turn.answer == "it triggers at 4242.42 ."
@@ -345,7 +359,8 @@ def test_a_paraphrase_stating_a_figure_the_passages_lack_is_replaced_by_the_pass
 def test_a_reference_turn_states_no_chance_of_being_right(market, router):
     """A confidence is reported but never calibrated here. The calibrator maps one to a correctness rate
     measured on the advisory generator, so running it on these weights would quote a fitted likelihood."""
-    turn = agent(market, router, reference=reference("a stop loss sells your holding .")).answer(
+    turn = agent(market, router,
+                 reference=reference("a stop loss sells your holding .", paraphrase=True)).answer(
         "what is a stop loss order ?")
     assert turn.stated is None and turn.confidence == 0.5
 
@@ -354,9 +369,9 @@ def test_a_question_the_router_cannot_place_keeps_its_ticker_and_margin(market, 
     """The second of the two places a reference answer is tried. The turn still records what routing
     found, because a thin margin is why this answer came from the documents rather than the figures."""
     turn = agent(market, router, gate_cut=1e9,
-                 reference=reference("a stop loss sells your holding .")).answer(
+                 reference=reference("never written", model=ExplodingModel())).answer(
         "should i set a stop loss on AAPL ?")
-    assert turn.spoke and turn.intent == f"reference {PARAPHRASED}"
+    assert turn.spoke and turn.intent == f"reference {QUOTED}"
     assert turn.ticker == "AAPL" and 0.0 <= turn.margin < 1e9
 
 

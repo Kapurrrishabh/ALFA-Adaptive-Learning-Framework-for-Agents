@@ -39,6 +39,14 @@ from selfagent.tokenizer.wordpiece import WordPiece  # noqa: E402
 # document from 370; a tighter estimate would not change how the budget is shared.
 SAMPLED = 40
 
+# How the chunk budget is divided. `by-source` gives each source an equal share, which maximises how many
+# sources a given chunk count covers and is what an index built to answer dated questions wants. It is also
+# why the first reference index held 371 of 148,034 Stack Exchange threads: an equal share of chunks is a
+# tiny share of a source whose documents are short. `by-documents` weights the share by how many documents
+# a source holds, which is what an index built to answer prose questions wants.
+BY_SOURCE, BY_DOCUMENTS = "by-source", "by-documents"
+WEIGHTINGS = (BY_SOURCE, BY_DOCUMENTS)
+
 
 def estimate(docs, tokenizer, size, rng, sampled=SAMPLED):
     """Mean chunks per document, from a random sample rather than the first few.
@@ -51,7 +59,7 @@ def estimate(docs, tokenizer, size, rng, sampled=SAMPLED):
     return max(1.0, float(np.mean(counts)))
 
 
-def share(by_source, budget, tokenizer, size, rng):
+def share(by_source, budget, tokenizer, size, rng, weighting=BY_SOURCE):
     """{source: documents to index}, fitting the budget, smallest source first.
 
     Smallest first is what makes the leftovers work: a source needing less than its even share hands the
@@ -63,7 +71,11 @@ def share(by_source, budget, tokenizer, size, rng):
     taken, left = {}, budget
     for position, name in enumerate(order):
         docs, per = by_source[name], sizes[name]
-        allowance = left / (len(order) - position)
+        rest = order[position:]
+        if weighting == BY_DOCUMENTS:
+            allowance = left * len(docs) / sum(len(by_source[other]) for other in rest)
+        else:
+            allowance = left / len(rest)
         affordable = max(1, int(allowance / per))
         if affordable >= len(docs):
             taken[name], left = docs, left - len(docs) * per
@@ -114,6 +126,8 @@ def main():
     # 40k chunks is ~3 minutes of encoder passes and a ~40 MB index. The corpus would be 5.1M, which is
     # 19 hours; nothing about this number is optimal, it is the largest one that keeps a rebuild cheap.
     parser.add_argument("--budget", type=int, default=40000, help="chunks to index, across all sources")
+    parser.add_argument("--weighting", choices=WEIGHTINGS, default=BY_SOURCE,
+                        help="how the budget is divided between sources")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", default="index.npz")
@@ -132,7 +146,7 @@ def main():
     print(f"{len(every)} documents over {len(by_source)} sources, "
           f"budget {args.budget} chunks at {size} tokens")
 
-    taken, sizes = share(by_source, args.budget, tokenizer, size, rng)
+    taken, sizes = share(by_source, args.budget, tokenizer, size, rng, args.weighting)
     for name in sorted(taken):
         whole = len(by_source[name])
         print(f"  {name:11s} {len(taken[name]):>6}/{whole:<6} documents "
@@ -163,7 +177,7 @@ def main():
     save(out, built, embedded)
     print(f"\n{len(built)} chunks -> {out} ({out.stat().st_size / 1e6:.1f} MB)")
     with open(out.with_suffix(".sources.json"), "w", encoding="utf-8") as handle:
-        json.dump({"budget": args.budget, "checkpoint": args.checkpoint,
+        json.dump({"budget": args.budget, "checkpoint": args.checkpoint, "weighting": args.weighting,
                    "chunks": len(built), "window": size, "undated": args.undated,
                    "documents": {name: [len(taken[name]), len(by_source[name])] for name in taken}},
                   handle, indent=2)

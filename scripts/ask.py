@@ -48,13 +48,14 @@ DEMO = (
 )
 
 
-def reference_from(artifacts, index_name, checkpoint):
+def reference_from(artifacts, index_name, checkpoint, paraphrase=False):
     """The retrieval answer path, or None when no index was named.
 
     Its checkpoint is named by the caller and not taken from the registry, unlike the advisory one. The
     registry promotes on a measured faithfulness of better than 2% unsupported figures, and this
-    generator's is 57.1% -- it is refused there, correctly. What makes it servable is the quote guard
-    around it, not a record it does not have.
+    generator's is 57.1% -- it is refused there, correctly. It is still loaded when `paraphrase` is off,
+    because the caller chooses per run whether the model writes and a factory that refused to build one
+    would make that a restart rather than a flag.
     """
     if not index_name:
         return None
@@ -70,7 +71,8 @@ def reference_from(artifacts, index_name, checkpoint):
     # so embedding every question would cost a forward pass per turn and buy nothing.
     tokenizer, model, config = load_model(artifacts, "", checkpoint)
     return Reference(Hybrid(chunks, pretokenize), tokenizer, model, config, QUESTION_TOKENS, PASSAGES,
-                     ANSWER_TEMPERATURE, ANSWER_TOP_P, np.random.default_rng(config.seed))
+                     ANSWER_TEMPERATURE, ANSWER_TOP_P, np.random.default_rng(config.seed),
+                     paraphrase=paraphrase)
 
 
 def build(artifacts, checkpoint, prices, gate, log, wanted, warmup, price_head, reference=None):
@@ -126,6 +128,9 @@ def main():
                              "empty leaves those questions refused, which is C1 through C8's behaviour")
     parser.add_argument("--reference-checkpoint", default="generator.npz",
                         help="the generator that reads a retrieved passage, guarded by the quote rule")
+    parser.add_argument("--paraphrase", action="store_true",
+                        help="serve the reference generator's own words instead of the passage it read; "
+                             "off by default because those words measured fluent and incoherent")
     parser.add_argument("--as-of", default=None, help="the last date a snapshot may read")
     parser.add_argument("--wanted", type=float, default=0.6, help="the stated chance of being right")
     parser.add_argument("--warmup", type=int, default=10,
@@ -135,7 +140,8 @@ def main():
     artifacts = Path(args.artifacts)
     agent, abstainer, learned, served = build(
         artifacts, args.checkpoint, args.prices, args.gate, args.log, args.wanted, args.warmup,
-        args.price_head, reference_from(artifacts, args.reference_index, args.reference_checkpoint))
+        args.price_head,
+        reference_from(artifacts, args.reference_index, args.reference_checkpoint, args.paraphrase))
     # `expected` rather than `wanted`: the 60% bar is not reachable on this checkpoint, so the fit returns
     # the most precise cut its coverage floor allows and reports the shortfall. Printing the bar alone
     # would claim a precision nothing measured.
@@ -148,7 +154,8 @@ def main():
           f"answer cut {abstainer.cut:.5f} ({solved})")
     # Printed because the artifact, not this script, decides whether the head or the arithmetic answers.
     print(f"week-ahead outlook from {advisor.version if advisor else 'nothing loaded'}")
-    looking = (f"{args.reference_checkpoint} over {len(agent.reference.index.chunks)} chunks"
+    whose = "paraphrasing" if args.paraphrase else "quoting"
+    looking = (f"{whose} over {len(agent.reference.index.chunks)} chunks, {args.reference_checkpoint}"
                if agent.reference else "off; a question the router cannot place is refused")
     print(f"reference path {looking}")
 
