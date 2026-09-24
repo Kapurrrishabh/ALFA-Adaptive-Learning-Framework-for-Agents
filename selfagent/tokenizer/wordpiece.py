@@ -210,21 +210,22 @@ class WordPiece:
         """Text a user can read, putting back the spacing `pretokenize` dropped.
 
         A space before every piece is what served answers "reliance . ns" and "it does not : it tries".
-        A sign binds only to a digit, so "-5.6%" reads as one figure and "stop - loss" keeps its dash.
-        A numeric range does not survive that -- "1993 - 2000" decodes as "1993 -2000" -- which is the
-        price of a served answer showing its minus signs. Nothing reads figures out of this: the
-        guardrail compares magnitudes, so a range misread as a negative changes no verdict.
+        A sign binds to a following digit only when a number does not precede it, so "-5.6%" reads as
+        one figure while "1993 - 2000" stays a range. Without that second condition the range decodes
+        as "1993 -2000" and invents a negative figure, which cost 15 of 747 figures on the human Q&A set.
         """
         pieces = [self.pieces[token_id] for token_id in ids]
         out = []
-        binds = True
+        binds, after_number = True, False
         for piece, following in zip(pieces, pieces[1:] + [""]):
             if piece.startswith(CONTINUATION):
                 out.append(piece.removeprefix(CONTINUATION))
                 continue
             out.append(piece if binds or piece in _CLOSES or piece in _BINDS_BOTH else " " + piece)
             binds = (piece in _OPENS or piece in _BINDS_BOTH
-                     or (piece in _SIGNS and following.removeprefix(CONTINUATION)[:1].isdigit()))
+                     or (piece in _SIGNS and not after_number
+                         and following.removeprefix(CONTINUATION)[:1].isdigit()))
+            after_number = piece[-1:].isdigit() or piece.endswith("%")
         return "".join(out).strip()
 
     @classmethod
