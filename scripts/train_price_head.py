@@ -12,6 +12,11 @@ volatility where trailing return explains 0.3% of the next return.
 
 The split is by date with a gap of one horizon, so no training label reaches into the validation
 period. Class boundaries come from the training period alone.
+
+Every held-out window is scored, because the gap between the head and the arithmetic is around a point
+and a sampled slice cannot read that. Three things come out of that one pass: each tower's accuracy, the
+accuracy of averaging both towers with the rule, and what the winner's stated confidence is actually
+worth -- a Platt fit on the first half of held-out, scored on the second.
 """
 
 import argparse
@@ -30,6 +35,7 @@ from selfagent.autograd import functional as F  # noqa: E402
 from selfagent.autograd import no_grad  # noqa: E402
 from selfagent.config import ModelConfig  # noqa: E402
 from selfagent.data import advisory, prices  # noqa: E402
+from selfagent.learn import Calibrator, brier, expected_calibration_error  # noqa: E402
 from selfagent.models import PriceWindowClassifier  # noqa: E402
 from selfagent.optim import AdamW, clip_grad_norm  # noqa: E402
 
@@ -73,27 +79,24 @@ def batch_of(bars, samples, rows, window, horizon, edges, target):
     return windows, prices.to_tertile(values, edges)
 
 
-def accuracy(model, bars, samples, window, horizon, edges, batch_size, batches, target):
-    """(held-out accuracy, how many windows it was measured on).
+def held_out_probabilities(model, bars, samples, window, horizon, edges, batch_size, target):
+    """The model's class distribution for every held-out window, in `samples` order.
 
-    The count travels with the figure because serving compares this against the persistence baseline,
-    and a 0.1 point gap means one thing on 1,920 windows and another on 28,676.
+    The distribution rather than the argmax, because the ensemble and the calibrator both need it and a
+    second pass over 28,676 windows costs as much as the first.
     """
     model.eval()
-    right = total = 0
-    limit = min(len(samples), batches * batch_size) if batches else len(samples)
+    out = []
     with no_grad():
-        for start in range(0, limit, batch_size):
-            rows = range(start, min(start + batch_size, len(samples)))
-            windows, wanted = batch_of(bars, samples, list(rows), window, horizon, edges, target)
-            predicted = model(windows).data.argmax(axis=-1)
-            right += int((predicted == wanted).sum())
-            total += len(wanted)
+        for start in range(0, len(samples), batch_size):
+            rows = list(range(start, min(start + batch_size, len(samples))))
+            windows, _ = batch_of(bars, samples, rows, window, horizon, edges, target)
+            out.append(F.softmax(model(windows)).data)
     model.train()
-    return right / max(total, 1), total
+    return np.concatenate(out)
 
 
-def persistence(bars, train, validation, args, edges):
+def persistence(bars, train, validation, args, edges, wanted):
     """What one line of arithmetic already scores, and the table that lets it state a confidence.
 
     This, not the majority class, is the bar. Volatility persists, so a head that only rediscovers
@@ -122,16 +125,48 @@ def persistence(bars, train, validation, args, edges):
     # row. The rule's number has to be the number the served rule gets, on the rows the head is scored on.
     held = prices.to_tertile([trailing(t, end) for t, end in validation], own_edges)
     predicted = table.argmax(axis=1)[held]
-    wanted = prices.to_tertile(
-        [target_of(bars[t], end, args.horizon, args.target) for t, end in validation], edges
-    )
-    return float(np.mean(predicted == np.asarray(wanted))), own_edges, table
+    return (float(np.mean(predicted == np.asarray(wanted))), own_edges, table, table[held])
 
 
-Measured = namedtuple("Measured", "name accuracy evaluated parameters model")
+Measured = namedtuple("Measured", "name accuracy evaluated parameters model probabilities")
 
 
-def run(name, recurrent, config, bars, train, validation, args, edges):
+def score(name, probabilities, wanted):
+    """One candidate's held-out accuracy from its distributions, so every row is scored the same way."""
+    return Measured(name, float(np.mean(probabilities.argmax(axis=1) == wanted)), len(wanted),
+                    0, None, probabilities)
+
+
+def blended(members, wanted):
+    """The mean of the candidates' distributions, scored on the same rows.
+
+    An unweighted mean rather than a fitted weight per member: with three members that is three
+    parameters fitted on the very rows the gain would then be claimed on.
+    """
+    return score("ensemble", sum(members) / len(members), wanted)
+
+
+def calibration(probabilities, wanted, bins=10):
+    """What the top-class probability is worth as a probability, before and after a Platt fit.
+
+    Fitted on the first half of the held-out period and scored on the second, because a calibrator
+    scored on its own rows always looks calibrated. This is the number the evidence states: "44%" has to
+    mean the call comes true 44 times in 100, or the answer is quoting a decoration.
+    """
+    confidence = probabilities.max(axis=1)
+    is_right = probabilities.argmax(axis=1) == wanted
+    half = len(confidence) // 2
+    fitted = Calibrator().fit(confidence[:half], is_right[:half])
+    raw, held = confidence[half:], is_right[half:]
+    mapped = np.asarray(fitted(raw))
+    print(f"  raw        ece {expected_calibration_error(raw, held, bins):.3f}  "
+          f"brier {brier(raw, held):.3f}  mean stated {raw.mean():.1%} against {held.mean():.1%} right")
+    print(f"  calibrated ece {expected_calibration_error(mapped, held, bins):.3f}  "
+          f"brier {brier(mapped, held):.3f}  mean stated {mapped.mean():.1%}")
+    return fitted
+
+
+def run(name, recurrent, config, bars, train, validation, args, edges, wanted):
     target = args.target
     model = PriceWindowClassifier(config, recurrent=recurrent)
     optimizer = AdamW(model.trainable_parameters(), lr=args.learning_rate)
@@ -143,9 +178,9 @@ def run(name, recurrent, config, bars, train, validation, args, edges):
     model.train()
     for step in range(1, args.steps + 1):
         rows = rng.integers(0, len(train), args.batch_size).tolist()
-        windows, wanted = batch_of(bars, train, rows, config.price_window, args.horizon, edges, target)
+        windows, labels = batch_of(bars, train, rows, config.price_window, args.horizon, edges, target)
         optimizer.zero_grad()
-        loss = F.cross_entropy(model(windows), wanted)
+        loss = F.cross_entropy(model(windows), labels)
         loss.backward()
         clip_grad_norm(optimizer.parameters, 1.0)
         optimizer.step()
@@ -153,13 +188,14 @@ def run(name, recurrent, config, bars, train, validation, args, edges):
             print(f"  step {step}/{args.steps}  loss {loss.item():.4f}  "
                   f"{step / (time.monotonic() - started):.2f} step/s")
 
-    held, evaluated = accuracy(model, bars, validation, config.price_window, args.horizon, edges,
-                               args.batch_size, args.eval_batches, target)
-    print(f"  {name} held-out accuracy {held:.1%} on {evaluated:,} windows")
-    return Measured(name, held, evaluated, parameters, model)
+    probabilities = held_out_probabilities(model, bars, validation, config.price_window, args.horizon,
+                                           edges, args.batch_size, target)
+    measured = score(name, probabilities, wanted)
+    print(f"  {name} held-out accuracy {measured.accuracy:.1%} on {measured.evaluated:,} windows")
+    return measured._replace(parameters=parameters, model=model)
 
 
-def save(path, results, config, args, edges, trailing, trailing_edges, table, baseline):
+def save(path, results, config, args, edges, trailing, trailing_edges, table, baseline, fitted):
     """The served artifact: the head's weights, and everything serving needs to decide what to do.
 
     Both accuracies go in the same file so `backend/models/price.py` compares the head against the
@@ -173,6 +209,7 @@ def save(path, results, config, args, edges, trailing, trailing_edges, table, ba
         "accuracy": measured.accuracy, "evaluated": measured.evaluated, "majority": float(baseline),
         "persistence": trailing, "trailing_edges": [float(edge) for edge in trailing_edges],
         "table": [[float(value) for value in row] for row in table],
+        "calibration": {"weight": fitted.weight, "bias": fitted.bias},
     })
     advisor = models.load(path)
     print(f"\nsaved {measured.name} to {path}; serving will use {advisor.version}")
@@ -193,8 +230,6 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--log-every", type=int, default=200)
-    parser.add_argument("--eval-batches", type=int, default=0,
-                        help="0 scores every held-out window, which is what makes a small gap readable")
     parser.add_argument("--target", choices=("direction", "volatility"), default="volatility",
                         help="volatility is the default because direction measured unpredictable")
     args = parser.parse_args()
@@ -226,19 +261,29 @@ def main():
     baseline = counts.max() / counts.sum()
     print(f"  held-out class counts {counts.tolist()}, majority baseline {baseline:.1%}")
 
-    trailing, trailing_edges, table = persistence(bars, train, validation, args, edges)
+    trailing, trailing_edges, table, rule_rows = persistence(bars, train, validation, args, edges,
+                                                             held_labels)
     print(f"  persistence baseline from the trailing value alone {trailing:.1%}")
 
-    results = [run(name, name == models.RECURRENT_TOWER, config, bars, train, validation, args, edges)
-               for name in args.towers]
+    results = [run(name, name == models.RECURRENT_TOWER, config, bars, train, validation, args, edges,
+                   held_labels) for name in args.towers]
+    # The rule is a candidate in the blend, not just the bar it has to clear: it is the one member whose
+    # confidence is already a measured hit rate, and averaging cannot be scored without it in the mean.
+    results.append(blended([row.probabilities for row in results] + [rule_rows], held_labels))
     print("\n=== verdict ===")
     for row in results:
         print(f"  {row.name:12s} {row.accuracy:.1%}  ({row.accuracy - baseline:+.1%} vs majority, "
               f"{row.accuracy - trailing:+.1%} vs persistence)  {row.parameters:,} params")
 
+    print("\n=== what the stated confidence is worth, held-out second half ===")
+    fitted = {}
+    for row in results:
+        print(f"  [{row.name}]")
+        fitted[row.name] = calibration(row.probabilities, held_labels)
+
     if args.save:
         save(Path(args.artifacts) / args.save, results, config, args, edges, trailing,
-             trailing_edges, table, baseline)
+             trailing_edges, table, baseline, fitted[models.RECURRENT_TOWER])
 
 
 if __name__ == "__main__":

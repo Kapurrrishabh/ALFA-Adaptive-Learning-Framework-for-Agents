@@ -24,6 +24,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from selfagent.data import advisory
+
+from . import models
 from .database import NotYours
 
 # The frontend is served from somewhere else in development, so the browser will not talk to this at all
@@ -118,6 +121,29 @@ def create_app(agent, store, judge, refit, served):
             raise HTTPException(404, f"no price file for {symbol}; ask /instruments for the universe")
         evidence, shown, taken_at = agent.market.snapshot(held, as_of)
         return {"symbol": held, "as_of": str(taken_at), "facts": shown, "evidence": evidence}
+
+    @app.get("/instruments/{symbol}/outlook")
+    async def outlook(symbol: str, as_of: str = None,
+                      token=Header(default="", alias="Authorization")):
+        """The week-ahead call behind the risk answer, with the history and bands a client can draw.
+
+        Same bars, same as-of rule and same advisor as `/chat`, so the picture cannot disagree with the
+        answer. No direction: it measured below its own baseline, and `direction` carries that measurement
+        so a client shows the reason rather than a badge.
+        """
+        _bearer(token)
+        held = symbol.upper()
+        if held not in agent.market.paths:
+            raise HTTPException(404, f"no price file for {symbol}; ask /instruments for the universe")
+        advisor = agent.market.advisor
+        if advisor is None:
+            raise HTTPException(503, "no price head is loaded, so there is no outlook to draw")
+        dates, closes, probabilities = agent.market.outlook(held, as_of)
+        card = advisor.describe()
+        return {"symbol": held, "as_of": str(dates[-1]), "dates": [str(day) for day in dates],
+                "closes": closes, "probabilities": probabilities, "horizon": card["horizon"],
+                "bands": models.price_bands(closes[-1], card["edges"], card["horizon"]),
+                "model": card, "direction": advisory.DIRECTION_SKILL}
 
     @app.get("/learned")
     async def learned(token=Header(default="", alias="Authorization")):

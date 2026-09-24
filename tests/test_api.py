@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from backend import models
 from backend.agent.core import Turn
 from backend.database import BUY, SELL, Store
 from backend.main import create_app
@@ -36,8 +37,9 @@ class Scripted:
 
     def __init__(self, served=ANSWER, spoke=True, written=None):
         self.served, self.spoke, self.written = served, spoke, written
-        self.market = SimpleNamespace(advisor=SimpleNamespace(version="persistence@20d"),
-                                      paths={"AAPL": Path("AAPL.csv")}, snapshot=self._snapshot)
+        self.market = SimpleNamespace(
+            advisor=SimpleNamespace(version="persistence@20d", describe=self._describe),
+            paths={"AAPL": Path("AAPL.csv")}, snapshot=self._snapshot, outlook=self._outlook)
         self.gate = SimpleNamespace(cut=0.088)
         self.abstainer, self.calibrator = Abstainer(HAND_PICKED), None
         self.asked = []
@@ -45,6 +47,14 @@ class Scripted:
     @staticmethod
     def _snapshot(ticker, as_of=None):
         return EVIDENCE, {"close": "337.00", "rsi_14": "65"}, "2026-09-17"
+
+    @staticmethod
+    def _outlook(ticker, as_of=None):
+        return ["2026-09-16", "2026-09-17"], [330.0, 337.0], [0.2, 0.5, 0.3]
+
+    @staticmethod
+    def _describe():
+        return {"serving": "gru", "horizon": 5, "edges": [0.011, 0.019], "accuracy": 0.49}
 
     def answer(self, question, as_of=None):
         self.asked.append(question)
@@ -215,6 +225,22 @@ def test_an_instrument_serves_the_snapshot_and_an_unknown_one_is_a_404(tmp_path)
 
     missing = client.get("/instruments/NOSUCH", headers=headers)
     assert missing.status_code == 404 and "no price file for NOSUCH" in missing.json()["detail"]
+
+
+def test_the_outlook_route_carries_the_bands_and_refuses_to_imply_a_direction(tmp_path):
+    """The forecast panel draws this. It may show what the head predicts -- a volatility class -- and the
+    measurement that says a direction call is worse than guessing, and it may not be handed a direction."""
+    client, _, _ = _app(tmp_path)
+    _, headers = _signed_in(client)
+    drawn = client.get("/instruments/aapl/outlook", headers=headers).json()
+
+    assert drawn["closes"] == [330.0, 337.0] and drawn["probabilities"] == [0.2, 0.5, 0.3]
+    assert [band["name"] for band in drawn["bands"]] == list(models.CLASSES)
+    assert drawn["direction"]["accuracy"] < drawn["direction"]["baseline"]
+    assert "direction" not in drawn["model"] and drawn["model"]["serving"] == "gru"
+
+    missing = client.get("/instruments/NOSUCH/outlook", headers=headers)
+    assert missing.status_code == 404
 
 
 def test_learned_counts_only_the_asking_users_own_turns(tmp_path):

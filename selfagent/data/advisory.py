@@ -51,6 +51,12 @@ BARS_NEEDED = 61
 
 RISK_NAMES = ("calm", "normal", "turbulent")
 
+# A week-ahead direction call and the majority class it has to beat, from
+# `scripts/train_price_head.py --target direction`. It does not beat it, which is why `_buy` below states
+# no view and why nothing that reads this may show one. Named here so the UI quotes the measurement
+# rather than a number retyped next to a badge.
+DIRECTION_SKILL = {"accuracy": 0.357, "baseline": 0.360}
+
 
 def snapshot(bars, end):
     """As-of facts for bar `end`. Reads no bar after it, so a window cannot see its own future."""
@@ -81,14 +87,18 @@ def render_evidence(ticker, shown):
     return " ; ".join(lines)
 
 
-def risk_outlook(probabilities, names=RISK_NAMES):
+def risk_outlook(probabilities, names=RISK_NAMES, confidence=None):
     """The head's own call, as evidence lines, so the answer quotes it instead of inventing it.
 
     The confidence belongs in the evidence for the same reason every other figure does: an answer
     stating a number it was never shown is exactly what the guardrail exists to catch.
+
+    `confidence` is that number once something has measured how often the call comes true. The class stays
+    the caller's: calibration changes what the figure means, never which class won.
     """
     best = max(range(len(probabilities)), key=lambda i: probabilities[i])
-    return {"outlook": names[best], "outlook_confidence": f"{probabilities[best]:.0%}"}
+    stated = probabilities[best] if confidence is None else confidence
+    return {"outlook": names[best], "outlook_confidence": f"{stated:.0%}"}
 
 
 # Tokenising splits a name like return_20d into "return _ 20 d", so a slot is matched piece by piece
@@ -526,8 +536,9 @@ def _risk(ticker, facts, shown):
 def _buy(ticker, facts, shown):
     """The buy question, answered with the abstention the measurements support.
 
-    A week-ahead direction call scored 35.7% against a 36.0% baseline, so any confident wording here
-    would be the model dressing a coin toss as a view. Every figure it does give is in the evidence.
+    A week-ahead direction call scored below its own baseline (`DIRECTION_SKILL`), so any confident
+    wording here would be the model dressing a coin toss as a view. Every figure it gives is in the
+    evidence.
     """
     return (
         f"i do not have a directional signal for {ticker} , and a one week call on it is little "

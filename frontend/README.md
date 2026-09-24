@@ -10,7 +10,12 @@ removed rather than shipped returning errors.
   is stored. When the agent's confidence sits under the cut it fitted from past feedback, the answer
   is withheld and the page says so; that threshold is the only thing in the system that learns.
 - `/dashboard` — the snapshot `GET /instruments/{symbol}` hands the agent for one instrument, labelled and
-  with the evidence line it becomes. The figures only: a generated read here would be a second answering
+  with the evidence line it becomes, plus what produced the week-ahead call from
+  `GET /instruments/{symbol}/outlook`: the tower's own blocks and scores, the three class probabilities,
+  and a cone of where one standard deviation of each class puts the price over the horizon. The top class
+  has no upper edge, so its band is dashed and open rather than closed at an invented ceiling. There is no
+  buy/sell/hold badge — a direction call was trained and scored below its own baseline, and that panel
+  shows the measurement instead. The figures only: a generated read here would be a second answering
   path beside `/chat`, and the guard that screens figures runs in that one.
 - `/learned` — what your feedback has done to the agent, from `GET /learned`. Your coverage and verdicts,
   which stage withheld the rest, and the abstention cut those were fitted into. It says plainly which

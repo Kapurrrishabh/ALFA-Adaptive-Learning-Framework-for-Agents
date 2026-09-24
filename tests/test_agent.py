@@ -21,6 +21,7 @@ from selfagent.data import advisory, prices
 from selfagent.data.encode import build_sources
 from selfagent.data.qa_pairs import PASSAGES, QUESTION_TOKENS
 from selfagent.models.generator import ANSWER_TEMPERATURE, ANSWER_TOP_P
+from selfagent.learn import Calibrator
 from selfagent.learn.abstain import Abstainer
 from selfagent.models import PriceWindowClassifier
 from selfagent.tokenizer.wordpiece import pretokenize
@@ -34,6 +35,9 @@ OUTLOOK = ModelConfig(price_channels=6, price_window=32, dim=32, num_heads=2, ff
 
 # Distinct rows, so which bucket was read is visible in what comes back.
 TABLE = ((0.7, 0.2, 0.1), (0.2, 0.6, 0.2), (0.1, 0.2, 0.7))
+
+# What an artifact records, for the advisors these tests build by hand instead of loading.
+MEASURED = {"horizon": 5, "edges": [0.011, 0.019]}
 
 
 def price_file(directory, name, bars=advisory.BARS_NEEDED):
@@ -406,11 +410,11 @@ def test_retrieving_nothing_leaves_the_refusal_exactly_as_it_was(market, router)
 
 def head(config=OUTLOOK, tower="gru"):
     """An untrained head. Every test here compares two of its outputs, never their value."""
-    return models.PriceHead(PriceWindowClassifier(config, recurrent=True), config, tower)
+    return models.PriceHead(PriceWindowClassifier(config, recurrent=True), config, tower, MEASURED)
 
 
 def rule(window=20):
-    return models.Persistence((0.01, 0.02), TABLE, window)
+    return models.Persistence((0.01, 0.02), TABLE, MEASURED, window)
 
 
 def alternating_bars(count, step=0.01):
@@ -457,6 +461,10 @@ class RecordingAdvisor:
         self.windows.append(prices.window_at(bars, end, OUTLOOK.price_window))
         return np.asarray(TABLE[0])
 
+    @staticmethod
+    def confidence(probabilities):
+        return float(max(probabilities))
+
 
 def test_the_window_a_snapshot_scores_is_the_one_a_truncated_file_produces(tmp_path):
     """The same rule through the served path, where the as-of date also has to resolve to the same bar."""
@@ -477,10 +485,33 @@ def test_persistence_quotes_the_measured_hit_rate_of_the_bucket_it_lands_in():
     assert np.array_equal(rule().probabilities(alternating_bars(40), 39), np.asarray(TABLE[1]))
 
 
+def test_the_top_band_is_left_open_and_the_others_widen_with_the_horizon():
+    """The forecast panel draws these. The top class has no upper edge, so closing its band would put a
+    ceiling on screen that no measurement supports, and a band that ignored the horizon would understate
+    a week by the square root of five."""
+    day, week = models.price_bands(100.0, (0.01, 0.02), 1), models.price_bands(100.0, (0.01, 0.02), 5)
+
+    assert [band["open"] for band in week] == [False, False, True]
+    assert week[2]["sigma"] == week[1]["sigma"]  # A floor, not a range: the open band starts at the edge.
+    assert week[0]["sigma"] == pytest.approx(day[0]["sigma"] * 5 ** 0.5)
+    assert week[0]["high"] > day[0]["high"] > 100.0 > day[0]["low"] > week[0]["low"]
+
+
+def test_calibrating_the_confidence_leaves_the_class_the_answer_names_alone():
+    """The fit says how often the top class comes true, and that can fall below a runner-up. Folding it
+    back into the vector and rescaling the rest is what an earlier version did, and it turned a calm week
+    turbulent: 45% calibrated to 4% while the 35% class was scaled up to 61%."""
+    advisor, raw = head(), np.array([0.2, 0.45, 0.35])
+    advisor.calibrator = Calibrator(weight=1.0, bias=-3.0)  # Pushes every confidence down hard.
+
+    assert advisor.confidence(raw) < 0.35 < float(max(raw))
+    assert advisory.risk_outlook(raw, confidence=advisor.confidence(raw))["outlook"] == "normal"
+
+
 def test_a_table_that_does_not_cover_every_bucket_is_refused_at_construction():
     # Three edges make four buckets, and the missing row would only be missed on the values that reach it.
     with pytest.raises(ValueError, match="expected"):
-        models.Persistence((0.01, 0.02, 0.03), TABLE)
+        models.Persistence((0.01, 0.02, 0.03), TABLE, MEASURED)
 
 
 def test_too_little_history_for_the_advisor_leaves_the_outlook_out_rather_than_scoring_it(tmp_path):

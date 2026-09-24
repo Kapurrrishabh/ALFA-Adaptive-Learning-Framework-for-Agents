@@ -4,15 +4,15 @@ The generator never computes this: it only phrases what arrives in the evidence,
 `outlook calm ; outlook_confidence 44%` decides whether that line is worth reading at all. Two candidates
 come out of one artifact, and the numbers recorded in that artifact pick between them:
 
-  `PriceHead`     the trained GRU over a 128-bar window, 202,755 parameters, 49.1% held out
+  `PriceHead`     the trained GRU over a 128-bar window, 202,755 parameters, 49.8% held out
   `Persistence`   one line of arithmetic -- bucket the trailing 20-day volatility, 47.8%
 
 `load` serves the head only when the file says it beat the rule by more than the noise in its own
-measurement. On the served checkpoint it does: **49.1% against 47.8%** on all 28,676 held-out windows,
-a gap of 4.6 standard errors. The earlier reading that the head only *ties* arithmetic came from scoring
-it on the first 1,920 held-out windows, which is 7 of 101 tickers, while the rule was scored on a sample
-of all of them (§5.14). The margin rule stays either way: the one line of arithmetic is what answers
-until a head clears it by more than the measurement's own noise.
+measurement. On the served checkpoint it does: **49.8% against 47.8%** on all 28,676 held-out windows,
+a gap of 6.8 standard errors. The transformer tower, measured on the same windows, scores 46.3% on eight
+times the parameters -- below the arithmetic -- and averaging both towers with the rule scores 48.9%, so
+neither is served. The margin rule stays either way: the one line of arithmetic is what answers until a
+head clears it by more than the measurement's own noise.
 
 **The point-in-time rule.** A window is built from bars up to the as-of date and no further, by
 `selfagent.data.prices.window_at`, which slices `bars[end - window : end + 1]` and standardises inside
@@ -20,17 +20,22 @@ that slice. So a served vector and one rebuilt later from a truncated file are t
 the property `tests/test_agent.py` pins against both cheap ways to break it, standardising over the whole
 series and taking the scale from `bars[-1]`, because either still produces a plausible number.
 
-**Why the rule's confidence is a table rather than a softmax.** `Persistence` quotes the row-normalised
-training confusion of its own buckets, so "44%" means that bucket was right 44% of the time in the
-training period. The head's softmax is uncalibrated -- B3 measured the generator's needing a Platt fit to
-be readable at all -- and an uncalibrated number in the evidence is one the answer will quote verbatim.
+**Why both confidences are hit rates.** `Persistence` quotes the row-normalised training confusion of its
+own buckets, so "44%" means that bucket was right 44% of the time in the training period. The head's raw
+softmax is not that, so `confidence` runs it through the Platt fit recorded in the artifact -- an
+uncalibrated number in the evidence is one the answer will quote verbatim. It is a separate method from
+`probabilities` on purpose: a calibrated top entry is no longer a distribution, and rescaling the rest to
+fit around it lets a runner-up overtake the class the head actually chose.
 """
+
+import math
 
 from selfagent import pretrained
 from selfagent.autograd import functional as F
 from selfagent.autograd import no_grad
 from selfagent.backend import xp
 from selfagent.data import advisory, prices
+from selfagent.learn import Calibrator
 from selfagent.models import PriceWindowClassifier
 
 # The tertile order the classes come in: lowest forward volatility is the calm one.
@@ -48,6 +53,20 @@ TOWERS = (RECURRENT_TOWER, "transformer")
 # count they were measured on decide which candidate answers.
 REQUIRED = ("tower", "target", "horizon", "edges", "accuracy", "evaluated", "persistence",
             "trailing_edges", "table")
+
+
+def price_bands(close, edges, horizon):
+    """How far from `close` each volatility class puts one standard deviation, `horizon` bars out.
+
+    A class is a band of daily log-return spread, so the distance it implies is that spread widened by the
+    square root of the horizon. The top class is open above -- its edge is a floor, not a range -- and
+    `open` says so instead of closing the band with an invented ceiling.
+    """
+    spreads = [float(edge) * horizon ** 0.5 for edge in edges]
+    spreads.append(spreads[-1])
+    return [{"name": name, "sigma": spread, "low": close * math.exp(-spread),
+             "high": close * math.exp(spread), "open": index == len(CLASSES) - 1}
+            for index, (name, spread) in enumerate(zip(CLASSES, spreads))]
 
 
 def beats(accuracy, rule, evaluated):
@@ -70,12 +89,13 @@ class Persistence:
 
     name = "persistence"
 
-    def __init__(self, edges, table, window=TRAILING_WINDOW):
+    def __init__(self, edges, table, measured, window=TRAILING_WINDOW):
         self.edges = xp.asarray(edges, dtype=xp.float64)
         self.table = xp.asarray(table, dtype=xp.float64)
         if self.table.shape != (len(self.edges) + 1, len(CLASSES)):
             raise ValueError(f"table is {self.table.shape}, expected "
                              f"{(len(self.edges) + 1, len(CLASSES))} for {len(CLASSES)} classes")
+        self.measured = measured
         self.window = window
 
     @property
@@ -90,21 +110,33 @@ class Persistence:
         value = prices.trailing_volatility(bars, end, self.window)
         return self.table[int(prices.to_tertile([value], self.edges)[0])]
 
+    def confidence(self, probabilities):
+        """The table row's own peak. It is already the rate that bucket came true, so nothing rescales it."""
+        return float(max(probabilities))
+
+    def describe(self):
+        """The card a client shows in place of trusting the deployment. The table is already a hit rate,
+        so this rule has nothing left to calibrate."""
+        return {**self.measured, "serving": self.name, "version": self.version, "parameters": 0,
+                "calibrated": True}
+
 
 class PriceHead:
     """The trained tower, pinned to the config that shaped it and the edges it was labelled with."""
 
-    def __init__(self, model, config, tower):
+    def __init__(self, model, config, tower, measured, calibrator=None):
         self.model = model
         self.config = config
         self.name = tower
+        self.measured = measured
+        self.calibrator = calibrator
 
     @classmethod
-    def of(cls, config, weights, tower, recurrent):
+    def of(cls, config, weights, tower, recurrent, measured, calibrator=None):
         model = PriceWindowClassifier(config, recurrent=recurrent)
         model.load_state_dict(weights)
         model.eval()
-        return cls(model, config, tower)
+        return cls(model, config, tower, measured, calibrator)
 
     @property
     def version(self):
@@ -124,6 +156,23 @@ class PriceHead:
         with no_grad():
             return F.softmax(self.model(window[None, ...])).data[0]
 
+    def confidence(self, probabilities):
+        """How often the top class comes true, rather than how sure the softmax was, once a fit exists.
+
+        Kept apart from `probabilities` rather than folded into it: a calibrated top entry is no longer a
+        distribution, and rescaling the others to fit around it lets one of them overtake the top, which
+        hands the answer a different class than the head chose.
+        """
+        raw = float(max(probabilities))
+        return raw if self.calibrator is None else float(self.calibrator(raw))
+
+    def describe(self):
+        """The card a client shows in place of trusting the deployment: what is answering, how it is
+        shaped, and what it scored. Straight out of the artifact, so the page cannot quote a stale figure."""
+        return {**self.measured, "serving": self.name, "version": self.version,
+                "parameters": int(sum(p.size for p in self.model.parameters())),
+                "dim": self.config.dim, "calibrated": self.calibrator is not None}
+
 
 def load(path):
     """The advisor for `path`: the head when the file records it beating the rule, otherwise the rule.
@@ -138,8 +187,12 @@ def load(path):
         raise ValueError(f"{path} records no {', '.join(missing)}; re-save it with "
                          f"scripts/train_price_head.py --save, which writes what serving needs")
     if not beats(recorded["accuracy"], recorded["persistence"], recorded["evaluated"]):
-        return Persistence(recorded["trailing_edges"], recorded["table"])
+        return Persistence(recorded["trailing_edges"], recorded["table"], recorded)
     if recorded["tower"] not in TOWERS:
         raise ValueError(f"{path} was written by tower {recorded['tower']!r}, which this loader cannot "
                          f"rebuild; expected one of {TOWERS}")
-    return PriceHead.of(config, weights, recorded["tower"], recorded["tower"] == RECURRENT_TOWER)
+    # An artifact written before the fit carries no `calibration`, and then the confidence is the raw
+    # softmax exactly as it was. `describe` reports which of the two it is rather than leaving it implied.
+    fit = recorded.get("calibration")
+    return PriceHead.of(config, weights, recorded["tower"], recorded["tower"] == RECURRENT_TOWER,
+                        recorded, Calibrator(**fit) if fit else None)

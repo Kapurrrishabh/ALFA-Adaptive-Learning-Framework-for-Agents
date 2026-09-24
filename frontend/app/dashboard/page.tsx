@@ -5,8 +5,11 @@ import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { Activity, ArrowRight, Loader2, Search } from "lucide-react";
 
+import ModelDiagram from "@/components/ModelDiagram";
+import RiskCall from "@/components/RiskCall";
 import { useAuth } from "@/hooks/useAuth";
 import { fetcher } from "@/utils/fetcher";
+import { readOutlook, type Outlook } from "@/utils/outlook";
 
 interface Snapshot {
   symbol: string;
@@ -55,7 +58,11 @@ export default function DashboardPage() {
   const [chosen, setChosen] = useState("");
   const [typed, setTyped] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [outlook, setOutlook] = useState<Outlook | null>(null);
   const [failed, setFailed] = useState("");
+  // Kept apart from `failed`: with no head loaded the route says so and the snapshot is still worth
+  // showing, so the panels carry the reason rather than the page going blank.
+  const [noOutlook, setNoOutlook] = useState("");
 
   useEffect(() => {
     if (!loading && !user) router.push("/login");
@@ -71,10 +78,15 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!chosen) return;
     setSnapshot(null);
+    setOutlook(null);
     setFailed("");
+    setNoOutlook("");
     fetcher<Snapshot>(`/instruments/${chosen}`)
       .then(setSnapshot)
       .catch((error: Error) => setFailed(error.message));
+    readOutlook(chosen)
+      .then(setOutlook)
+      .catch((error: Error) => setNoOutlook(error.message));
   }, [chosen]);
 
   const matching = useMemo(() => {
@@ -163,6 +175,23 @@ export default function DashboardPage() {
                 <Fact key={fact.name} label={fact.label} value={snapshot.facts[fact.name]} note={fact.note} />
               ))}
             </div>
+
+            {outlook && (
+              <div className="grid lg:grid-cols-5 gap-3 mt-3">
+                <div className="lg:col-span-3">
+                  <RiskCall drawn={outlook} stated={snapshot.facts.outlook_confidence} />
+                </div>
+                <div className="lg:col-span-2">
+                  <ModelDiagram model={outlook.model} />
+                </div>
+              </div>
+            )}
+
+            {noOutlook && (
+              <div className="mt-3 rounded-xl border border-amber-500/20 bg-amber-500/[0.05] px-4 py-3 text-xs text-amber-300">
+                no week-ahead panel: {noOutlook}
+              </div>
+            )}
 
             <div className="mt-5 rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-3">
               <div className="text-[10px] uppercase tracking-wider text-gray-500 font-bold mb-1.5">

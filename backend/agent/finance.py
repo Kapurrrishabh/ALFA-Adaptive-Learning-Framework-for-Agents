@@ -77,8 +77,23 @@ class Market:
         # A head needs more history than the indicators do, and short of it the honest move is to leave
         # the figure out and let the core name it in the refusal, not to score a partial window.
         if self.advisor is not None and end + 1 >= self.advisor.bars_needed:
-            shown.update(advisory.risk_outlook(self.advisor.probabilities(bars, end)))
+            scored = self.advisor.probabilities(bars, end)
+            shown.update(advisory.risk_outlook(scored, confidence=self.advisor.confidence(scored)))
         return advisory.render_evidence(ticker, shown), shown, dates[end]
+
+    def outlook(self, ticker, as_of=None, history=120):
+        """(dates, closes, class probabilities) behind the week-ahead call, on the bars `snapshot` reads.
+
+        Here rather than in a client for the same reason the snapshot is: two paths computing "the model's
+        call" is two answers to one question. Probabilities are None when no advisor is loaded or the
+        instrument is short of the history one needs, which is when the evidence carries no outlook either.
+        """
+        dates, bars = prices.load_bars(self.paths[ticker])
+        end = prices.index_on_or_before(dates, as_of)
+        start = max(0, end - history + 1)
+        enough = self.advisor is not None and end + 1 >= self.advisor.bars_needed
+        return (dates[start : end + 1], [float(close) for close in bars[start : end + 1, 3]],
+                [float(p) for p in self.advisor.probabilities(bars, end)] if enough else None)
 
 
 def examples(paraphrased=True):
