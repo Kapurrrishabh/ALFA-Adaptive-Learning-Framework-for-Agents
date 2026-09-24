@@ -28,6 +28,15 @@ interface Turn {
   wrote: string | null;
 }
 
+// What each refusal means, keyed by the `because` core.py sets. One sentence used to be printed for all
+// of them, so a figure the guard caught was explained to the user as low confidence.
+const WHY_QUIET: Record<string, string> = {
+  "low confidence": "The agent had an answer but its confidence sat under the cut it fitted from past feedback.",
+  "unsupported figure": "The answer stated a figure its evidence does not, so the guard replaced it.",
+  "unclear question": "The router could not place this against any question shape it was trained on.",
+  "no subject": "No company or ticker in the question, so there was nothing to gather evidence about.",
+};
+
 interface Stored {
   message: number;
   judged: boolean | null;
@@ -158,9 +167,9 @@ function Reply({ exchange }: { exchange: Exchange }) {
           <div>
             <p className="text-[15px] text-amber-200 font-medium">Withheld — {turn.because}</p>
             {/* The abstention is the result, not an error: it is the only thing in the system that learns. */}
-            <p className="text-xs text-gray-500 mt-1">
-              The agent had an answer but its confidence sat under the cut it fitted from past feedback.
-            </p>
+            {WHY_QUIET[turn.because] && (
+              <p className="text-xs text-gray-500 mt-1">{WHY_QUIET[turn.because]}</p>
+            )}
           </div>
         </div>
       )}
