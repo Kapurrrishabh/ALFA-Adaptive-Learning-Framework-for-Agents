@@ -35,12 +35,18 @@ from selfagent.data.qa_pairs import load_threads, question_text  # noqa: E402
 from selfagent.tokenizer.wordpiece import pretokenize  # noqa: E402
 
 
-def labelled(chunks, manifest, qa_root, count, rng):
+def title_only(question):
+    """The one line a user would type, where `question_text` is that plus the paragraph under it."""
+    return (question.get("title") or "").strip() or question_text(question)
+
+
+def labelled(chunks, manifest, qa_root, count, rng, asked_as=question_text):
     """([(question, the chunk indices that answer it)], how many questions were sampled to get them).
 
     Sampled from every collected question, not only from the ones whose answer survived the budget:
     conditioning the sample on what was indexed would hide exactly the failure that matters, which is a
-    question whose answer is not in the corpus at all.
+    question whose answer is not in the corpus at all. `asked_as` only rewrites the query, and the sample
+    is filtered on the full text either way, so the two phrasings are scored on the same questions.
     """
     held = {}
     for index, chunk in enumerate(chunks):
@@ -54,7 +60,7 @@ def labelled(chunks, manifest, qa_root, count, rng):
     for question in picked:
         targets = held.get(keys.get((question["site"], question["id"]), ""), [])
         if targets:
-            asked.append((question_text(question), set(targets)))
+            asked.append((asked_as(question), set(targets)))
     return asked, len(picked)
 
 
@@ -70,22 +76,29 @@ def main():
     args = parser.parse_args()
 
     chunks, _ = load(Path(args.artifacts) / args.index)
-    rng = np.random.default_rng(args.seed)
-    asked, sampled = labelled(chunks, args.manifest, args.qa, args.questions, rng)
-    present = len(asked)
     documents = len({chunk.document for chunk in chunks})
-    print(f"{len(chunks)} chunks over {documents} documents in {args.index}, {sampled} questions sampled")
+    print(f"{len(chunks)} chunks over {documents} documents in {args.index}, "
+          f"{args.questions} questions sampled")
+
+    # Lexical only, because that is what serves. The arms were compared in C2 and the vector one lost.
+    index = Hybrid(chunks, pretokenize)
+    # Both phrasings, because the gap between them is large and the shorter one is what a user types: a
+    # number measured on the asker's whole post would read as what a typed question gets, and does not.
+    scored = [(how, labelled(chunks, args.manifest, args.qa, args.questions,
+                             np.random.default_rng(args.seed), reading))
+              for reading, how in ((question_text, "as asked, title and body"), (title_only, "title only"))]
+    (asked, sampled), present = scored[0][1], len(scored[0][1][0])
     print(f"  present     {present}/{sampled} ({present / sampled:.1%}) have their endorsed answer indexed")
     if not asked:
         print("  nothing to rank: no sampled question's answer is in this index")
         return 0
 
-    # Lexical only, because that is what serves. The arms were compared in C2 and the vector one lost.
-    index = Hybrid(chunks, pretokenize)
-    for top_k in (1, args.top_k):
-        found, reciprocal, returned = recall(index, asked, top_k, LEXICAL)
-        print(f"  recall@{top_k:<5}{found:>8.1%}   MRR {reciprocal:.3f}   "
-              f"found@{top_k} {found * present / sampled:.1%}   {returned:.1f}/{top_k} returned")
+    for how, (asked, _) in scored:
+        for top_k in (1, args.top_k):
+            found, reciprocal, returned = recall(index, asked, top_k, LEXICAL)
+            print(f"  recall@{top_k:<5}{found:>8.1%}   MRR {reciprocal:.3f}   "
+                  f"found@{top_k} {found * present / sampled:.1%}   {returned:.1f}/{top_k} returned"
+                  f"   {how}")
     return 0
 
 
