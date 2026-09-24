@@ -30,9 +30,16 @@ def unsupported_figures(answer, evidence):
     there is followed by a full stop, and the bounded search that stopped 18.2 passing for 18.25 also
     refused 2017 against evidence reading "for 2017." -- so a quote of the evidence failed against it.
     Comparing extracted figures keeps the 18.25 case, because that is not a figure the evidence states.
+
+    An unsigned answer figure is supported by a signed evidence one of the same magnitude, because the
+    model writes its minus sign as a separate token and the extractor then reads "- 5.6%" as unsigned
+    while the evidence states "-5.6%". A *signed* figure still has to match exactly, so an answer that
+    flips the sign on a grounded number is still caught.
     """
     stated = set(figures(evidence))
-    return [figure for figure in figures(answer) if figure not in stated]
+    magnitudes = {figure.lstrip("+-") for figure in stated}
+    return [figure for figure in figures(answer)
+            if figure not in stated and (figure[:1] in "+-" or figure not in magnitudes)]
 
 
 def is_refusal(text, refusal):

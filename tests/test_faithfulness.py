@@ -46,6 +46,20 @@ def test_a_text_always_supports_itself(text):
     assert guardrails.unsupported_figures(text, text) == []
 
 
+def test_a_detached_minus_sign_still_reads_as_the_signed_figure_it_matches():
+    """A real served turn, refused: the evidence stated -5.6% and the model wrote it, but its minus sign
+    is a token of its own so the extractor read an unsigned 5.6%. Every test above spells the sign
+    attached, which is why the suite passed while serving withheld a grounded answer."""
+    answer = "it is at 1242.30 , - 5.6% over 20 days , running at 16.8% volatility ."
+    evidence = "ticker RELIANCE.NS ; close 1242.30 ; return_20d -5.6% ; volatility_20d 16.8%"
+    assert guardrails.unsupported_figures(answer, evidence) == []
+
+
+def test_a_flipped_sign_is_still_caught():
+    """The magnitude is grounded and the direction is not, which is the failure that looks fine."""
+    assert guardrails.unsupported_figures("it gained +4.8% .", EVIDENCE) == ["+4.8%"]
+
+
 def test_a_refusal_has_nothing_to_support():
     assert guardrails.unsupported_figures(advisory.UNSUPPORTED, "") == []
 
