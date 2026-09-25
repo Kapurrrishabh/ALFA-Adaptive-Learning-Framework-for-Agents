@@ -527,6 +527,27 @@ def test_a_templates_wikitext_rides_in_an_attribute_and_must_not_reach_the_reade
     assert page.text == FILED.strip()
 
 
+def test_a_filings_xbrl_taxonomy_is_not_the_answer_to_what_the_company_does():
+    """Measured on Amazon's 8-K, which came back as `false 0001018724 AMAZON COM INC 2026-07-09` -- the
+    cover-page facts, which a tag strip keeps because they are element text and not attributes."""
+    filing = ("<ix:header><ix:hidden>false 0001018724 AMAZON COM INC 2026-07-09</ix:hidden></ix:header>"
+              f"<p>{FILED}</p>")
+    session = FakeSession(filings_search(_hit("0000-26", "2026-07-09")), text=filing)
+    page, = Filings(session, filings=1).documents("what does it do", [], subject=REGISTRANT)
+    assert page.text == FILED.strip()
+
+
+def test_an_article_is_not_answered_out_of_its_own_footnotes():
+    """One element holds the whole reference list, and it is a page dense with the company's own name, so
+    the lexical arm ranked it first: "who runs TCS" was answered with `Retrieved 16 August 2024 . |^ ...`."""
+    article = (f"<p>{FILED}</p><ol class=\"mw-references references\" typeof=\"mw:Extension/references\">"
+               "<li><cite>\"Tata Sons repays Rs 20,000-crore debt\" . The Times of India .</cite> Retrieved "
+               "16 August 2024 .</li></ol>")
+    session = FakeSession(articles(_edit(137, "2026-09-22")), text=article)
+    page, = Encyclopedia(session, articles=1).documents("who runs it", [], subject=UNREGISTERED)
+    assert page.text == FILED.strip()
+
+
 def test_one_source_being_blocked_costs_its_passages_and_not_the_turn():
     """The other source may still hold the answer, so a refusal from one is not a refusal from the index."""
     session = FakeSession({**filings_search(_hit("0000-24", "2024-05-02")), SEARCH: {}}, fails=[SEARCH])

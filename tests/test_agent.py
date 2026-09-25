@@ -6,6 +6,7 @@ and the one rule that the row a served question is built into is the row trainin
 """
 
 import csv
+import json
 from datetime import date, timedelta
 
 import numpy as np
@@ -58,6 +59,18 @@ def market(tmp_path):
     price_file(tmp_path, "AAPL", bars=advisory.BARS_NEEDED + 5)
     price_file(tmp_path, "RELIANCE.NS")
     return finance.Market(tmp_path)
+
+
+@pytest.fixture
+def registered(tmp_path, market):
+    """The same instruments, with SEC's table saying which of them files there.
+
+    AAPL is a registrant and RELIANCE.NS is not, which is the real split -- 50 of our 101 can be asked for
+    by number and the other 51 cannot be asked for at all -- and it is what decides the order of the arms.
+    """
+    table = tmp_path / "company_tickers.json"
+    table.write_text(json.dumps({"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}}))
+    return finance.Market(tmp_path, symbols=table)
 
 
 @pytest.fixture
@@ -116,6 +129,34 @@ class ExplodingModel:
 
     def confidence(self, *_):
         raise AssertionError("the decoder ran on a turn that should have stopped before it")
+
+
+class FakeLive:
+    """Fixed passages in place of a search, so no test here needs a network to reach the reader."""
+
+    def __init__(self, fetched):
+        self.fetched = fetched
+
+    def passages(self, query, terms, as_of=None, subject=None):
+        return self.fetched
+
+
+class ExplodingLive:
+    """Any call means a question the stored passages answered went to the network anyway."""
+
+    def passages(self, *_, **__):
+        raise AssertionError("a live search ran for a question the stored corpus answered")
+
+
+class RefusedLive:
+    """A search that could not be run at all, which is what every source being blocked looks like.
+
+    Raised as the plain builtin the searcher's own errors derive from, so this test needs no import from
+    `backend/live/` -- the agent must not depend on the package that needs `requests`.
+    """
+
+    def passages(self, *_, **__):
+        raise RuntimeError("sec_edgar: 403 from efts.sec.gov")
 
 
 class Config:
@@ -331,19 +372,21 @@ def test_a_stated_chance_is_absent_until_a_calibrator_is_fitted(market, router):
 PASSAGE = "A stop loss order sells a holding automatically once its price falls to a level you set."
 
 
-def reference(written, confidence=0.5, floor=0.0, paraphrase=False, model=None):
-    """The retrieval path over a four-chunk index, with the decoder writing one fixed answer.
+def reference(written, confidence=0.5, paraphrase=False, model=None, live=None):
+    """The retrieval path over a five-chunk index, with the decoder writing one fixed answer.
 
     Its own tokenizer, not the advisory one: what the two decoders write is what these tests vary, and a
-    shared fake would make one of the two answers stand for both.
+    shared fake would make one of the two answers stand for both. One chunk names AAPL and none names
+    RELIANCE.NS, which is what makes the gate on the subject observable in either direction.
     """
     held = [Chunk(PASSAGE, [], "d0", "2021-06-01"),
             Chunk("The committee voted to hold the target range at this meeting.", [], "d1", "2021-06-02"),
             Chunk("Dividends are paid out of retained earnings after tax.", [], "d2", "2021-06-03"),
-            Chunk("A limit order buys only at the price you name or better.", [], "d3", "2021-06-04")]
+            Chunk("A limit order buys only at the price you name or better.", [], "d3", "2021-06-04"),
+            Chunk("AAPL holders often set one below the last close.", [], "d4", "2021-06-05")]
     return Reference(Hybrid(held, pretokenize), FakeTokenizer(written),
                      model or FakeModel(confidence), Config, QUESTION_TOKENS, PASSAGES,
-                     ANSWER_TEMPERATURE, ANSWER_TOP_P, floor=floor, paraphrase=paraphrase)
+                     ANSWER_TEMPERATURE, ANSWER_TOP_P, paraphrase=paraphrase, live=live)
 
 
 def test_a_question_naming_no_instrument_is_answered_from_the_documents(market, router):
@@ -395,6 +438,104 @@ def test_a_question_the_router_cannot_place_keeps_its_ticker_and_margin(market, 
         "should i set a stop loss on AAPL ?")
     assert turn.spoke and turn.intent == f"reference {QUOTED}"
     assert turn.ticker == "AAPL" and 0.0 <= turn.margin < 1e9
+
+
+def test_passages_that_never_name_the_subject_are_not_read_as_an_answer_about_it(market, router):
+    """The gate, and the failure it was added for: a question about one instrument was answered out of a
+    passage about something else, because BM25 ranks and cannot abstain. Nothing here mentions RELIANCE.NS,
+    so the refusal routing already had is what comes back rather than the best of four unrelated passages."""
+    turn = agent(market, router, gate_cut=1e9, model=ExplodingModel(),
+                 reference=reference("never written", model=ExplodingModel())).answer(
+        "should i set a stop loss on RELIANCE.NS ?")
+    assert not turn.spoke and turn.because == "unclear question"
+    assert turn.served == finance.UNKNOWN_QUESTION and turn.ticker == "RELIANCE.NS"
+
+
+def test_the_subject_carried_from_the_conversation_is_what_it_is_looked_up_under(market, router):
+    """"How is it doing" is a whole question to a person and no question at all to a router. The carried
+    subject is resolved against the price files like any other, so it can name nothing a user could not."""
+    turn = agent(market, router, written="it is doing fine .").answer("hows it doing ?", subject="AAPL")
+    assert turn.ticker == "AAPL" and turn.spoke
+
+
+def test_a_fetched_passage_is_read_by_the_same_reader_and_the_same_figure_guard(market, router):
+    """What the live search is for, and the rule that keeps it honest: a fetched passage goes through the
+    reader the stored ones go through, so the quote rule and the figure guard apply to it unchanged. The URL
+    it came from travels in the evidence, because a quote the user cannot follow is worth less than none.
+
+    It is served without passing the subject gate, and that is the point of the two arms: this passage says
+    "Reliance Industries" and RELIANCE.NS has no registered name here, so a word check would refuse the one
+    source that can answer for it. What stands in for the check is that the source was asked for this
+    instrument by identity rather than found by overlap."""
+    fetched = Chunk("Reliance Industries said it had commissioned the unit.", [],
+                    "https://en.wikipedia.org/wiki/Reliance_Industries", "2026-09-01")
+    turn = agent(market, router, gate_cut=1e9,
+                 reference=reference("it commissioned 4242.42 of them .", paraphrase=True,
+                                     live=FakeLive([fetched]))).answer(
+        "what has RELIANCE.NS announced ?")
+    assert turn.spoke and turn.served == fetched.text and turn.intent == f"reference {QUOTED}"
+    assert turn.unsupported == ["4242.42"] and fetched.document in turn.evidence
+
+
+def test_the_passage_that_is_quoted_is_one_that_names_the_subject_not_the_best_ranked(market, router):
+    """Why the gate filters rather than just tests. "stop loss" ranks the definition first and only the last
+    chunk says AAPL, so passing the set through whole would quote the definition and cite its document --
+    an answer attributed to a passage that is not about the instrument asked about."""
+    turn = agent(market, router, gate_cut=1e9,
+                 reference=reference("never written", model=ExplodingModel())).answer(
+        "should i set a stop loss on AAPL ?")
+    assert turn.served == "AAPL holders often set one below the last close."
+    assert "document d4" in turn.evidence and PASSAGE not in turn.evidence
+
+
+def test_a_company_with_an_sec_number_is_searched_for_before_the_corpus_is_read(registered, router):
+    """Measured, and the reason the order is this way round: on five such questions every stored passage
+    named the ticker, none was about the company -- Stack Exchange threads that merely say it -- and all five
+    answers were wrong, while asking EDGAR by number returned the matching filing five times out of five.
+    The corpus holds no news, so for a question about a company it is the weaker source even when it answers.
+    Chunk d4 says AAPL and would have been served; that it is not is the whole observable change."""
+    fetched = Chunk("Apple Inc. said fourth-quarter revenue rose.", [],
+                    "https://www.sec.gov/Archives/edgar/data/320193/ex99.htm", "2026-07-29")
+    turn = agent(registered, router, gate_cut=1e9,
+                 reference=reference("never written", model=ExplodingModel(),
+                                     live=FakeLive([fetched]))).answer(
+        "should i set a stop loss on AAPL ?")
+    assert turn.spoke and turn.served == fetched.text
+    assert fetched.document in turn.evidence and "document d4" not in turn.evidence
+
+
+def test_a_search_by_a_guessed_name_must_come_back_with_something_that_says_the_guess(registered, router):
+    """The asymmetry between the arms is provenance, and a guess has none. RELIANCE.NS is in no SEC table,
+    so the only search term is the symbol's own stem -- and measured, "infy" returned the article on the
+    Royal Canadian Regiment, which this path served against a question about Infosys. A weak check, and the
+    right strength: 2 of those 3 searches were right and are kept."""
+    wrong = Chunk("The regiment was raised in London, Ontario in 1883.", [],
+                  "https://en.wikipedia.org/wiki/The_Royal_Canadian_Regiment", "2026-09-01")
+    turn = agent(registered, router, gate_cut=1e9, model=ExplodingModel(),
+                 reference=reference("never written", model=ExplodingModel(),
+                                     live=FakeLive([wrong]))).answer(
+        "should i set a stop loss on RELIANCE.NS ?")
+    assert not turn.spoke and turn.because == "unclear question"
+    assert turn.served == finance.UNKNOWN_QUESTION
+
+
+def test_a_search_that_could_not_be_run_refuses_in_its_own_words(market, router):
+    """A blocked search is not an empty corpus. The trained refusal would blame the question for a network
+    that was down, so this gets its own reason and the error that caused it travels in `because`."""
+    turn = agent(market, router, gate_cut=1e9, model=ExplodingModel(),
+                 reference=reference("never written", model=ExplodingModel(), live=RefusedLive())).answer(
+        "what has RELIANCE.NS announced ?")
+    assert not turn.spoke and turn.served == finance.UNREACHABLE
+    assert turn.because == "search failed: sec_edgar: 403 from efts.sec.gov"
+
+
+def test_a_live_search_is_only_reached_once_the_stored_passages_have_failed_the_gate(market, router):
+    """Additive, and in one direction only. A question the stored corpus can answer must not go to the
+    network, because that would make every measured answer depend on something outside the repository."""
+    turn = agent(market, router, reference=reference("never written", model=ExplodingModel(),
+                                                    live=ExplodingLive())).answer(
+        "what is a stop loss order ?")
+    assert turn.spoke and turn.served == PASSAGE
 
 
 def test_retrieving_nothing_leaves_the_refusal_exactly_as_it_was(market, router):

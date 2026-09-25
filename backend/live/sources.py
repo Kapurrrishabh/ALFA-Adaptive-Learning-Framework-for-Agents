@@ -2,8 +2,8 @@
 
 The index holds 519,135 passages and no news at all, so a question about what a company announced last
 month matched on the word "news" and was served a passage about credit-card utilisation. That is the gap
-this closes: when the relevance gate says the stored passages are not about the question, the question is
-searched for instead, and what comes back goes through the same reader.
+this closes, and what comes back goes through the same reader. A company with an SEC number is searched for
+before the corpus is read; anything else is searched for only once the stored passages have failed the gate.
 
 **Two sources, and the list is short because robots.txt decided it rather than ranking.** Every candidate
 was checked rather than assumed. Google News and Yahoo Finance answer `Disallow: /`. NSE's API refuses a
@@ -62,16 +62,24 @@ CHUNK_TOKENS = 192
 # what keeps the fetch small, and this only has to stop one mis-targeted filing from filling the turn.
 KEEP_CHARACTERS = 20000
 
-# Scripts and stylesheets first, because their bodies are not markup and survive a tag strip as text.
-# `sup` goes with them for the same reason: a stripped Wikipedia footnote leaves "[ 83 ]" in the middle of
-# the sentence we then quote to a user.
+# Elements whose text is never prose, so a tag strip would keep it. Scripts and stylesheets because their
+# bodies are not markup at all; `sup` because a stripped footnote leaves "[ 83 ]" mid-sentence; `ix:header`
+# because it is a filing's whole XBRL taxonomy, which is what served "false 0001018724 AMAZON COM INC
+# 2026-07-09" against "what does AMZN do" -- the corpus extractor needed this same rule.
+_STRIPPED = "script|style|sup|ix:header"
+
+# One element holds a Wikipedia article's whole reference list, and it has to go for the reason the rest
+# does: it is a page dense with the company's own name, so BM25 ranked it first and a question about TCS
+# was answered out of its own footnotes.
+_REFERENCES = r'<ol\b[^>]*mw-references[^>]*>.*?</ol>'
+
 #
 # A tag is quoted strings plus anything that is neither a bracket nor a quote, not "up to the next `>`":
 # Wikipedia carries a template's whole wikitext in a `data-mw` attribute, `>` and all, so the cheaper
 # pattern ended the tag early and leaked `{{infobox ...}}` into a passage we were about to quote. The three
 # alternatives share no character, which is what stops a stray `<` in prose from backtracking exponentially.
 _TAG = r'(?:"[^"]*"|\'[^\']*\'|[^<>"\'])*'
-_MARKUP = re.compile(rf"(?is)<(script|style|sup)\b{_TAG}>.*?</\1>|<{_TAG}>")
+_MARKUP = re.compile(rf"(?is)<({_STRIPPED})\b{_TAG}>.*?</\1>|{_REFERENCES}|<{_TAG}>")
 
 # The three fields the corpus chunker reads off a document, so the same chunker cuts a fetched page
 # exactly as it cut the corpus. `key` is the URL here rather than a manifest hash: it is the provenance,

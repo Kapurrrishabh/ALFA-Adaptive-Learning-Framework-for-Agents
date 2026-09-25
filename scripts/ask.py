@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Type a question, get an answer or a named refusal. No network, one process, one checkpoint.
+"""Type a question, get an answer or a named refusal. One process, one checkpoint, no network unless asked.
 
 This is C1's gate: the four stages the architecture names -- route, assemble, generate, screen -- wired
 into one call. Everything it uses was measured somewhere else and is loaded here rather than chosen: the
@@ -47,7 +47,28 @@ DEMO = (
 )
 
 
-def reference_from(artifacts, index_name, checkpoint, paraphrase=False):
+# What a live search may cost a waiting user: two tries, ten seconds each, per source. The collector's
+# defaults are a minute and four tries, which is right for a batch and twenty times too long here.
+LIVE_TIMEOUT = 10
+LIVE_ATTEMPTS = 2
+
+
+def live_from(tokenizer):
+    """SEC EDGAR and Wikipedia, searched while the question waits. Imported here, not at module load.
+
+    Nothing in the offline path may need `requests` to exist, so the import is inside the one function that
+    is only called when a caller asked for a network search.
+
+    Filings first because they are the primary source and the dated one; the encyclopedia is what the half
+    of our instruments EDGAR has never heard of have instead.
+    """
+    from backend.live import Encyclopedia, Filings, Live, PoliteSession
+
+    session = PoliteSession(timeout=LIVE_TIMEOUT, attempts=LIVE_ATTEMPTS)
+    return Live([Filings(session), Encyclopedia(session)], tokenizer)
+
+
+def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=False):
     """The retrieval answer path, or None when no index was named.
 
     Its checkpoint is named by the caller and not taken from the registry, unlike the advisory one. The
@@ -70,12 +91,15 @@ def reference_from(artifacts, index_name, checkpoint, paraphrase=False):
     # Lexical only, which is what the index serves by: the vector arm measured 1.5% recall against 15.5%,
     # so embedding every question would cost a forward pass per turn and buy nothing.
     tokenizer, model, config = load_model(artifacts, "", checkpoint)
+    # The searcher gets the wordpiece tokenizer and the index gets the pretokenizer, because they are
+    # cutting and ranking respectively: a fetched page has to be chunked by the same rule the corpus was.
     return Reference(Hybrid(chunks, pretokenize), tokenizer, model, config, QUESTION_TOKENS, PASSAGES,
                      ANSWER_TEMPERATURE, ANSWER_TOP_P, np.random.default_rng(config.seed),
-                     paraphrase=paraphrase)
+                     paraphrase=paraphrase, live=live_from(tokenizer) if live else None)
 
 
-def build(artifacts, checkpoint, prices, gate, log, wanted, warmup, price_head, reference=None):
+def build(artifacts, checkpoint, prices, gate, log, wanted, warmup, price_head, reference=None,
+          symbols=None):
     """The served agent, with every threshold loaded from what solved for it."""
     # Which checkpoint answers is the registry's to say. A default string here would serve a model on the
     # strength of its file name, and C6's gate exists because one of these files generates much worse.
@@ -87,7 +111,8 @@ def build(artifacts, checkpoint, prices, gate, log, wanted, warmup, price_head, 
     with FeedbackLog(log) as feedback:
         abstainer, calibrator, learned = adapt(feedback, wanted, warmup)
     advisor = models.load(Path(price_head)) if price_head else None
-    return Agent(finance, finance.Market(Path(prices), advisor), router, Abstainer.load(gate), tokenizer,
+    market = finance.Market(Path(prices), advisor, symbols)
+    return Agent(finance, market, router, Abstainer.load(gate), tokenizer,
                  model, config, abstainer, calibrator, np.random.default_rng(config.seed),
                  reference=reference), abstainer, learned, served
 
@@ -131,6 +156,13 @@ def main():
     parser.add_argument("--paraphrase", action="store_true",
                         help="serve the reference generator's own words instead of the passage it read; "
                              "off by default because those words measured fluent and incoherent")
+    parser.add_argument("--live", action="store_true",
+                        help="search SEC EDGAR for a company that files there and Wikipedia otherwise, "
+                             "before reading the corpus for the first and after it for the second; off by "
+                             "default, and off is the only way this process is offline")
+    parser.add_argument("--symbols", default="data/raw/sec_edgar/company_tickers.json",
+                        help="SEC's symbol table, which is where an instrument's company name and filing "
+                             "number come from; empty leaves it known only by its own symbol")
     parser.add_argument("--as-of", default=None, help="the last date a snapshot may read")
     parser.add_argument("--wanted", type=float, default=0.6, help="the stated chance of being right")
     parser.add_argument("--warmup", type=int, default=10,
@@ -141,7 +173,9 @@ def main():
     agent, abstainer, learned, served = build(
         artifacts, args.checkpoint, args.prices, args.gate, args.log, args.wanted, args.warmup,
         args.price_head,
-        reference_from(artifacts, args.reference_index, args.reference_checkpoint, args.paraphrase))
+        reference_from(artifacts, args.reference_index, args.reference_checkpoint, args.paraphrase,
+                       args.live),
+        args.symbols)
     # `expected` rather than `wanted`: the 60% bar is not reachable on this checkpoint, so the fit returns
     # the most precise cut its coverage floor allows and reports the shortfall. Printing the bar alone
     # would claim a precision nothing measured.
@@ -155,8 +189,11 @@ def main():
     # Printed because the artifact, not this script, decides whether the head or the arithmetic answers.
     print(f"week-ahead outlook from {advisor.version if advisor else 'nothing loaded'}")
     whose = "paraphrasing" if args.paraphrase else "quoting"
+    searching = ", searching live before them for a company that files with SEC and after them for the " \
+                "rest" if args.live else ", no network"
     looking = (f"{whose} over {len(agent.reference.index.chunks)} chunks, {args.reference_checkpoint}"
-               if agent.reference else "off; a question the router cannot place is refused")
+               f"{searching}" if agent.reference
+               else "off; a question the router cannot place is refused")
     print(f"reference path {looking}")
 
     questions = [" ".join(args.question)] if args.question else DEMO
