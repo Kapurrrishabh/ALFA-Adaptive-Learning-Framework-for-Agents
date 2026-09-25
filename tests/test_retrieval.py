@@ -18,6 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from backend.retrieval import (ARMS, HYBRID, LEXICAL, SERVED, VECTOR, Chunk, Document, Hybrid,  # noqa: E402
                                answers, chunks, deduplicate, documents, fuse, load, published_on, save)
 from backend.retrieval.index import RRF_K, centred, without  # noqa: E402
+from backend.agent.finance import Subject  # noqa: E402
+from backend.live import BlockedByHost, Encyclopedia, Filings, Live  # noqa: E402
+from backend.live.sources import EDGAR_EPOCH, EDGAR_SEARCH, WIKIPEDIA  # noqa: E402
 from eval_retrieval import queries  # noqa: E402
 from selfagent.tokenizer.wordpiece import pretokenize  # noqa: E402
 
@@ -407,3 +410,136 @@ def test_an_answer_carries_no_date_so_it_answers_only_undated_questions(tmp_path
     assert built.day == ""
     held = chunks(built, FakeTokenizer(), 10, min_tokens=1)
     assert Hybrid(held, pretokenize).search("no date", 1, as_of=LATE) == []
+
+
+# --- passages fetched while the question waits -------------------------------
+
+# Long enough to survive the chunker's minimum, which drops a page too short to be evidence.
+FILED = "the company commissioned the unit and expects it to run at capacity within the quarter . " * 3
+
+
+class FakeSession:
+    """The two calls a source makes, answered from a dict, with every request recorded."""
+
+    def __init__(self, json_by_url=None, text=f"<p>{FILED}</p>", fails=()):
+        self.json_by_url = json_by_url or {}
+        self.text = text
+        self.fails = set(fails)
+        self.asked = []
+
+    def get_json(self, url, params=None):
+        self.asked.append((url, dict(params or {})))
+        if url in self.fails:
+            raise BlockedByHost(f"{url} answered 403")
+        return self.json_by_url[url]
+
+    def get_text(self, url, params=None):
+        self.asked.append((url, dict(params or {})))
+        return self.text
+
+
+REGISTRANT = Subject("AAPL", ("apple inc",), "0000320193")
+UNREGISTERED = Subject("RELIANCE.NS", ("reliance industries",), None)
+
+SEARCH = f"{WIKIPEDIA}/search/page"
+HISTORY = f"{WIKIPEDIA}/page/Reliance_Industries/history"
+
+
+def _hit(accession, day, cik="0000320193"):
+    return {"_id": f"{accession}:ex99.htm", "_source": {"file_date": day, "ciks": [cik]}}
+
+
+def filings_search(*hits):
+    return {EDGAR_SEARCH: {"hits": {"hits": list(hits)}}}
+
+
+def _edit(revision, day):
+    return {"id": revision, "timestamp": f"{day}T04:22:27Z"}
+
+
+def articles(*edits):
+    """One article found by search, with the revisions it has, newest first as the endpoint returns them."""
+    return {SEARCH: {"pages": [{"key": "Reliance_Industries"}]}, HISTORY: {"revisions": list(edits)}}
+
+
+def test_filings_are_taken_newest_first_because_the_search_ranks_by_relevance(tmp_path):
+    """The bug this pins was measured against EDGAR itself: `q=earnings` for Apple returns 2006, 2004 and
+    2015 in that order, so taking the search's own top two serves a twenty-year-old filing to a question
+    about now."""
+    session = FakeSession(filings_search(_hit("0000-06", "2006-07-19"), _hit("0000-04", "2004-04-14"),
+                                         _hit("0000-15", "2015-07-31")))
+    fetched = Filings(session, filings=2).documents("what was announced", ["apple"])
+    assert [page.day for page in fetched] == ["2015-07-31", "2006-07-19"]
+
+
+def test_a_filing_search_asks_for_the_company_by_number_and_stops_at_the_as_of_date():
+    """Two claims in one request. A name alone returns filings by whoever used the word, and the date bound
+    is pushed into the search because filtering a top-two list down to the day returns nothing."""
+    session = FakeSession(filings_search(_hit("0000-24", "2024-05-02")))
+    Filings(session).documents("anything", [], as_of="2024-06-30", subject=REGISTRANT)
+    _, params = session.asked[0]
+    assert params["ciks"] == "0000320193" and params["q"] == "apple inc"
+    assert (params["startdt"], params["enddt"]) == (EDGAR_EPOCH, "2024-06-30")
+
+
+def test_an_instrument_that_files_nothing_here_is_not_searched_for_by_name():
+    """RELIANCE.NS is not an SEC registrant, and a search for the word returns other companies' filings
+    that merely say it -- which the gate would pass, because they do say it."""
+    session = FakeSession(filings_search(_hit("0000-24", "2024-05-02")))
+    assert Filings(session).documents("what has it announced", [], subject=UNREGISTERED) == []
+    assert session.asked == []
+
+
+def test_an_article_is_searched_for_by_the_companys_name_and_not_by_the_question():
+    """Measured against the endpoint: "Reliance Industries" returns that article first, and "Reliance
+    Industries recent news" returns Jio Platforms, a green-energy complex and a businessman."""
+    session = FakeSession(articles(_edit(137, "2026-09-22")))
+    Encyclopedia(session).documents("what has it announced recently ?", [], subject=UNREGISTERED)
+    assert session.asked[0] == (SEARCH, {"q": "reliance industries", "limit": 2})
+
+
+def test_an_article_is_read_at_the_revision_that_was_current_on_the_as_of_date():
+    """Today's article carries edits made after the question's date, so serving it would be look-ahead by
+    the plainest route there is. The citation names the revision so a reader checks what was read."""
+    session = FakeSession(articles(_edit(137, "2026-09-22"), _edit(99, "2024-05-02")))
+    page, = Encyclopedia(session, articles=1).documents("what is it", [], as_of="2024-12-31",
+                                                       subject=UNREGISTERED)
+    assert page.day == "2024-05-02" and page.key.endswith("?oldid=99")
+    assert f"{WIKIPEDIA}/revision/99/html" in [url for url, _ in session.asked]
+
+
+def test_an_article_edited_only_after_the_as_of_date_refuses_instead_of_serving_todays_text():
+    """One page of history is 20 revisions, which reaches back two months on a page edited as often as
+    Apple's. Past that this says so, because the alternative is answering 2010 out of 2026."""
+    session = FakeSession(articles(_edit(137, "2026-09-22")))
+    with pytest.raises(RuntimeError, match="all postdate 2010-01-01"):
+        Encyclopedia(session).documents("what is it", [], as_of="2010-01-01", subject=UNREGISTERED)
+
+
+def test_a_templates_wikitext_rides_in_an_attribute_and_must_not_reach_the_reader():
+    """Measured on the Tesla article, which came back as `}}</ref>"},"module":{"wt":"{{infobox network serv`
+    -- template source served as prose, because a `>` inside a quoted attribute value ended the tag."""
+    leaky = ('<p><span typeof="mw:Transclusion" data-mw=\'{"target":{"wt":"cite web"},"params":{"url":'
+             '{"wt":"https://www.sec.gov/ix?doc=/x.htm"}}}</ref>","module":{"wt":"{{infobox network serv"}\'>'
+             f"{FILED}</span></p>")
+    session = FakeSession(articles(_edit(137, "2026-09-22")), text=leaky)
+    page, = Encyclopedia(session, articles=1).documents("what is it", [], subject=UNREGISTERED)
+    assert page.text == FILED.strip()
+
+
+def test_one_source_being_blocked_costs_its_passages_and_not_the_turn():
+    """The other source may still hold the answer, so a refusal from one is not a refusal from the index."""
+    session = FakeSession({**filings_search(_hit("0000-24", "2024-05-02")), SEARCH: {}}, fails=[SEARCH])
+    found = Live([Encyclopedia(session), Filings(session)], FakeTokenizer(), chunk_tokens=64).passages(
+        "what was announced", [], subject=REGISTRANT)
+    assert [chunk.text for chunk in found] == [FILED.strip()]
+
+
+def test_a_source_that_refused_and_found_nothing_travels_rather_than_looking_like_an_empty_corpus():
+    """RELIANCE.NS is the case this was measured on: EDGAR is asked nothing because it files nothing there,
+    so a blocked encyclopedia leaves no evidence either way -- and "nothing is known about this" would be a
+    claim about the documents rather than about the network."""
+    session = FakeSession({SEARCH: {}}, fails=[SEARCH])
+    live = Live([Filings(session), Encyclopedia(session)], FakeTokenizer())
+    with pytest.raises(BlockedByHost, match="no source could be searched"):
+        live.passages("what has it announced", [], subject=UNREGISTERED)
