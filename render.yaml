@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: financial-advisor
+    runtime: docker
+    plan: starter
+    envVars:
+      - key: STOCKINTEL_API_KEY
+        generateValue: true
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1

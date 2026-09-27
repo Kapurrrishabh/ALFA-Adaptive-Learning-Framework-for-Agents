@@ -1,0 +1,52 @@
+# Curated NSE large-cap research universe. Not an official index constituent list:
+# verify symbols against NSE before relying on it. Sector labels follow the data
+# provider's taxonomy and are overridden by live profile data when available.
+symbol,sector
+RELIANCE,Energy
+ONGC,Energy
+COALINDIA,Energy
+HDFCBANK,Financial Services
+ICICIBANK,Financial Services
+SBIN,Financial Services
+KOTAKBANK,Financial Services
+AXISBANK,Financial Services
+BAJFINANCE,Financial Services
+BAJAJFINSV,Financial Services
+HDFCLIFE,Financial Services
+SBILIFE,Financial Services
+SHRIRAMFIN,Financial Services
+JIOFIN,Financial Services
+TCS,Technology
+INFY,Technology
+HCLTECH,Technology
+WIPRO,Technology
+TECHM,Technology
+BHARTIARTL,Communication Services
+ITC,Consumer Defensive
+HINDUNILVR,Consumer Defensive
+NESTLEIND,Consumer Defensive
+BRITANNIA,Consumer Defensive
+TATACONSUM,Consumer Defensive
+ASIANPAINT,Basic Materials
+ULTRACEMCO,Basic Materials
+GRASIM,Basic Materials
+JSWSTEEL,Basic Materials
+TATASTEEL,Basic Materials
+HINDALCO,Basic Materials
+LT,Industrials
+BEL,Industrials
+ADANIPORTS,Industrials
+MARUTI,Consumer Cyclical
+M&M,Consumer Cyclical
+BAJAJ-AUTO,Consumer Cyclical
+EICHERMOT,Consumer Cyclical
+HEROMOTOCO,Consumer Cyclical
+TITAN,Consumer Cyclical
+TRENT,Consumer Cyclical
+ETERNAL,Consumer Cyclical
+SUNPHARMA,Healthcare
+CIPLA,Healthcare
+DRREDDY,Healthcare
+APOLLOHOSP,Healthcare
+NTPC,Utilities
+POWERGRID,Utilities

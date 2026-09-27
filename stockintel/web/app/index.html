@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StockIntel — invest with evidence</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="logo" href="#/explore"><span class="logo-mark">S</span><span class="logo-word">StockIntel</span></a>
+    <nav class="nav" id="nav">
+      <a href="#/explore" data-r="explore">Explore</a>
+      <a href="#/portfolio" data-r="portfolio">Portfolio</a>
+      <a href="#/signals" data-r="signals">Signals</a>
+      <a href="#/chat" data-r="chat">Ask AI</a>
+      <a href="#/learn" data-r="learn">Learn</a>
+      <a href="#/reports" data-r="reports">Reports</a>
+      <a href="#/performance" data-r="performance">Performance</a>
+    </nav>
+    <div class="search">
+      <span class="icon">⌕</span>
+      <input id="q" placeholder="Search stocks — e.g. Reliance, TCS, HDFC Bank" autocomplete="off" aria-label="Search stocks">
+      <div class="suggest" id="suggest" role="listbox"></div>
+    </div>
+    <button class="icon-btn" id="theme" title="Toggle theme" aria-label="Toggle theme">◐</button>
+  </div>
+</header>
+<main class="page" id="view"></main>
+<nav class="bottom-nav" id="bnav" aria-label="Main">
+  <a href="#/explore" data-r="explore"><span class="ic">⌂</span>Explore</a>
+  <a href="#/portfolio" data-r="portfolio"><span class="ic">◔</span>Portfolio</a>
+  <a href="#/signals" data-r="signals"><span class="ic">⚡</span>Signals</a>
+  <a href="#/chat" data-r="chat"><span class="ic">✦</span>Ask AI</a>
+  <a href="#/learn" data-r="learn"><span class="ic">✎</span>Learn</a>
+</nav>
+<script src="/static/app.js"></script>
+</body>
+</html>
