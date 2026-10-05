@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from . import performance
 from . import report as R
 from .alerts import evaluate as evaluate_alert
 from .config import RISK_PROFILES, canonical_symbol
@@ -509,7 +510,8 @@ class Orchestrator:
         except DataUnavailable:
             trades = None
         p = plan(panel, bench, float(capital or 0.0) or 1.0, holdings, strategy=strategy, risk_mode=risk,
-                 universe=list(index_constituents("nifty200")["symbol"]), insider_trades=trades)
+                 universe=list(index_constituents("nifty200")["symbol"]), insider_trades=trades,
+                 measured=performance.momentum_evidence(performance.track_record()))
         return p
 
     def _h_signals(self, s: Session, i: Intent) -> Reply:
@@ -521,7 +523,7 @@ class Orchestrator:
         return Reply(render(p), "signals", {"payload": payload}, ["signal_plan"])
 
     def _h_market_regime(self, s: Session, i: Intent) -> Reply:
-        from .signals.advisor import market_state
+        from .signals.advisor import CRASH_EXPOSURE, market_state
         bench = self.service().history("^NSEI")["close"]
         m = market_state(bench, bench.index[-1])
         lines = [f"Nifty market state as of {bench.index[-1].date()}:",
@@ -533,10 +535,12 @@ class Orchestrator:
                  f"momentum crash risk: {'YES' if m['momentum_crash_risk'] else 'no'}."]
         defensive = (1.0 if m["trend"] == "up" else 0.0) * m["vol_target_exposure"]
         lines.append(f"- Suggested equity exposure: defensive {defensive:.0%}, balanced "
-                     f"{50 if m['momentum_crash_risk'] else 100}%, full 100%.")
+                     f"{CRASH_EXPOSURE if m['momentum_crash_risk'] else 1:.0%}, full 100%.")
+        rec = performance.track_record()
+        cut = (f"cut our NSE momentum backtest's worst fall from {performance.live_edge(rec)['max_dd']:.0f}% to "
+               f"{performance.live_edge(rec)['overlay_max_dd']:.0f}%" if rec else "is measured once `stockintel build-performance` has run")
         lines.append("Evidence: the 10-month trend filter halved the worst drawdown on US stocks over a century "
-                     "(Faber); combined with a volatility target it cut our NSE momentum backtest's max drawdown "
-                     "from −35% to −22%, but it also "
+                     f"(Faber); combined with a volatility target it {cut}, but it also "
                      "lowered returns and whipsaws in sideways markets. It is a risk control, not a forecast.")
         return Reply("\n".join(lines), "market_regime", {"payload": m}, ["market_state"])
 

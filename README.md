@@ -72,7 +72,7 @@ python3 -m venv .venv                               # Python 3.11 or newer
 .venv/bin/stockintel --demo analyze RELIANCE         # offline, SYNTHETIC data, no network
 .venv/bin/stockintel analyze RELIANCE                # live NSE data (Yahoo Finance + Google News)
 .venv/bin/stockintel chat                            # multi-turn research conversation
-.venv/bin/pytest                                     # 217 tests, ~5 s, fully offline
+.venv/bin/pytest                                     # 227 tests, ~5 s, fully offline
 ```
 
 Dashboard and REST API:
@@ -172,7 +172,7 @@ stockintel/
   portfolio.py   screener.py  alerts.py  report.py  knowledge.py (+ knowledge_base/)
   backtest/      engine (next-open fills, costs, stops), strategies, comparison
   storage.py     SQLite  registry.py  monitoring.py  api.py  web/index.html  cli.py
-tests/           217 offline tests
+tests/           227 offline tests
 docs/DESIGN.md   design specification, decisions, research answers, measured results
 ```
 
@@ -221,35 +221,53 @@ cd "<sibling project folder>" && <python> scripts/serve.py --port 8010
 ```
 StockIntel finds it at `http://127.0.0.1:8010`; set `SELFAGENT_URL` if it runs elsewhere.
 
-## Put it on the web (a link others can open)
+## Put it on the web for free (a link for your phone)
 
-The app is a single-user program: **one portfolio and one login key per running copy**. If you
-put one copy online and share the link and key, everyone sees and edits the same portfolio.
-For other people, the right setup is that each person runs their own copy (above) or deploys their own.
+Free hosting as checked in October 2026: Hugging Face no longer lets free accounts create Docker
+Spaces, and Render's free plan has 512 MB of RAM and no disk. So the app is split three ways, all free:
 
-**Render (simplest, about 10 minutes):**
-1. Sign in at render.com with GitHub, choose *New → Blueprint*, and pick this repository.
-   It reads `render.yaml`: a Docker web service with a 1 GB disk for the database, and a random
-   `STOCKINTEL_API_KEY`.
-2. When it's live, open *Environment*, copy `STOCKINTEL_API_KEY`, and visit
-   `https://<your-service>.onrender.com/#key=<that key>`.
-3. The Starter plan (paid) keeps the disk and doesn't sleep; the free plan has no disk, so
-   the portfolio resets on every restart.
+| Part | Where | Why there |
+|---|---|---|
+| Website, signals, verdicts, charts | Render free web service (Docker) | Needs ~250 MB without torch; sleeps after 15 idle minutes, wakes in about a minute |
+| Chronos and Kronos models | Your own ZeroGPU Space on Hugging Face (`deploy/hf-models-space`) | Free accounts may host 2 ZeroGPU Spaces; 5 GPU-minutes a day, and each forecast takes seconds |
+| Portfolio, reports, caches | A private Hugging Face dataset | Render's free disk is wiped on restart; the app restores on start and saves every 10 minutes and on shutdown |
 
-**Any Docker host (Railway, Fly.io, a VPS):**
+**1. Hugging Face (once).** Your account must have a verified email and be at least 30 days old to host
+a ZeroGPU Space. Make a *write* token at huggingface.co/settings/tokens, then:
+```bash
+.venv/bin/hf auth login                                         # paste the write token
+.venv/bin/hf repo create <you>/stockintel-models --repo-type space --space-sdk gradio --private
+.venv/bin/hf upload <you>/stockintel-models deploy/hf-models-space . --repo-type space
+```
+In the Space's *Settings → Hardware*, choose **ZeroGPU**. The Space installs this repository from GitHub,
+so push your changes to GitHub first.
+
+**2. Save your current state from this computer** (portfolio, track record, price cache):
+```bash
+export STOCKINTEL_STATE_REPO=<you>/stockintel-state HF_TOKEN=<write token>
+.venv/bin/stockintel state push                                 # creates the private dataset on first use
+```
+
+**3. Render.** Sign in at render.com with GitHub → *New → Blueprint* → pick this repository. It reads
+`render.yaml`. Fill in `STOCKINTEL_STATE_REPO`, `STOCKINTEL_MODEL_SPACE` (`<you>/stockintel-models`) and
+`HF_TOKEN`. When it is live, copy `STOCKINTEL_API_KEY` from *Environment* and open
+`https://<service>.onrender.com/#key=<that key>` on your phone, then *Add to Home Screen*.
+
+Things to know:
+- **Data sources:** Yahoo Finance sometimes rate-limits cloud servers (the app uses `curl_cffi`, which
+  helps), and nseindia.com often blocks them, so run `stockintel insider-fetch` on your computer and then
+  `stockintel state push`. Their terms restrict redistribution; keep the site for your own use.
+- **The self-learning agent** needs about 5 GB of RAM, which no free host offers. It stays on your
+  computer; the Ask AI toggle appears only when the app can reach it.
+- **Keep the key secret:** it is the only login. One portfolio per copy of the app.
+- **Not investment advice:** the app says this on every verdict; keep that if you publish it.
+
+Any Docker host works too:
 ```bash
 docker build -t financial-advisor .
 docker run -p 8000:8000 -e STOCKINTEL_API_KEY=$(openssl rand -hex 24) -v advisor-data:/data financial-advisor
 ```
 
-Things to know before going public:
-- **Data sources:** prices and news come from Yahoo Finance and Google News, and insider trades from
-  NSE's website. These are free for personal use, but their terms restrict redistribution, and
-  cloud servers are sometimes rate-limited or blocked by them. For a public service, switch to a
-  licensed data feed (for example a broker API).
-- **Keep the key secret:** it is the only login. Share it only with people you trust with your portfolio.
-- **Not investment advice:** the app says this on every verdict; keep that if you publish it.
-
 ## Tests
 
-`pytest -q` runs 217 offline tests (no network). GitHub Actions runs them on every push.
+`pytest -q` runs 227 offline tests (no network). GitHub Actions runs them on every push.

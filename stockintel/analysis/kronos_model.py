@@ -15,6 +15,7 @@ from typing import Dict, List, Sequence
 import numpy as np
 import pandas as pd
 
+from ..config import TORCH_DEVICE
 from ..data.provider import DataUnavailable
 
 PATH = Path(os.environ.get("STOCKINTEL_KRONOS_PATH", Path.home() / ".stockintel" / "vendor" / "kronos"))
@@ -37,7 +38,7 @@ def predictor():
         sys.path.insert(0, str(PATH))
         from model import Kronos, KronosPredictor, KronosTokenizer  # noqa: E402
         _PRED = KronosPredictor(Kronos.from_pretrained(MODEL_ID), KronosTokenizer.from_pretrained(TOKENIZER_ID),
-                                device="cpu", max_context=512)
+                                device=TORCH_DEVICE, max_context=512)
     return _PRED
 
 

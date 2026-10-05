@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 from typing import List, Optional
 
+from . import performance
 from . import report as R
 from .jsonutil import sanitize
 
@@ -378,7 +379,8 @@ def cmd_signals(args) -> int:
         raise SystemExit("give --capital (new money to invest) or import a portfolio first")
     panel, bench, uni = _signal_inputs(args)
     p = plan(panel, bench, float(capital or 0.0) or 1.0, holdings, strategy=args.strategy,
-             risk_mode=args.risk, n=args.positions, universe=uni, insider_trades=_insider_or_none())
+             risk_mode=args.risk, n=args.positions, universe=uni, insider_trades=_insider_or_none(),
+             measured=performance.momentum_evidence(performance.track_record()))
     orch.store.save_plan(sanitize(p.to_dict()))
     print(json.dumps(sanitize(p.to_dict()), indent=2) if args.json else render(p))
     return 0
@@ -475,7 +477,6 @@ def _lan_ip() -> str:
 
 
 def cmd_build_performance(args) -> int:
-    from . import performance
     logging.getLogger("stockintel.performance").setLevel(logging.INFO)
     out = performance.build(_orchestrator(args))
     print(f"Saved {performance.PATH}: {len(out['patterns'])} patterns, "
@@ -485,7 +486,6 @@ def cmd_build_performance(args) -> int:
 
 
 def cmd_evaluate_models(args) -> int:
-    from . import performance
     out = performance.evaluate_models(_orchestrator(args).service())
     print(json.dumps(out, indent=2))
     return 0
@@ -493,9 +493,30 @@ def cmd_evaluate_models(args) -> int:
 
 def cmd_serve(args) -> int:
     import uvicorn
+    from . import hfstate
     from .api import create_app
+    saver = None
+    if hfstate.repo():                  # restore before the database is opened
+        logging.getLogger("stockintel.state").setLevel(logging.INFO)
+        hfstate.pull(Path(args.db))
+        saver = hfstate.Autosave(Path(args.db), hfstate.PUSH_MINUTES).start()
     app = create_app(_orchestrator(args, args.llm))
-    uvicorn.run(app, host=args.host, port=args.port)
+    try:
+        uvicorn.run(app, host=args.host, port=args.port)
+    finally:
+        if saver:
+            saver.stop()
+    return 0
+
+
+def cmd_state(args) -> int:
+    from . import hfstate
+    if not hfstate.repo():
+        raise SystemExit("set STOCKINTEL_STATE_REPO (e.g. you/stockintel-state) and HF_TOKEN first")
+    if args.action == "push":
+        print(f"saved to {hfstate.repo()} at commit {hfstate.push(Path(args.db))}")
+    else:
+        print("restored:", ", ".join(hfstate.pull(Path(args.db), overwrite=args.overwrite)) or "nothing new")
     return 0
 
 
@@ -618,6 +639,11 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--port", type=int, default=8000)
     sv.add_argument("--llm", **llm)
     sv.set_defaults(fn=cmd_serve)
+
+    st = sub.add_parser("state", help="save or restore the portfolio and caches in a private Hugging Face dataset")
+    st.add_argument("action", choices=["push", "pull"])
+    st.add_argument("--overwrite", action="store_true", help="pull: replace local files too")
+    st.set_defaults(fn=cmd_state)
     return p
 
 

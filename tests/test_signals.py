@@ -110,7 +110,7 @@ def test_exposure_modes():
 def test_plan_buys_top_ranked_sells_dropouts_and_sizes_to_capital(panel):
     bench = panel.close["S01"]
     holdings = [Holding("LOSE", 100, 100.0, "2026-01-02")]
-    p = plan(panel, bench, 100_000, holdings, n=4, today=date(2026, 9, 27))
+    p = plan(panel, bench, 100_000, holdings, n=4, today=date(2026, 9, 27), measured=[])
     buys = [a for a in p.actions if a.action == "BUY"]
     assert "WIN" in [a.symbol for a in buys]
     sell = next(a for a in p.actions if a.symbol == "LOSE")
@@ -124,7 +124,7 @@ def test_plan_skips_stocks_whose_single_share_exceeds_the_slot(panel):
               for s in panel.symbols}
     frames["WIN"] = frames["WIN"] * [100, 100, 100, 100, 1]
     p2 = panel_from_frames(frames)
-    p = plan(p2, p2.close["S01"], 40_000, [], n=2, today=date(2026, 9, 27))
+    p = plan(p2, p2.close["S01"], 40_000, [], n=2, today=date(2026, 9, 27), measured=[])
     assert "WIN" not in [a.symbol for a in p.actions]
     assert any("WIN" in w for w in p.warnings)
 
@@ -148,8 +148,8 @@ def test_insider_flags_are_informational_and_do_not_change_selection(panel):
     asof = panel.close.index[-1]
     trades = pd.DataFrame({"broadcast": [asof - pd.Timedelta(days=10)], "symbol": ["WIN"],
                            "category": ["Promoter Group"], "direction": [1], "value": [5e7], "pid": ["x"]})
-    with_flags = plan(panel, bench, 100_000, [], n=4, today=date(2026, 9, 27), insider_trades=trades)
-    without = plan(panel, bench, 100_000, [], n=4, today=date(2026, 9, 27))
+    with_flags = plan(panel, bench, 100_000, [], n=4, today=date(2026, 9, 27), insider_trades=trades, measured=[])
+    without = plan(panel, bench, 100_000, [], n=4, today=date(2026, 9, 27), measured=[])
     assert [a.symbol for a in with_flags.actions] == [a.symbol for a in without.actions]
     win = next(a for a in with_flags.actions if a.symbol == "WIN")
     assert any("promoters bought ₹5.00 cr" in r for r in win.reasons)

@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Sequence
 
 import numpy as np
 import pandas as pd
 
+from ..config import TORCH_DEVICE
+from ..data.provider import DataUnavailable
 from .forecast import ewma_sigma
 from .stats import norm_ppf
 
@@ -30,7 +32,7 @@ def pipeline(model_id: str = MODEL_ID):
         import torch
         from chronos import BaseChronosPipeline
         torch.set_num_threads(2)            # keep the laptop responsive; inference is small
-        _PIPE = BaseChronosPipeline.from_pretrained(model_id, device_map="cpu", torch_dtype=torch.float32)
+        _PIPE = BaseChronosPipeline.from_pretrained(model_id, device_map=TORCH_DEVICE, torch_dtype=torch.float32)
     return _PIPE
 
 
@@ -40,7 +42,7 @@ def forecast_quantiles(closes: Sequence[np.ndarray], horizon: int,
     import torch
     ctx = [torch.tensor(np.asarray(c[-CONTEXT:], dtype=np.float32)) for c in closes]
     q, _ = pipeline().predict_quantiles(ctx, prediction_length=horizon, quantile_levels=list(quantiles))
-    return q.numpy()
+    return q.cpu().numpy()
 
 
 def _pinball(y: float, qs: np.ndarray, levels: Sequence[float]) -> float:
@@ -88,10 +90,13 @@ def evaluate(closes: Dict[str, pd.Series], horizons: Sequence[int] = (5, 20), st
     return out
 
 
-def fan(close: pd.Series, horizon: int = 20) -> Optional[Dict[str, list]]:
+MIN_CONTEXT = 64
+
+
+def fan(close: pd.Series, horizon: int = 20) -> Dict[str, list]:
     """Today's Chronos quantile fan for one stock, as prices per future day."""
     c = close.dropna()
-    if len(c) < 64:
-        return None
+    if len(c) < MIN_CONTEXT:
+        raise DataUnavailable(f"only {len(c)} closes; Chronos needs at least {MIN_CONTEXT}")
     q = forecast_quantiles([c.to_numpy()], horizon)[0]
     return {f"q{int(l * 100)}": [round(float(v), 2) for v in q[:, j]] for j, l in enumerate(QUANTILES)}

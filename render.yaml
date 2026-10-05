@@ -2,11 +2,14 @@ services:
   - type: web
     name: financial-advisor
     runtime: docker
-    plan: starter
+    plan: free                      # 512 MB, sleeps after 15 idle minutes; state lives in a Hugging Face dataset
+    healthCheckPath: /health
     envVars:
       - key: STOCKINTEL_API_KEY
         generateValue: true
-    disk:
-      name: data
-      mountPath: /data
-      sizeGB: 1
+      - key: STOCKINTEL_STATE_REPO    # e.g. you/stockintel-state (private dataset; created on first save)
+        sync: false
+      - key: STOCKINTEL_MODEL_SPACE   # e.g. you/stockintel-models (the ZeroGPU Space in deploy/hf-models-space)
+        sync: false
+      - key: HF_TOKEN                 # write token from huggingface.co/settings/tokens
+        sync: false

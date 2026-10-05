@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -183,10 +183,83 @@ def evaluate_models(service) -> Dict[str, Any]:
     return out
 
 
+# pinball skill within ±1% of the volatility band counts as a tie (provisional: the
+# 660-forecast sample cannot separate smaller differences from noise)
+TIE_SKILL = 0.01
+
+
+def _vs_base(acc: float, base: float, n: int) -> str:
+    """Direction accuracy against the base rate, calling gaps under two standard errors noise."""
+    se = (base * (1 - base) / n) ** 0.5
+    return ("more often than" if acc - base > 2 * se else "less often than" if base - acc > 2 * se
+            else "about as often as")
+
+
+def model_verdicts(evals: Dict[str, Any]) -> Dict[str, str]:
+    """One plain sentence per open-source model, read off its measured record."""
+    out = {}
+    h5 = next((h for h in evals.get("chronos", {}).get("horizons", []) if h["horizon"] == 5), None)
+    if h5:
+        skill = h5["pinball_skill"]
+        out["chronos"] = ("its range was " + ("better than" if skill > TIE_SKILL else "worse than" if skill < -TIE_SKILL else "about as good as")
+                          + " plain volatility, and its direction was right "
+                          + _vs_base(h5["chronos_direction_acc"], h5["base_rate_acc"], h5["n"]) + " the base rate")
+    k = evals.get("kronos")
+    if k:
+        out["kronos"] = ("its price error was " + ("larger" if k["mae_pct"] > k["no_change_mae_pct"] else "smaller")
+                         + " than assuming no change, and its direction was right "
+                         + _vs_base(k["direction_acc"], k["base_rate_acc"], k["n"]) + " the base rate")
+    return out
+
+
 def load() -> Dict[str, Any]:
     if not PATH.exists():
         raise FileNotFoundError("performance results not built yet; run `stockintel build-performance`")
     out = json.loads(PATH.read_text())
     if MODELS_PATH.exists():
         out["open_models"] = json.loads(MODELS_PATH.read_text())
+        out["open_models"]["verdicts"] = model_verdicts(out["open_models"])
     return out
+
+
+def track_record() -> Optional[Dict[str, Any]]:
+    """The measured results if they have been built, else None."""
+    return load() if PATH.exists() else None
+
+
+def live_edge(rec: Dict[str, Any]) -> Dict[str, Any]:
+    """The momentum facts every explanation quotes: live ETF edge, its best and worst
+    year, and the backtest's worst falls with and without the risk overlay."""
+    live, table = rec["momentum"]["live_check"], rec["momentum"]["table"]
+    years = {y["year"]: y["etf"] - y["nifty500"] for y in live["yearly"]}
+    best, worst = max(years, key=years.get), min(years, key=years.get)
+    return {"gap": live["bars"][0]["cagr"] - live["bars"][1]["cagr"], "window": live["window"],
+            "best": (best, years[best]), "worst": (worst, years[worst]),
+            "max_dd": float(table["momentum_semiannual"]["max_dd_pct"]),
+            "overlay_max_dd": float(table["momentum_trend_vol_overlay"]["max_dd_pct"])}
+
+
+def momentum_evidence(rec: Optional[Dict[str, Any]]) -> List[str]:
+    """Measured lines shown with every signal plan."""
+    if rec is None:
+        return ["Measured track record not built yet; run `stockintel build-performance`."]
+    e = live_edge(rec)
+    return [f"Live Nifty200 Momentum 30 ETF beat the Nifty 500 by {e['gap']:+.1f} pts/yr ({e['window']}): "
+            f"{e['best'][1]:+.0f} pts in {e['best'][0]}, {e['worst'][1]:+.0f} pts in {e['worst'][0]}.",
+            f"Backtest on today's index list (survivorship-inflated): worst fall {e['max_dd']:.0f}%, "
+            f"{e['overlay_max_dd']:.0f}% with the trend + volatility overlay."]
+
+
+def evidence_note(rec: Optional[Dict[str, Any]]) -> str:
+    """What the momentum rule has actually done, read off the built track record."""
+    rule = "The buy/sell rule is NSE's momentum method. "
+    if rec is None:
+        return rule + "Its measured track record is not built yet; run `stockintel build-performance`."
+    e = live_edge(rec)
+    edges = sum(abs(p["z"] or 0) >= rec["bonferroni_z"] for p in rec["patterns"])
+    beats = sum(h["accuracy"] > h["always_up_accuracy"] for h in rec["forecast"]["horizons"])
+    return (rule + f"Its live ETF beat the Nifty 500 by {e['gap']:+.1f} points a year ({e['window']}), but unevenly: "
+            f"{e['best'][1]:+.0f} points in {e['best'][0]}, {e['worst'][1]:+.0f} in {e['worst'][0]}, "
+            f"and the backtest fell up to {abs(e['max_dd']):.0f}% in bad stretches. {edges} of {len(rec['patterns'])} candle and "
+            f"chart patterns showed an edge, and the direction forecast beat always-guessing-up at {beats} of "
+            f"{len(rec['forecast']['horizons'])} horizons, so they only appear as context.")

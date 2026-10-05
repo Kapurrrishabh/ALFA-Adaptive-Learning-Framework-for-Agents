@@ -83,6 +83,26 @@ const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v
 })();
 
 // ---------- charts ----------
+// user-space bounds: a bounding-box filter drops perfectly flat lines (zero-height box)
+function glow(svg, W, H, sd = 3) {
+  const id = "glow" + Math.random().toString(36).slice(2), f = s("filter", { id, filterUnits: "userSpaceOnUse", x: 0, y: 0, width: W, height: H });
+  const merge = s("feMerge"); merge.append(s("feMergeNode", { in: "b" }), s("feMergeNode", { in: "SourceGraphic" }));
+  f.append(s("feGaussianBlur", { stdDeviation: sd, result: "b" }), merge); svg.append(f); return `url(#${id})`;
+}
+const ICONS = { home: "M3 11l9-8 9 8M5 10v10h14V10", compass: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM15.5 8.5l-2 5-5 2 2-5z",
+  layers: "M12 3l9 5-9 5-9-5zM3 13l9 5 9-5M3 17.5l9 5 9-5", sparkle: "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z",
+  pie: "M12 3v9h9a9 9 0 1 1-9-9zM15 3.5A9 9 0 0 1 20.5 9H15z", candles: "M7 3v18M17 3v18M5 7h4v9H5zM15 5h4v7h-4z",
+  chat: "M4 5h16v11H9l-5 4z", chart: "M4 20V4M4 20h16M7 15l4-5 3 3 6-7" };
+function icon(name) { const svg = s("svg", { viewBox: "0 0 24 24", width: 22, height: 22, fill: "none", stroke: "currentColor", "stroke-width": 1.7, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" });
+  svg.append(s("path", { d: ICONS[name] })); return svg; }
+function ring(frac, label, color = css("--brand"), size = 84) {
+  const c = size / 2, r = c - 8, len = 2 * Math.PI * r, f = Math.max(0, Math.min(1, frac));
+  const svg = s("svg", { viewBox: `0 0 ${size} ${size}`, width: size, height: size, role: "img", "aria-label": label, class: "ring" });
+  svg.append(s("circle", { cx: c, cy: c, r, fill: "none", stroke: css("--bg-3"), "stroke-width": 7 }),
+    s("circle", { cx: c, cy: c, r, fill: "none", stroke: color, "stroke-width": 7, "stroke-linecap": f ? "round" : "butt", "stroke-dasharray": `${len * f} ${len}`, transform: `rotate(-90 ${c} ${c})`, style: `filter:drop-shadow(0 0 5px ${color})` }));
+  const t = s("text", { x: c, y: c + 6, "text-anchor": "middle", "font-size": 17, "font-weight": 700, fill: css("--ink") }); t.textContent = label; svg.append(t);
+  return svg;
+}
 function areaChart(container, dates, values, { height = 280, showAxis = true } = {}) {
   container.replaceChildren();
   if (!values.length) return;
@@ -94,13 +114,13 @@ function areaChart(container, dates, values, { height = 280, showAxis = true } =
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Price chart, ${up ? "up" : "down"} over the period` });
   const gid = "g" + Math.random().toString(36).slice(2);
   const defs = s("defs"); const grad = s("linearGradient", { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 });
-  grad.append(s("stop", { offset: "0%", "stop-color": color, "stop-opacity": 0.18 }), s("stop", { offset: "100%", "stop-color": color, "stop-opacity": 0 }));
+  grad.append(s("stop", { offset: "0%", "stop-color": color, "stop-opacity": 0.32 }), s("stop", { offset: "100%", "stop-color": color, "stop-opacity": 0 }));
   defs.append(grad); svg.append(defs);
   if (showAxis) {
     const ticks = 4;
     for (let k = 0; k <= ticks; k++) {
       const v = lo + (hi - lo) * (k / ticks), yy = y(v);
-      svg.append(s("line", { x1: m.l, x2: W - m.r, y1: yy, y2: yy, stroke: css("--line"), "stroke-width": 1 }));
+      svg.append(s("line", { x1: m.l, x2: W - m.r, y1: yy, y2: yy, stroke: css("--line"), "stroke-width": 1, "stroke-dasharray": "2 4" }));
       const t = s("text", { x: W - m.r + 6, y: yy + 4, fill: css("--muted"), "font-size": 11 }); t.textContent = num(v, v > 1000 ? 0 : 2); svg.append(t);
     }
     const every = Math.max(1, Math.floor(values.length / 5));
@@ -112,8 +132,10 @@ function areaChart(container, dates, values, { height = 280, showAxis = true } =
   }
   const pts = values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
   svg.append(s("path", { d: `M${m.l},${m.t + ph} L${pts.join(" L")} L${x(values.length - 1)},${m.t + ph} Z`, fill: `url(#${gid})` }));
-  svg.append(s("path", { d: `M${pts.join(" L")}`, fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  svg.append(s("path", { d: `M${pts.join(" L")}`, fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round", filter: showAxis ? glow(svg, W, H) : "none" }));
   if (showAxis) {
+    const li = values.length - 1;
+    svg.append(s("circle", { cx: x(li), cy: y(values[li]), r: 9, fill: color, "fill-opacity": 0.18 }), s("circle", { cx: x(li), cy: y(values[li]), r: 4, fill: color, stroke: css("--card"), "stroke-width": 2 }));
     const cross = s("line", { y1: m.t, y2: m.t + ph, stroke: css("--muted"), "stroke-width": 1, "stroke-dasharray": "3 3", visibility: "hidden" });
     const dot = s("circle", { r: 5, fill: color, stroke: css("--card"), "stroke-width": 2, visibility: "hidden" });
     const hit = s("rect", { x: m.l, y: m.t, width: pw, height: ph, fill: "transparent" });
@@ -167,7 +189,7 @@ function candleChart(container, t, layers, selected, onPick) {
   if (layers.stop && t.stop) {
     const sx = X(Math.max(0, n - Math.round(n * 0.35)));
     svg.append(s("line", { x1: sx, x2: X(total - 1), y1: Y(t.stop), y2: Y(t.stop), stroke: css("--down"), "stroke-width": 1.5 }));
-    txt(sx + 2, Y(t.stop) + 13, `Stop-loss ${inr(t.stop, 0)} (−10%)`, { fill: css("--down"), "font-size": 10.5, "font-weight": 600 });
+    txt(sx + 2, Y(t.stop) + 13, `Stop-loss ${inr(t.stop, 0)} (−${t.stop_pct}%)`, { fill: css("--down"), "font-size": 10.5, "font-weight": 600 });
   }
   if (layers.cone) {
     const pts = (key) => t.cone.map((c, k) => `${X(n + k)},${Y(c[key])}`);
@@ -200,13 +222,13 @@ function candleChart(container, t, layers, selected, onPick) {
     const up = t.close[i] >= t.open[i], col = up ? css("--up") : css("--down");
     svg.append(s("line", { x1: X(i), x2: X(i), y1: Y(t.high[i]), y2: Y(t.low[i]), stroke: col, "stroke-width": 1 }));
     const top = Y(Math.max(t.open[i], t.close[i])), hgt = Math.max(1, Math.abs(Y(t.open[i]) - Y(t.close[i])));
-    svg.append(s("rect", { x: X(i) - bw / 2, y: top, width: bw, height: hgt, fill: up ? css("--card") : col, stroke: col, "stroke-width": 1 }));
+    svg.append(s("rect", { x: X(i) - bw / 2, y: top, width: bw, height: hgt, fill: col, stroke: col, "stroke-width": 1 }));
   }
   if (fan) {
     const ai = css("--ai"), xs = fan.dates.map((d, k) => X(n + k)), start = `${X(n - 1)},${Y(t.close[n - 1])}`;
     const band = (a, b) => `M${start} L${xs.map((x, k) => `${x},${Y(fan[a][k])}`).join(" L")} L${xs.map((x, k) => `${x},${Y(fan[b][k])}`).reverse().join(" L")} Z`;
     svg.append(s("path", { d: band("q90", "q10"), fill: ai, "fill-opacity": 0.1 }), s("path", { d: band("q75", "q25"), fill: ai, "fill-opacity": 0.18 }));
-    svg.append(s("path", { d: `M${start} L${xs.map((x, k) => `${x},${Y(fan.q50[k])}`).join(" L")}`, fill: "none", stroke: ai, "stroke-width": 2, "stroke-dasharray": "5 4" }));
+    svg.append(s("path", { d: `M${start} L${xs.map((x, k) => `${x},${Y(fan.q50[k])}`).join(" L")}`, fill: "none", stroke: ai, "stroke-width": 2, "stroke-dasharray": "5 4", filter: glow(svg, W, H, 2.5) }));
     fan.q50.forEach((v, k) => { const dot = s("circle", { cx: xs[k], cy: Y(v), r: Math.min(3.2, step * 0.4), fill: ai, stroke: css("--card"), "stroke-width": 1.5, cursor: "help" });
       dot.addEventListener("mousemove", (ev) => showTip(ev, [h("b", {}, `AI median · ${fan.dates[k]}`), `${inr(v)} (50% range ${inr(fan.q25[k], 0)}–${inr(fan.q75[k], 0)})`, `80% range ${inr(fan.q10[k], 0)}–${inr(fan.q90[k], 0)}`]));
       dot.addEventListener("mouseleave", () => hideTip()); svg.append(dot); });
@@ -312,7 +334,7 @@ function intradayPanel(sym) {
     const bw = Math.max(1, Math.min(8, step * 0.62)), vmax = Math.max(...d.volume) || 1, vy = H - m.b - volH;
     for (let i = 0; i < n; i++) { const up = d.close[i] >= d.open[i], col = up ? css("--up") : css("--down");
       svg.append(s("line", { x1: X(i), x2: X(i), y1: Y(d.high[i]), y2: Y(d.low[i]), stroke: col }));
-      svg.append(s("rect", { x: X(i) - bw / 2, y: Y(Math.max(d.open[i], d.close[i])), width: bw, height: Math.max(1, Math.abs(Y(d.open[i]) - Y(d.close[i]))), fill: up ? css("--card") : col, stroke: col }));
+      svg.append(s("rect", { x: X(i) - bw / 2, y: Y(Math.max(d.open[i], d.close[i])), width: bw, height: Math.max(1, Math.abs(Y(d.open[i]) - Y(d.close[i]))), fill: col, stroke: col }));
       svg.append(s("rect", { x: X(i) - bw / 2, y: vy + volH - (d.volume[i] / vmax) * volH, width: bw, height: (d.volume[i] / vmax) * volH, fill: css("--bg-3") })); }
     let path = "", pen = false; d.vwap.forEach((v, i) => { if (v == null || (i && d.times[i].slice(0, 10) !== d.times[i - 1].slice(0, 10))) { pen = false; } if (v == null) return; path += (pen ? "L" : "M") + X(i) + " " + Y(v); pen = true; });
     svg.append(s("path", { d: path, fill: "none", stroke: css("--series-1"), "stroke-width": 1.8 }));
@@ -382,22 +404,22 @@ function analyticsSection(sym) {
       color: st[k2].score == null || st[k2].confidence === 0 ? css("--muted") : st[k2].score >= 0 ? css("--up") : css("--down") })), { fmt: (v) => (v >= 0 ? "+" : "") + num(v, 2) }));
   }).catch((e) => votesCard.replaceChildren(h("div", { class: "panel-title" }, "How the engines vote"), h("p", { class: "muted" }, e.message)));
   api(`/ui/stock/${encodeURIComponent(sym)}/technical?bars=21`).then((t) => {
-    const c = t.cone[t.cone.length - 1], last = t.close[t.close.length - 1], stop = last * 0.9;
-    const rows = [["80% high", c.hi80, "--cone"], ["50% high", c.hi50, "--cone"], ["Today", last, "--ink"], ["50% low", c.lo50, "--cone"], ["80% low", c.lo80, "--cone"], ["Stop-loss (−10%)", stop, "--down"]];
+    const c = t.cone[t.cone.length - 1], last = t.close[t.close.length - 1];
+    const rows = [["80% high", c.hi80, "--cone"], ["50% high", c.hi50, "--cone"], ["Today", last, "--ink"], ["50% low", c.lo50, "--cone"], ["80% low", c.lo80, "--cone"], [`Stop-loss (−${t.stop_pct}%)`, t.stop, "--down"]];
     const lo = Math.min(...rows.map((r) => r[1])), hi = Math.max(...rows.map((r) => r[1]));
-    ladderCard.replaceChildren(h("div", { class: "panel-title" }, "Next 20 trading days — plausible range"),
+    ladderCard.replaceChildren(h("div", { class: "panel-title" }, `Next ${t.horizon} trading days — plausible range`),
       ...rows.map(([lab, v, col]) => h("div", { class: "spread", style: "margin:6px 0;font-size:13px" }, h("span", { style: "width:120px" }, lab),
         h("div", { style: "flex:1;margin:0 10px;position:relative;height:8px;background:var(--bg-3);border-radius:4px" }, h("i", { style: `position:absolute;left:${(v - lo) / (hi - lo || 1) * 100}%;top:-3px;width:14px;height:14px;border-radius:50%;background:var(${col});transform:translateX(-50%)` })),
-        h("b", { class: "num" }, inr(v, 0)))), h("div", { class: "chart-note" }, `From current volatility; historically ~79% of outcomes fell inside the 80% band. Up after 20 days ${Math.round(t.base_rate_up * 100)}% of the time — no model beat that.`));
+        h("b", { class: "num" }, inr(v, 0)))), h("div", { class: "chart-note" }, `From current volatility. ${t.held_note} Up after ${t.horizon} days ${Math.round(t.base_rate_up * 100)}% of the time.`));
   }).catch(() => {});
   root.setGauge = (v) => {
     if (!v.momentum_rank) { gaugeCard.replaceChildren(h("div", { class: "panel-title" }, "Signal strength"), h("p", { class: "muted" }, "Not ranked — outside the Nifty 200.")); return; }
     const N = v.universe_size, x = (r) => (1 - (r - 1) / (N - 1)) * 100;
     gaugeCard.replaceChildren(h("div", { class: "panel-title" }, "Signal strength — momentum rank"),
       h("div", { class: "row", style: "align-items:baseline" }, h("span", { class: "big-num" }, `#${v.momentum_rank}`), h("span", { class: "muted" }, `of ${N} in the Nifty 200`)),
-      h("div", { class: "gauge-wrap" }, h("div", { class: "gauge" }, h("span", { style: `width:${100 - x(40)}%;background:var(--down-soft)` }), h("span", { style: `width:${x(40) - x(20)}%;background:var(--warn-soft)` }), h("span", { style: `width:${x(20)}%;background:var(--brand-soft)` })),
+      h("div", { class: "gauge-wrap" }, h("div", { class: "gauge" }, h("span", { style: `width:${100 - x(v.keep_rank)}%;background:var(--down-soft)` }), h("span", { style: `width:${x(v.keep_rank) - x(v.buy_rank)}%;background:var(--warn-soft)` }), h("span", { style: `width:${x(v.buy_rank)}%;background:var(--brand-soft)` })),
         h("div", { class: "gauge-marker", style: `left:${x(v.momentum_rank)}%` })),
-      h("div", { class: "gauge-labels" }, h("span", {}, "weakest"), h("span", {}, "keep zone (top 40)"), h("span", {}, "buy zone (top 20)")),
+      h("div", { class: "gauge-labels" }, h("span", {}, "weakest"), h("span", {}, `keep zone (top ${v.keep_rank})`), h("span", {}, `buy zone (top ${v.buy_rank})`)),
       h("div", { class: "chart-note" }, `Verdict: ${v.verdict}. The rank is re-checked at each rebalance.`));
   };
   return root;
@@ -411,8 +433,8 @@ function technicalPanel(sym, opts = {}) {
   const layers = opts.line ? { line: true, ma: true, sr: true, patterns: false, candles: false, neutral: false, cone: true, stop: true }
     : { ma: true, sr: false, patterns: true, candles: true, neutral: false, cone: true, stop: false };
   let data = null, selected = null, bars = opts.bars || 63; const ai = {};
-  const names = opts.line ? { cone: "Next 20 days range", stop: "Stop-loss level", sr: "Support / resistance", ma: "50/200-day averages", patterns: "Pattern target" }
-    : { patterns: "Chart patterns", candles: "Candle signals", neutral: "Show indecision (doji)", ma: "50/200-day averages", sr: "Support / resistance", cone: "Next 20 days range" };
+  const names = opts.line ? { cone: "Volatility range", stop: "Stop-loss level", sr: "Support / resistance", ma: "50/200-day averages", patterns: "Pattern target" }
+    : { patterns: "Chart patterns", candles: "Candle signals", neutral: "Show indecision (doji)", ma: "50/200-day averages", sr: "Support / resistance", cone: "Volatility range" };
   const toggle = (k) => { const cb = h("input", { type: "checkbox" }); cb.checked = layers[k];
     cb.addEventListener("change", () => { layers[k] = cb.checked; loadAi(); draw(); drawCards(); }); return h("label", {}, cb, names[k]); };
   const toggles = h("div", { class: "overlay-toggles" }, ...Object.keys(names).map(toggle));
@@ -437,11 +459,10 @@ function technicalPanel(sym, opts = {}) {
       : [h("p", { class: "muted" }, "No chart pattern is forming in this window.")]));
     const counts = {}; for (const mk of data.markers) if (mk.direction !== 0) counts[mk.label] = (counts[mk.label] || 0) + 1;
     note.replaceChildren(data.cone_note, h("br"),
-      Object.keys(counts).length ? `Candle signals in the last ${RECENT_MARKERS} sessions: ${Object.entries(counts).map(([k, v]) => `${k} ×${v}`).join(", ")}. Hover a marker to see how that formation did across 48 NSE stocks.` : "",
+      Object.keys(counts).length ? `Candle signals in the last ${RECENT_MARKERS} sessions: ${Object.entries(counts).map(([k, v]) => `${k} ×${v}`).join(", ")}. Hover a marker to see that formation's tested record.` : "",
       ...[["ai", "chronos"], ["kronos", "kronos"]].filter(([k, model]) => layers[k] && ai[model]).flatMap(([, model]) => [h("br"), h("span", { style: "color:var(--ai)" }, ai[model].note)]));
   };
   const load = async () => { plot.replaceChildren(skel(380)); try { data = await api(`/ui/stock/${encodeURIComponent(sym)}/technical?bars=${bars}`);
-    data.stop = Math.round(data.close[data.close.length - 1] * 0.9 * 100) / 100;
     const recent = new Set(data.dates.slice(-RECENT_MARKERS)); data.markers = data.markers.filter((mk) => recent.has(mk.date));
     // one pattern at a time reads clearly; start with the most confident, cards switch it
     selected = data.patterns.length ? data.patterns.reduce((best, p, k) => p.confidence > data.patterns[best].confidence ? k : best, 0) : null;
@@ -469,13 +490,13 @@ function lineChart(container, dates, series, { height = 300, fmt = (v) => num(v)
   const x = (i) => m.l + (i / Math.max(1, dates.length - 1)) * pw, y = (v) => m.t + ph - ((tf(v) - lo) / (hi - lo)) * ph;
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
   for (let k = 0; k <= 4; k++) { const tv = lo + (hi - lo) * k / 4, v = logScale ? Math.exp(tv) : tv, yy = m.t + ph - (k / 4) * ph;
-    svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: yy, y2: yy, stroke: css("--line") })); const t = s("text", { x: m.l + pw + 6, y: yy + 4, "font-size": 11, fill: css("--muted") }); t.textContent = fmt(v); svg.append(t); }
+    svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: yy, y2: yy, stroke: css("--line"), "stroke-dasharray": "2 4" })); const t = s("text", { x: m.l + pw + 6, y: yy + 4, "font-size": 11, fill: css("--muted") }); t.textContent = fmt(v); svg.append(t); }
   const every = Math.max(1, Math.ceil(dates.length / Math.max(2, Math.min(6, Math.floor(pw / 80)))));
   for (let i = 0; i < dates.length; i += every) { const t = s("text", { x: x(i), y: H - 6, "font-size": 11, fill: css("--muted"), "text-anchor": i === 0 ? "start" : "middle" }); t.textContent = new Date(dates[i]).toLocaleDateString("en-IN", { month: "short", year: "2-digit" }); svg.append(t); }
   const ends = [];
   series.forEach((sr) => {
     let d = "", pen = false; sr.values.forEach((v, i) => { if (v == null) { pen = false; return; } d += (pen ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1); pen = true; });
-    svg.append(s("path", { d, fill: "none", stroke: sr.color, "stroke-width": 2, "stroke-dasharray": sr.dashed ? "6 4" : null, "stroke-linejoin": "round" }));
+    svg.append(s("path", { d, fill: "none", stroke: sr.color, "stroke-width": 2, "stroke-dasharray": sr.dashed ? "6 4" : null, "stroke-linejoin": "round", filter: sr.dashed ? "none" : glow(svg, W, H, 2.5) }));
     const li = sr.values.length - 1; ends.push({ y: y(sr.values[li]), label: `${sr.short || sr.name} ${fmt(sr.values[li])}`, color: sr.color });
   });
   ends.sort((a, b) => a.y - b.y); for (let k = 1; k < ends.length; k++) if (ends[k].y - ends[k - 1].y < 13) ends[k].y = ends[k - 1].y + 13;
@@ -584,7 +605,7 @@ async function pagePerformance(view) {
   // 1. momentum
   const mom = d.momentum, live = mom.live_check;
   const curveCard = h("div", { class: "card" }, h("h3", {}, "1 · The buy/sell signal: momentum vs the market"),
-    h("p", { class: "sub" }, "Growth of ₹1 since Jan 2018. Backtest lines are inflated by survivorship bias (they use today's Nifty 500 list), so compare momentum with the equal-weight line, not with the index."));
+    h("p", { class: "sub" }, `Growth of ₹1 since ${new Date(mom.dates[0]).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}. Backtest lines are inflated by survivorship bias (they use today's Nifty 500 list), so compare momentum with the equal-weight line, not with the index.`));
   const plot1 = h("div", { class: "chart" });
   const names = Object.keys(mom.curves); const cols = [css("--series-1"), css("--series-3"), css("--series-2"), css("--series-4")];
   const series = names.map((n, k) => ({ name: n, short: ["Momentum", "Mom + overlay", "Equal wt", "Nifty 500"][k], values: mom.curves[n], color: cols[k], dashed: n.includes("real") }));
@@ -595,36 +616,40 @@ async function pagePerformance(view) {
     h("div", { class: "verdict-line" }, `Edge: ${pct(live.bars[0].cagr - live.bars[1].cagr, 1)} a year over the Nifty 500 — real but uneven. It lost to the market in ${live.yearly.filter((y) => y.etf < y.nifty500).map((y) => y.year).join(", ") || "no year"}.`));
   view.append(h("div", { class: "grid cols-2", style: "margin-top:18px" }, curveCard, liveCard));
   // 2. forecasts
-  const acc = h("div"), cal = h("div");
-  const fcCard = h("div", { class: "card" }, h("h3", {}, "2 · Price-direction forecasts (logistic model)"), h("p", { class: "sub" }, `12 large caps, ~11,000 out-of-sample predictions per horizon. Dashed line: accuracy of simply guessing "up" every time.`), acc,
-    h("div", { class: "verdict-line" }, "Verdict: no better than always guessing “up”. That's why the app never shows a predicted direction."));
-  const calCard = h("div", { class: "card" }, h("h3", {}, "Calibration: when the model said X%, how often did it go up?"), h("p", { class: "sub" }, "A useful model's dots sit on the dashed diagonal. These are flat: the model's confidence meant nothing."),
+  const acc = h("div"), cal = h("div"), fh = d.forecast.horizons, beats = fh.filter((x) => x.accuracy > x.always_up_accuracy);
+  const fcCard = h("div", { class: "card" }, h("h3", {}, "2 · Price-direction forecasts (logistic model)"),
+    h("p", { class: "sub" }, `${new Set(d.forecast.coverage.map((c) => c.symbol)).size} large caps, ${fh.map((x) => `${num(x.n, 0)} (${x.horizon}-day)`).join(", ")} out-of-sample predictions. Dashed line: accuracy of simply guessing "up" every time.`), acc,
+    h("div", { class: "verdict-line" }, beats.length ? `Verdict: beat always guessing “up” at ${beats.map((x) => `${x.horizon}-day (${num(x.accuracy * 100, 1)}% vs ${num(x.always_up_accuracy * 100, 1)}%)`).join(", ")}.`
+      : `Verdict: no better than always guessing “up” at any of the ${fh.length} horizons. That's why the app never shows a predicted direction.`));
+  const calCard = h("div", { class: "card" }, h("h3", {}, "Calibration: when the model said X%, how often did it go up?"), h("p", { class: "sub" }, "A useful model's dots sit on the dashed diagonal."),
     legend(Object.keys(d.forecast.calibration).map((hz, k) => [`${hz}-day`, css(SERIES[k])])), cal);
   view.append(h("div", { class: "grid cols-2", style: "margin-top:18px" }, fcCard, calCard));
   // 3. ranges
-  const cov = h("div");
+  // provisional: within 3 points of the 80% target counts as calibrated
+  const cov = h("div"), cv = d.forecast.coverage.filter((c) => c.horizon === 5).map((c) => c.coverage * 100).sort((a, b) => a - b), cvMid = cv[Math.floor(cv.length / 2)];
   const covCard = h("div", { class: "card" }, h("h3", {}, "3 · Price ranges (the grey band on charts)"), h("p", { class: "sub" }, "Share of real outcomes that landed inside the 80% band. Target: 80%."), cov,
-    h("div", { class: "verdict-line" }, "Verdict: well calibrated — the band is trustworthy for sizing risk and stops."));
+    h("div", { class: "verdict-line" }, `Verdict: a median ${num(cvMid, 0)}% of outcomes landed inside (${num(cv[0], 0)}–${num(cv[cv.length - 1], 0)}% across stocks) — `
+      + (Math.abs(cvMid - 80) <= 3 ? "close to target, so the band is usable for sizing risk and stops." : "off target, so treat the band with caution.")));
   // 4. insider
   const ins = h("div");
   const insCard = h("div", { class: "card" }, h("h3", {}, "4 · Promoter buying"), h("p", { class: "sub" }, "Average return over the next 20 trading days versus all other stocks. The placebo uses random dates for the same stocks."), ins,
-    h("div", { class: "verdict-line" }, "Verdict: most of the headline effect disappears in liquid stocks. Shown as a flag, never a buy reason on its own."));
+    h("div", { class: "verdict-line" }, `Verdict: ${d.insider.slice(0, 3).map((r) => `${pct(r.excess_20d, 2)} ${r.test.toLowerCase()}`).join("; ")}. Shown as a flag, never a buy reason on its own.`));
   view.append(h("div", { class: "grid cols-2", style: "margin-top:18px" }, covCard, insCard));
   // 5. patterns
   const candles = d.patterns.filter((r) => r.family === "candlestick"), chartsP = d.patterns.filter((r) => r.family === "chart");
   const f1 = h("div", { class: "chart" }), f2 = h("div", { class: "chart" });
-  view.append(h("div", { class: "card", style: "margin-top:18px" }, h("h3", {}, "5 · Candlestick patterns — do they predict the next 5 days?"),
-    h("p", { class: "sub" }, `Each dot is the average return after the pattern versus normal; the line is the 95% range. A pattern works only if its whole line clears zero with |z| ≥ ${d.bonferroni_z} (strict because 43 patterns were tested). Grey = no proven edge.`), f1,
-    h("div", { class: "verdict-line" }, `Verdict: ${candles.filter((r) => Math.abs(r.z || 0) >= d.bonferroni_z).length} of ${candles.length} candle patterns have an edge. Every line crosses zero.`)),
-    h("div", { class: "card", style: "margin-top:18px" }, h("h3", {}, "6 · Chart patterns — do they predict the next 10 days?"), h("p", { class: "sub" }, "Same test for triangles, double tops, head-and-shoulders and the rest, replayed point-in-time across 48 NSE stocks."), f2,
+  view.append(h("div", { class: "card", style: "margin-top:18px" }, h("h3", {}, `5 · Candlestick patterns — do they predict the next ${candles[0].horizon} days?`),
+    h("p", { class: "sub" }, `Each dot is the average return after the pattern versus normal; the line is the 95% range. A pattern works only if its whole line clears zero with |z| ≥ ${d.bonferroni_z} (strict because ${d.patterns.length} patterns were tested). Grey = no proven edge.`), f1,
+    h("div", { class: "verdict-line" }, `Verdict: ${candles.filter((r) => Math.abs(r.z || 0) >= d.bonferroni_z).length} of ${candles.length} candle patterns have an edge.`)),
+    h("div", { class: "card", style: "margin-top:18px" }, h("h3", {}, `6 · Chart patterns — do they predict the next ${chartsP[0].horizon} days?`), h("p", { class: "sub" }, `Same test for triangles, double tops, head-and-shoulders and the rest, replayed point-in-time across up to ${Math.max(...chartsP.map((r) => r.stocks || 0))} NSE stocks.`), f2,
       h("div", { class: "verdict-line" }, `Verdict: ${chartsP.filter((r) => Math.abs(r.z || 0) >= d.bonferroni_z).length} of ${chartsP.length} chart patterns have an edge. The app still draws them so you can see them — with this record attached.`)));
   const om = d.open_models, omBars = h("div");
   if (om) { const ch = om.chronos.horizons, kr = om.kronos;
     view.append(h("div", { class: "card", style: "margin-top:18px" }, h("h3", {}, "7 · Open-source AI models: Chronos (price range) and Kronos (candles)"),
       h("p", { class: "sub" }, `Walk-forward on ${ch[0].stocks} large caps: each forecast saw only the prices before its date. Direction accuracy against the base rate (guessing the stock's usual direction).`), omBars,
       h("div", { class: "kv", style: "margin-top:12px" }, ...ch.flatMap((x) => [h("span", { class: "k" }, `Chronos ${x.horizon}-day 80% range held`), h("span", { class: "num" }, `${num(x.chronos_cover80 * 100, 1)}% (plain volatility band ${num(x.ewma_cover80 * 100, 1)}%)`)]),
-        h("span", { class: "k" }, "Kronos 5-day price error"), h("span", { class: "num down" }, `${num(kr.mae_pct, 1)}% (assuming no change: ${num(kr.no_change_mae_pct, 1)}%)`)),
-      h("div", { class: "verdict-line" }, "Verdict: Chronos draws a range as good as plain volatility, not better, and its direction edge is within noise — shown on charts with this record. Kronos is worse than assuming no change, so it is off by default and marked experimental.")));
+        ...(kr ? [h("span", { class: "k" }, `Kronos ${kr.horizon}-day price error`), h("span", { class: `num ${kr.mae_pct > kr.no_change_mae_pct ? "down" : "up"}` }, `${num(kr.mae_pct, 1)}% (assuming no change: ${num(kr.no_change_mae_pct, 1)}%)`)] : [])),
+      h("div", { class: "verdict-line" }, `Verdict: Chronos — ${om.verdicts.chronos}; it is shown on charts with this record.` + (kr ? ` Kronos — ${om.verdicts.kronos}; it is off by default and marked experimental.` : ""))));
   }
   const drawAll = () => {
     lineChart(plot1, mom.dates, series, { fmt: (v) => "₹" + num(v, 2), logScale: true });
@@ -636,7 +661,7 @@ async function pagePerformance(view) {
     barChart(ins, d.insider.map((r, k) => ({ label: r.test, value: r.excess_20d, color: css(k === 1 ? "--muted" : "--series-1") })), { fmt: (v) => pct(v, 2) });
     forestPlot(f1, candles, { threshold: d.bonferroni_z }); forestPlot(f2, chartsP, { threshold: d.bonferroni_z });
     if (om) barChart(omBars, [...om.chronos.horizons.flatMap((x) => [{ label: `Chronos ${x.horizon}-day`, value: x.chronos_direction_acc * 100, color: css("--ai") }, { label: `Base rate ${x.horizon}-day`, value: x.base_rate_acc * 100, color: css("--muted") }]),
-      { label: "Kronos 5-day", value: om.kronos.direction_acc * 100, color: css("--ai") }, { label: "Base rate (Kronos sample)", value: om.kronos.base_rate_acc * 100, color: css("--muted") }], { fmt: (v) => num(v, 1) + "%" });
+      ...(om.kronos ? [{ label: `Kronos ${om.kronos.horizon}-day`, value: om.kronos.direction_acc * 100, color: css("--ai") }, { label: "Base rate (Kronos sample)", value: om.kronos.base_rate_acc * 100, color: css("--muted") }] : [])], { fmt: (v) => num(v, 1) + "%" });
   };
   requestAnimationFrame(drawAll);
 }
@@ -661,7 +686,7 @@ async function pageExplore(view) {
   view.append(body);
   let d; try { d = await api("/ui/explore"); } catch (e) { view.replaceChildren(errorBox(e)); return; }
   $("#idx").replaceChildren(...d.indices.map((ix) => h("div", { class: "card index-card" },
-    h("div", { class: "spread" }, h("span", { class: "name" }, ix.name), h("span", { class: "muted", style: "font-size:11px" }, "3 months")), h("div", { class: "spread" }, h("div", {}, h("div", { class: "val num" }, num(ix.value)),
+    h("div", { class: "spread" }, h("span", { class: "name" }, ix.name), h("span", { class: "muted", style: "font-size:11px" }, `${ix.spark.length} sessions`)), h("div", { class: "spread" }, h("div", {}, h("div", { class: "val num" }, num(ix.value)),
       h("div", { class: `num ${cls(ix.change)}` }, `${ix.change > 0 ? "+" : ""}${num(ix.change)} (${pct(ix.change_pct)})`)), spark(ix.spark)))));
   const m = d.market, good = m.trend === "up";
   const banner = h("div", { class: `banner ${good ? "good" : "bad"}`, style: "margin-top:18px" },
@@ -677,7 +702,7 @@ async function pageExplore(view) {
   const momCard = h("div", { class: "card" }, h("div", { class: "spread" }, h("h3", {}, "Top momentum picks"), h("a", { class: "btn ghost small", href: "#/signals" }, "Build my plan →")),
     h("p", { class: "sub" }, "NSE Nifty200 Momentum 30 method — the one signal with a measured edge"),
     h("div", { class: "list" }, ...d.momentum_top.map((r) => stockRow(r, [h("div", { class: "num" }, inr(r.price)), h("div", { class: "muted", style: "font-size:12px" }, `#${r.rank} · 6M ${pct(r.r6_pct, 0)}`)]))));
-  const insCard = h("div", { class: "card" }, h("h3", {}, "Promoters buying this month"), h("p", { class: "sub" }, "Market purchases ≥ ₹1 cr disclosed to NSE · a weak signal on its own"),
+  const insCard = h("div", { class: "card" }, h("h3", {}, "Promoters buying recently"), h("p", { class: "sub" }, `Market purchases ≥ ₹${num(d.insider_rule.min_value_cr, 0)} cr disclosed to NSE in the last ${d.insider_rule.days} days · a weak signal on its own`),
     d.insider_buys.length ? h("div", { class: "list" }, ...d.insider_buys.map((r) => stockRow({ symbol: r.symbol, name: r.name }, [h("div", { class: "num" }, `₹${num(r.value_cr)} cr`), h("div", { class: "muted", style: "font-size:12px" }, r.filings > 1 ? `${r.filings} filings · latest ${r.date}` : r.date)])))
       : h("p", { class: "muted" }, "No data yet — run `stockintel insider-fetch`."));
   const learnCard = h("div", { class: "card" }, h("h3", {}, "New to investing?"), h("p", { class: "muted" }, "Learn what RSI, P/E, momentum and drawdown mean — and how this app decides."),
@@ -691,7 +716,7 @@ async function pageExplore(view) {
 async function pageStock(view, sym) {
   const head = h("div", { class: "card hero" }, skel(26, "40%"), skel(34, "25%"));
   const chartCard = h("div", { class: "card" }, skel(380));
-  const verdictCard = h("div", { class: "card verdict" }, h("h3", {}, "Should I buy?"), h("p", { class: "muted" }, "Running every engine on this stock… (about 5 seconds)"), skel(18), skel(18, "80%"), skel(18, "90%"));
+  const verdictCard = h("div", { class: "card verdict" }, h("h3", {}, "Should I buy?"), h("p", { class: "muted" }, "Running every engine on this stock…"), skel(18), skel(18, "80%"), skel(18, "90%"));
   const tabsCard = h("div", { class: "card" }, skel(120));
   const analytics = analyticsSection(sym);
   view.append(h("div", { class: "grid cols-2" }, h("div", { class: "grid" }, head, chartCard), h("div", { class: "grid", style: "align-content:start" }, verdictCard, askCard(sym))),
@@ -876,7 +901,7 @@ async function pageSignals(view) {
   const out = h("div", { class: "grid", style: "margin-top:18px" });
   const run = async () => {
     localStorage.setItem("si-cap", cap.value);
-    out.replaceChildren(h("div", { class: "card" }, h("p", { class: "muted" }, "Ranking the Nifty 200… (the first run downloads ~500 stocks, a few minutes)"), skel(200)));
+    out.replaceChildren(h("div", { class: "card" }, h("p", { class: "muted" }, "Ranking the Nifty 200… (the first run downloads every stock's history, so it takes longer)"), skel(200)));
     let p; try { p = await api(`/signals?capital=${+cap.value || 0}&strategy=${strat.value}&risk=${risk.value}`); } catch (e) { out.replaceChildren(errorBox(e)); return; }
     const m = p.market;
     const groups = { SELL: "Sell", TRIM: "Trim", BUY: "Buy", ADD: "Add", HOLD: "Hold" };
@@ -980,18 +1005,35 @@ async function pageReport(view, id) {
 }
 
 // ---------- home + builder ----------
-function heroArt() {
-  // decorative only: an illustration of candles running into a forecast fan, no data
-  const W = 420, H = 260, svg = s("svg", { viewBox: `0 0 ${W} ${H}`, "aria-hidden": "true", class: "hero-art" });
-  let p = 150; const pts = [];
-  for (let i = 0; i < 18; i++) { const o = p, c = p - 6 * Math.sin(i * 1.3) - 2.2, x = 24 + i * 15, up = c < o;
-    svg.append(s("line", { x1: x, x2: x, y1: Math.min(o, c) - 7, y2: Math.max(o, c) + 7, stroke: css(up ? "--up" : "--down") }),
-      s("rect", { x: x - 4.5, y: Math.min(o, c), width: 9, height: Math.max(2, Math.abs(o - c)), rx: 1.5, fill: css(up ? "--up" : "--down") }));
-    p = c; pts.push([x, c]); }
-  const [x0, y0] = pts[pts.length - 1], x1 = W - 20;
-  svg.append(s("path", { d: `M${x0} ${y0} L${x1} ${y0 - 80} L${x1} ${y0 + 20} Z`, fill: css("--ai"), "fill-opacity": 0.14 }),
-    s("path", { d: `M${x0} ${y0} L${x1} ${y0 - 30}`, stroke: css("--ai"), "stroke-width": 2, "stroke-dasharray": "5 4" }));
-  for (let k = 1; k <= 4; k++) svg.append(s("circle", { cx: x0 + (x1 - x0) * k / 4, cy: y0 - 30 * k / 4, r: 3.5, fill: css("--ai") }));
+function isoArt() {
+  // decorative only: a row of glass cards with a gold one in the middle, no data
+  const W = 540, H = 380, svg = s("svg", { viewBox: `0 0 ${W} ${H}`, "aria-hidden": "true", class: "iso-art" });
+  const defs = s("defs"), grad = (id, stops) => { const g = s("linearGradient", { id, x1: 0, y1: 0, x2: 1, y2: 1 });
+    for (const [o, c, a] of stops) g.append(s("stop", { offset: o, "stop-color": c, "stop-opacity": a ?? 1 })); defs.append(g); };
+  grad("iso-glass", [[0, "#3b434e"], [0.45, "#151a21"], [1, "#07090c"]]);
+  grad("iso-gold", [[0, "#fbe7ad"], [0.4, "#d6ad4f"], [1, "#6b4c14"]]);
+  grad("iso-edge", [[0, "#ffffff", 0.55], [1, "#ffffff", 0.04]]);
+  const halo = s("radialGradient", { id: "iso-halo" }); halo.append(s("stop", { offset: 0, "stop-color": "#e8c46a", "stop-opacity": 0.5 }), s("stop", { offset: 1, "stop-color": "#e8c46a", "stop-opacity": 0 }));
+  defs.append(halo); svg.append(defs, s("ellipse", { cx: 300, cy: 300, rx: 210, ry: 60, fill: "url(#iso-halo)" }));
+  const marks = {
+    card: (g, w, hh, ink) => g.append(s("rect", { x: w * 0.18, y: hh * 0.3, width: w * 0.3, height: hh * 0.13, rx: 3, fill: "none", stroke: ink, "stroke-width": 2 }), s("path", { d: `M${w * 0.18} ${hh * 0.62}h${w * 0.6}M${w * 0.18} ${hh * 0.72}h${w * 0.4}`, stroke: ink, "stroke-width": 2 })),
+    shield: (g, w, hh, ink) => g.append(s("path", { d: `M${w / 2} ${hh * 0.3}l${w * 0.24} ${hh * 0.08}v${hh * 0.16}c0 ${hh * 0.14}-${w * 0.12} ${hh * 0.22}-${w * 0.24} ${hh * 0.27}c-${w * 0.12}-${hh * 0.05}-${w * 0.24}-${hh * 0.13}-${w * 0.24}-${hh * 0.27}v-${hh * 0.16}z`, fill: "none", stroke: ink, "stroke-width": 2 })),
+    candles: (g, w, hh, ink) => [[0.3, 0.32, 0.5, 0.62], [0.5, 0.42, 0.56, 0.72], [0.7, 0.26, 0.36, 0.52]].forEach(([cx, t, b0, b1]) => g.append(
+      s("line", { x1: w * cx, x2: w * cx, y1: hh * t, y2: hh * (b1 + 0.08), stroke: ink, "stroke-width": 2 }), s("rect", { x: w * cx - 5, y: hh * b0 - hh * 0.1, width: 10, height: hh * (b1 - b0 + 0.1), rx: 2, fill: ink }))),
+    rupee: (g, w, hh, ink) => { const t = s("text", { x: w / 2, y: hh * 0.62, "text-anchor": "middle", "font-size": hh * 0.42, "font-family": "Georgia, serif", fill: ink }); t.textContent = "₹";
+      g.append(t, s("path", { d: `M${w * 0.2} ${hh * 0.86}l${w * 0.18}-${hh * 0.06} ${w * 0.16} ${hh * 0.03} ${w * 0.26}-${hh * 0.1}`, fill: "none", stroke: ink, "stroke-width": 2.4, "stroke-linecap": "round" })); },
+    pie: (g, w, hh, ink) => g.append(s("circle", { cx: w / 2, cy: hh / 2, r: w * 0.24, fill: "none", stroke: ink, "stroke-width": 2 }), s("path", { d: `M${w / 2} ${hh / 2}V${hh / 2 - w * 0.24}A${w * 0.24} ${w * 0.24} 0 0 1 ${w / 2 + w * 0.24} ${hh / 2}Z`, fill: ink })),
+    bars: (g, w, hh, ink) => [0.35, 0.55, 0.45, 0.7].forEach((v, k) => g.append(s("rect", { x: w * (0.2 + k * 0.16), y: hh * (0.75 - v * 0.5), width: w * 0.1, height: hh * v * 0.5, rx: 2, fill: ink }))),
+  };
+  // x, top, width, height, kind, mark; drawn back (right) to front, gold last so it sits on top
+  const slabs = [[455, 92, 62, 128, "glass", "bars"], [380, 102, 78, 156, "glass", "pie"], [118, 168, 78, 150, "glass", "shield"], [40, 200, 70, 128, "glass", "card"],
+    [190, 128, 88, 172, "glass", "candles"], [282, 70, 104, 206, "gold", "rupee"]];
+  for (const [x, y, w, hh, kind, mark] of slabs) {
+    const g = s("g", { transform: `matrix(1 -0.36 0 1 ${x} ${y + w * 0.36})` });
+    g.append(s("rect", { x: 10, y: 7, width: w, height: hh, rx: 12, fill: kind === "gold" ? "#4b3510" : "#030405", stroke: "#ffffff", "stroke-opacity": 0.1 }),
+      s("rect", { width: w, height: hh, rx: 12, fill: `url(#iso-${kind})`, stroke: "url(#iso-edge)", "stroke-width": 1.3 }));
+    marks[mark](g, w, hh, kind === "gold" ? "#5a3f0e" : "#8f99a6"); svg.append(g);
+  }
   return svg;
 }
 
@@ -1000,36 +1042,40 @@ async function pageHome(view) {
   const login = () => { const k = keyInput.value.trim(); if (!k) return toast("Paste the key first"); localStorage.setItem("si-key", k); route(); };
   keyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
   const hasKey = !!localStorage.getItem("si-key");
-  view.append(h("section", { class: "landing card" },
-    h("div", { class: "landing-copy" }, h("div", { class: "welcome-kicker" }, "Your personal NSE stock assistant"),
-      h("h1", {}, "Know what to buy, what to skip — and how sure to be"),
-      h("p", {}, "Search any NSE stock and get a plain buy / wait / don't-buy call with the reasons on both sides. Build a portfolio in seconds, see patterns and AI forecast ranges drawn on the chart, and ask questions in plain English. Every method shows its tested track record."),
-      hasKey ? h("div", { class: "row" }, h("a", { class: "btn primary", href: "#/builder" }, "Build a portfolio"), h("a", { class: "btn", href: "#/explore" }, "Explore the market"), h("a", { class: "btn ghost", href: "#/chat" }, "Ask AI →"))
-        : h("div", { class: "login-box" }, h("b", {}, "Log in"), h("p", { class: "muted" }, "Your key is printed in the terminal by `stockintel app`, or is STOCKINTEL_API_KEY in your server's settings."),
+  const floatA = h("div", { class: "float-card a", hidden: true }), floatB = h("div", { class: "float-card b", hidden: true });
+  view.append(h("section", { class: "hero-dark" },
+    h("div", {}, h("span", { class: "hero-kicker" }, h("i"), "Your personal NSE stock assistant"),
+      h("h1", { class: "display" }, "Invest with evidence, built for ", h("em", {}, "Indian markets.")),
+      h("p", {}, "Search any NSE stock and get a plain buy / wait / don't-buy call with the reasons on both sides. Build a portfolio in seconds, see patterns and AI forecast ranges on the chart, and ask questions in plain English. Every method shows its tested track record."),
+      hasKey ? h("div", { class: "row", style: "margin-top:22px" }, h("a", { class: "btn primary", href: "#/builder" }, "Get started"), h("a", { class: "btn", href: "#/explore" }, "Explore the market"))
+        : h("div", { class: "login-box" }, h("b", {}, "Log in"), h("p", {}, "Your key is printed in the terminal by `stockintel app`, or is STOCKINTEL_API_KEY in your server's settings."),
           h("div", { class: "row" }, keyInput, h("button", { class: "btn primary", onclick: login }, "Continue")))),
-    heroArt()));
+    h("div", { class: "hero-visual" }, isoArt(), floatA, floatB)));
   const stats = h("div");
   view.append(stats);
-  const feature = (icon, title, text, href) => h("a", { class: "card feature", href }, h("div", { class: "feature-icon" }, icon), h("h3", {}, title), h("p", { class: "muted" }, text), h("span", { class: "feature-go" }, "Open →"));
-  view.append(h("h2", { style: "margin:22px 0 12px" }, "What you can do"), h("div", { class: "grid cols-3" },
-    feature("🧭", "Should I buy?", "Open any stock for a BUY / WAIT / DON'T BUY call, why you might and why you might not, a stop-loss and a position size.", "#/explore"),
-    feature("🧱", "Portfolio builder", "Enter an amount, pick a style and risk level, and get a ready basket with share counts, stops, risk and a sector split.", "#/builder"),
-    feature("🕯️", "Pattern charts", "Candlesticks with each pattern's swing points, trendlines, breakout and textbook target drawn — and its tested record.", "#/stock/RELIANCE"),
-    feature("✨", "AI forecast range", "An open-source model (Chronos) draws the next 10 days' likely range with prediction points, next to its measured accuracy.", "#/stock/TCS"),
-    feature("💬", "Ask AI", "Chat with memory: “Should I buy ITC?”, “Why?”, “Compare it with HUL”. Optionally add your self-learning agent's view.", "#/chat"),
-    feature("📊", "Track record", "How well each method did on data it never saw — including the ones that don't work.", "#/performance")));
+  const feature = (ic, title, text, href) => h("a", { class: "card feature", href }, h("div", { class: "feature-icon" }, icon(ic)), h("h3", {}, title), h("p", { class: "muted" }, text), h("span", { class: "feature-go" }, "Open →"));
+  view.append(h("h2", { class: "section-title" }, "What you can do"), h("div", { class: "grid cols-3" },
+    feature("compass", "Should I buy?", "Open any stock for a BUY / WAIT / DON'T BUY call, why you might and why you might not, a stop-loss and a position size.", "#/explore"),
+    feature("layers", "Portfolio builder", "Enter an amount, pick a style and risk level, and get a ready basket with share counts, stops, risk and a sector split.", "#/builder"),
+    feature("candles", "Pattern charts", "Candlesticks with each pattern's swing points, trendlines, breakout and textbook target drawn — and its tested record.", "#/stock/RELIANCE"),
+    feature("sparkle", "AI forecast range", "An open-source model (Chronos) draws the likely range for the coming days with prediction points, next to its measured accuracy.", "#/stock/TCS"),
+    feature("chat", "Ask AI", "Chat with memory: “Should I buy ITC?”, “Why?”, “Compare it with HUL”. Optionally add your self-learning agent's view.", "#/chat"),
+    feature("chart", "Track record", "How well each method did on data it never saw — including the ones that don't work.", "#/performance")));
   view.append(h("p", { class: "footer-note" }, "Decision support, not investment advice. Verify figures against NSE/BSE filings before acting."));
   if (!hasKey) return;
   let d; try { d = await api("/ui/performance"); } catch (e) { stats.replaceChildren(h("p", { class: "muted", style: "margin-top:14px" }, "Run `stockintel build-performance` once to show the measured track record here.")); return; }
-  const live = d.momentum.live_check, cov5 = d.forecast.coverage.filter((c) => c.horizon === 5);
+  const live = d.momentum.live_check, cov5 = d.forecast.coverage.filter((c) => c.horizon === 5), cov = cov5.reduce((a, c) => a + c.coverage, 0) / cov5.length;
   const edge = d.patterns.filter((r) => Math.abs(r.z || 0) >= d.bonferroni_z).length, ch5 = d.open_models && d.open_models.chronos.horizons.find((x) => x.horizon === 5);
-  const tile = (v, k, sub) => h("div", { class: "card kpi" }, h("div", { class: "v num" }, v), h("div", { class: "k" }, k), h("div", { class: "muted", style: "font-size:12px" }, sub));
-  stats.replaceChildren(h("h2", { style: "margin:22px 0 12px" }, "Measured, not promised"), h("div", { class: "grid cols-4" },
-    tile(`${pct(live.bars[0].cagr - live.bars[1].cagr, 1)}/yr`, "Momentum fund vs Nifty 500", `live ETF, ${live.window}`),
-    tile(`${num(cov5.reduce((a, c) => a + c.coverage, 0) / cov5.length * 100, 0)}%`, "Outcomes inside the 80% range", "5-day band, out of sample"),
-    tile(`${edge} of ${d.patterns.length}`, "Patterns with a proven edge", "so patterns are shown, never traded"),
-    ch5 ? tile(`${num(ch5.chronos_direction_acc * 100, 1)}%`, "AI (Chronos) 5-day direction", `vs ${num(ch5.base_rate_acc * 100, 1)}% base rate — within noise`)
-      : tile("—", "AI model record", "run `stockintel evaluate-models`")));
+  const gap = live.bars[0].cagr - live.bars[1].cagr, gapText = `${gap > 0 ? "+" : ""}${num(gap, 1)} pts/yr`;
+  floatA.replaceChildren(h("b", { class: cls(gap) }, gapText), "momentum fund vs Nifty 500"); floatB.replaceChildren(h("b", {}, `${num(cov * 100, 0)}%`), "of outcomes inside the 80% range");
+  floatA.hidden = floatB.hidden = false;
+  const tile = (visual, k, sub) => h("div", { class: "card ring-tile" }, visual, h("div", {}, h("div", { class: "k" }, k), h("div", { class: "muted", style: "font-size:12px" }, sub)));
+  stats.replaceChildren(h("h2", { class: "section-title" }, "Measured, not promised"), h("div", { class: "grid cols-4" },
+    tile(h("div", { class: `big-num ${cls(gap)}` }, gapText), "Momentum fund vs Nifty 500", `live ETF, ${live.window}`),
+    tile(ring(cov, `${num(cov * 100, 0)}%`, css("--up")), "Outcomes inside the 80% range", "5-day band, out of sample — the target is 80%"),
+    tile(ring(edge / d.patterns.length, `${edge}/${d.patterns.length}`, css("--down")), "Patterns with a proven edge", "so patterns are shown, never traded"),
+    ch5 ? tile(ring(ch5.chronos_direction_acc, `${num(ch5.chronos_direction_acc * 100, 0)}%`, css("--ai")), `AI (Chronos) ${ch5.horizon}-day direction`, `vs ${num(ch5.base_rate_acc * 100, 1)}% for the base rate, over ${num(ch5.n, 0)} forecasts`)
+      : tile(h("div", { class: "big-num" }, "—"), "AI model record", "run `stockintel evaluate-models`")));
 }
 
 async function pageBuilder(view) {
@@ -1055,11 +1101,11 @@ async function pageBuilder(view) {
         h("div", { class: "ctl" }, h("span", { class: "k" }, "Risk"), seg("risk", [["full", "Always invested"], ["balanced", "Balanced"], ["defensive", "Defensive"]]))),
       h("div", { class: "grid", style: "align-content:start" }, h("label", { class: "ctl" }, h("span", { class: "k" }, "Number of stocks: ", nOut), nRange),
         h("div", { class: "ctl" }, h("span", { class: "k" }, "Tap a sector to leave it out"), sectors),
-        h("p", { class: "muted", style: "font-size:12.5px;margin:0" }, "Momentum uses NSE's Nifty200 Momentum 30 method, the one signal here with a measured edge. Balanced halves the position in crash-risk markets; Defensive also holds cash when the market trend is down.")))), out);
+        h("p", { class: "muted", style: "font-size:12.5px;margin:0" }, "Momentum uses NSE's Nifty200 Momentum 30 method, the one signal here with a measured edge. Balanced cuts the position in crash-risk markets; Defensive also holds cash when the market trend is down.")))), out);
   const build = async () => {
     if (!(state.capital >= 1000)) { out.replaceChildren(h("div", { class: "card" }, h("p", { class: "muted" }, "Enter at least ₹1,000."))); return; }
     const my = ++seq;
-    out.replaceChildren(h("div", { class: "card" }, h("p", { class: "muted" }, "Picking stocks and sizing positions… (the first run loads the Nifty 200, about a minute)"), skel(220)));
+    out.replaceChildren(h("div", { class: "card" }, h("p", { class: "muted" }, "Picking stocks and sizing positions… (the first run downloads every stock's history, so it takes longer)"), skel(220)));
     let b; try { b = await api(`/ui/builder?capital=${state.capital}&strategy=${state.strategy}&risk=${state.risk}&n=${state.n}&exclude=${encodeURIComponent(state.exclude.join(","))}`); }
     catch (e) { if (my === seq) out.replaceChildren(errorBox(e)); return; }
     if (my === seq) renderBuild(b);
@@ -1093,8 +1139,19 @@ async function pageBuilder(view) {
   build();
 }
 
+function loadTicker() {
+  const bar = $("#ticker"); if (bar.childElementCount || !localStorage.getItem("si-key")) return;
+  bar.append(h("span", { class: "ticker-item" }, "Loading prices…"));
+  api("/ui/ticker").then((items) => { const row = () => items.map((x) => h(x.index ? "span" : "a", { class: "ticker-item", href: x.index ? null : `#/stock/${encodeURIComponent(x.symbol)}` },
+    h("b", {}, x.symbol), num(x.price), h("span", { class: cls(x.change_pct) }, pct(x.change_pct))));
+    bar.replaceChildren(h("div", { class: "ticker-track" }, ...row(), ...row())); })
+    .catch((e) => bar.replaceChildren(h("span", { class: "ticker-item" }, `Ticker unavailable: ${e.message}`)));
+}
+for (const el of document.querySelectorAll("[data-icon]")) el.append(icon(el.dataset.icon));
+
 // ---------- router ----------
 async function route() {
+  loadTicker();
   const hash = location.hash || "#/home";
   const [path, query] = hash.slice(2).split("?"); const parts = path.split("/"); const params = new URLSearchParams(query || "");
   for (const a of document.querySelectorAll("#nav a, #bnav a")) a.classList.toggle("active", a.dataset.r === parts[0] || (parts[0] === "report" && a.dataset.r === "reports"));

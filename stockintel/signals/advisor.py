@@ -96,13 +96,16 @@ def market_state(bench: pd.Series, asof: pd.Timestamp) -> Dict[str, object]:
             "momentum_crash_risk": crash_risk}
 
 
+CRASH_EXPOSURE = 0.5        # 'balanced' exposure in momentum crash-risk regimes
+
+
 def exposure_for(risk_mode: str, m: Dict[str, object]) -> float:
-    """full: always invested. balanced: halve momentum in crash-risk regimes.
+    """full: always invested. balanced: cut momentum in crash-risk regimes.
     defensive: trend filter × volatility target (lowest drawdown in the backtest)."""
     if risk_mode == "full":
         return 1.0
     if risk_mode == "balanced":
-        return 0.5 if m["momentum_crash_risk"] else 1.0
+        return CRASH_EXPOSURE if m["momentum_crash_risk"] else 1.0
     if risk_mode == "defensive":
         return (1.0 if m["trend"] == "up" else 0.0) * float(m["vol_target_exposure"])
     raise ValueError(f"risk_mode must be full, balanced or defensive; got {risk_mode!r}")
@@ -120,7 +123,8 @@ def next_rebalance(today: date) -> str:
 def plan(panel: Panel, bench: pd.Series, capital: float, holdings: List[Holding],
          strategy: str = "momentum", risk_mode: str = "balanced", n: Optional[int] = None,
          universe: Optional[List[str]] = None, today: Optional[date] = None,
-         insider_trades: Optional[pd.DataFrame] = None) -> Plan:
+         insider_trades: Optional[pd.DataFrame] = None, *, measured: List[str]) -> Plan:
+    """`measured` is the track record to show with the plan (performance.momentum_evidence)."""
     if capital <= 0:
         raise ValueError(f"capital must be positive, got {capital}")
     if strategy not in ("momentum", "lowvol", "blend"):
@@ -227,14 +231,11 @@ def plan(panel: Panel, bench: pd.Series, capital: float, holdings: List[Holding]
                for i, s in enumerate(ranked.index[:max(30, 2 * n)])]
     evidence = [
         "Momentum score = NSE Nifty200 Momentum 30 method (z of 12m and 6m return ÷ 1y volatility).",
-        "Live Nifty200 Momentum 30 ETF beat the Nifty 500 by about +1.5 to +2.5 pts/yr (Sep 2022–Sep 2026) — "
-        "+15 pts in 2023 but −10 pts in 2025; "
-        "our same-universe backtest edge was +2.9 pts/yr, with drawdowns up to −35%.",
-        "Momentum crashes happen in sharp rebounds after bear markets (India 2009: −30%); "
-        "'balanced' mode halves exposure in that regime.",
-        "10% stop per stock follows Han–Zhou–Zhu (momentum crash protection); it cut max drawdown "
-        "to −20% in our backtest but also cut return.",
-        "Expect to trail the market in some years (e.g. 2025 in our backtest). Stick to the schedule.",
+        *measured,
+        "Momentum crashes happen in sharp rebounds after bear markets; "
+        f"'balanced' mode cuts exposure to {CRASH_EXPOSURE:.0%} in that regime.",
+        f"{STOP_PCT:.0%} stop per stock follows Han–Zhou–Zhu (momentum crash protection).",
+        "Expect to trail the market in some years. Stick to the schedule.",
     ]
     return Plan(as_of=str(asof.date()), generated_at=utcnow_iso(), strategy=strategy, capital=total,
                 invest_fraction=round(invest, 2), positions=len(picks), market=m, actions=actions,

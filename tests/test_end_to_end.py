@@ -252,7 +252,7 @@ def test_ui_verdict_explains_both_sides(app_client):
     assert v["verdict"] in ("BUY", "BUY — HALF SIZE", "WAIT", "DON'T BUY", "HOLD / ADD", "HOLD", "SELL AT REBALANCE")
     assert v["momentum_rank"] in (1, 2) and v["universe_size"] == 2
     assert v["why_buy"] or v["why_not"]
-    assert "1.5–2.5 points" in v["evidence_note"] and "2025" in v["evidence_note"]
+    assert v["evidence_note"].startswith("The buy/sell rule is NSE's momentum method.")
 
 
 def test_portfolio_single_transaction_add_and_delete(app_client, orch):
@@ -357,3 +357,149 @@ def test_phone_install_manifest_and_service_worker_are_served(app_client):
     assert m["start_url"] == "/#/home" and m["display"] == "standalone"
     sw = app_client.get("/sw.js")
     assert sw.status_code == 200 and "javascript" in sw.headers["content-type"]
+
+
+def test_ticker_lists_indices_then_stocks_with_a_day_change(app_client):
+    t = app_client.get("/ui/ticker", headers={"X-API-Key": KEY}).json()
+    assert t[0] == {**t[0], "symbol": "NIFTY 50", "index": True}
+    assert {x["symbol"] for x in t if not x["index"]} == {"TEST", "PEER"}
+    assert all(isinstance(x["change_pct"], float) for x in t)
+
+
+def _record(tmp_path):
+    import json as _json
+    rec = {"bonferroni_z": 3.25,
+           "patterns": [{"z": 1.0}, {"z": -3.5}, {"z": None}],
+           "forecast": {"horizons": [{"horizon": 5, "accuracy": 0.52, "always_up_accuracy": 0.53}],
+                        "coverage": [{"symbol": "A", "horizon": 20, "coverage": 0.70}, {"symbol": "B", "horizon": 20, "coverage": 0.90},
+                                     {"symbol": "C", "horizon": 20, "coverage": 0.80}, {"symbol": "A", "horizon": 5, "coverage": 0.10}]},
+           "momentum": {"table": {"momentum_semiannual": {"max_dd_pct": -35.3}, "momentum_trend_vol_overlay": {"max_dd_pct": "-21.4"}},
+                        "live_check": {"window": "2022-08-26 to 2026-09-25",
+                                       "bars": [{"cagr": 12.2}, {"cagr": 10.3}],
+                                       "yearly": [{"year": 2023, "etf": 39.9, "nifty500": 25.2}, {"year": 2025, "etf": -5.5, "nifty500": 4.6}]}}}
+    path = tmp_path / "performance.json"
+    path.write_text(_json.dumps(rec))
+    return path
+
+
+def test_evidence_note_reads_every_figure_off_the_track_record(tmp_path, monkeypatch):
+    import stockintel.performance as perf
+    monkeypatch.setattr(perf, "PATH", _record(tmp_path))
+    note = perf.evidence_note(perf.track_record())
+    assert "+1.9 points a year (2022-08-26 to 2026-09-25)" in note
+    assert "+15 points in 2023, -10 in 2025" in note
+    assert "fell up to 35%" in note
+    assert "1 of 3 candle and chart patterns" in note and "at 0 of 1 horizons" in note
+    assert "not built yet" in perf.evidence_note(None)
+    assert perf.momentum_evidence(perf.track_record())[1] == (
+        "Backtest on today's index list (survivorship-inflated): worst fall -35%, -21% with the trend + volatility overlay.")
+
+
+def test_technical_range_claim_and_stop_come_from_data(app_client, tmp_path, monkeypatch):
+    import stockintel.performance as perf
+    from stockintel.signals.advisor import STOP_PCT
+    monkeypatch.setattr(perf, "PATH", _record(tmp_path))
+    t = app_client.get("/ui/stock/TEST/technical?bars=60", headers={"X-API-Key": KEY}).json()
+    assert "held 80% of outcomes in the 80% band (median of 3 stocks)" in t["cone_note"]
+    assert t["stop"] == pytest.approx(t["close"][-1] * (1 - STOP_PCT), abs=0.01) and t["stop_pct"] == STOP_PCT * 100
+    monkeypatch.setattr(perf, "PATH", tmp_path / "missing.json")
+    t = app_client.get("/ui/stock/TEST/technical?bars=60", headers={"X-API-Key": KEY}).json()
+    assert "not built yet" in t["cone_note"]
+
+
+def test_model_verdicts_call_small_accuracy_gaps_noise():
+    from stockintel.performance import model_verdicts
+    v = model_verdicts({"chronos": {"horizons": [{"horizon": 5, "n": 660, "pinball_skill": 0.0,
+                                                  "chronos_direction_acc": 0.574, "base_rate_acc": 0.565}]},
+                        "kronos": {"n": 528, "mae_pct": 5.2, "no_change_mae_pct": 2.2, "direction_acc": 0.492, "base_rate_acc": 0.536}})
+    assert v["chronos"] == "its range was about as good as plain volatility, and its direction was right about as often as the base rate"
+    assert v["kronos"].startswith("its price error was larger") and v["kronos"].endswith("less often than the base rate")
+
+
+class _FakeSpace:
+    def __init__(self, reply=None, error=None):
+        self.reply, self.error, self.calls = reply, error, []
+
+    def predict(self, *args, api_name):
+        self.calls.append((api_name, args))
+        if self.error:
+            raise self.error
+        return self.reply
+
+
+def test_ai_forecast_uses_the_model_space_when_one_is_set(app_client, monkeypatch):
+    import json as _json
+    import stockintel.analysis.remote_models as rm
+    from stockintel.analysis.tsfm import CONTEXT
+    fan = {f"q{q}": [100.0 + q] * 10 for q in (10, 25, 50, 75, 90)}
+    fake = _FakeSpace(_json.dumps(fan))
+    monkeypatch.setenv("STOCKINTEL_MODEL_SPACE", "you/stockintel-models")
+    monkeypatch.setattr(rm, "_client", lambda: fake)
+    r = app_client.get("/ui/stock/TEST/ai?model=chronos", headers={"X-API-Key": KEY}).json()
+    assert r["q50"] == fan["q50"] and len(r["dates"]) == 10
+    api_name, (closes, horizon) = fake.calls[0]
+    assert api_name == "/chronos_fan" and horizon == 10 and 0 < len(_json.loads(closes)) <= CONTEXT
+
+
+def test_a_failing_model_space_is_a_clean_404_naming_the_space(app_client, monkeypatch):
+    import stockintel.analysis.remote_models as rm
+    monkeypatch.setenv("STOCKINTEL_MODEL_SPACE", "you/stockintel-models")
+    monkeypatch.setattr(rm, "_client", lambda: _FakeSpace(error=RuntimeError("queue full")))
+    r = app_client.get("/ui/stock/PEER/ai?model=kronos", headers={"X-API-Key": KEY})
+    assert r.status_code == 404 and "you/stockintel-models" in r.json()["detail"] and "queue full" in r.json()["detail"]
+
+
+def test_state_snapshot_copies_the_database_and_caches(tmp_path):
+    import sqlite3
+    from stockintel import hfstate
+    db, cache, out = tmp_path / "s.db", tmp_path / "cache", tmp_path / "out"
+    cache.mkdir()
+    (cache / "performance.json").write_text("{}")
+    (cache / "panel_x.pkl").write_bytes(b"p")
+    (cache / "ignored.tmp").write_text("x")
+    con = sqlite3.connect(db)
+    con.execute("PRAGMA journal_mode = WAL")
+    con.execute("create table t (v)")
+    con.execute("insert into t values (42)")
+    con.commit()                        # still in the WAL file, not the main file
+    hfstate.snapshot(db, out, cache)
+    assert sqlite3.connect(out / "stockintel.db").execute("select v from t").fetchall() == [(42,)]
+    assert sorted(p.name for p in (out / "cache").iterdir()) == ["panel_x.pkl", "performance.json"]
+
+
+def test_state_pull_keeps_local_files_unless_told_to_overwrite(tmp_path, monkeypatch):
+    import huggingface_hub
+    from stockintel import hfstate
+    saved = tmp_path / "saved"
+    (saved / "cache").mkdir(parents=True)
+    (saved / "stockintel.db").write_text("remote db")
+    (saved / "cache" / "performance.json").write_text("remote perf")
+    monkeypatch.setenv("STOCKINTEL_STATE_REPO", "you/stockintel-state")
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda *a, **k: str(saved))
+    db, cache = tmp_path / "local.db", tmp_path / "cache"
+    db.write_text("local db")
+    assert hfstate.pull(db, cache) == ["performance.json"]
+    assert db.read_text() == "local db" and (cache / "performance.json").read_text() == "remote perf"
+    assert hfstate.pull(db, cache, overwrite=True) == ["local.db", "performance.json"] and db.read_text() == "remote db"
+
+
+def test_state_autosave_pushes_only_when_something_changed(tmp_path, monkeypatch):
+    from stockintel import hfstate
+    pushes = []
+    monkeypatch.setattr(hfstate, "push", lambda db, cache: pushes.append(db))
+    db = tmp_path / "s.db"
+    db.write_text("v1")
+    saver = hfstate.Autosave(db, minutes=60, cache_dir=tmp_path)
+    assert saver.save_if_changed() is False
+    db.write_text("v2 longer")
+    assert saver.save_if_changed() is True and saver.save_if_changed() is False
+    assert pushes == [db]
+
+
+def test_state_needs_a_token_and_says_where_to_get_one(monkeypatch):
+    from stockintel import hfstate
+    monkeypatch.setenv("STOCKINTEL_STATE_REPO", "you/stockintel-state")
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    with pytest.raises(RuntimeError, match="huggingface.co/settings/tokens"):
+        hfstate._token()

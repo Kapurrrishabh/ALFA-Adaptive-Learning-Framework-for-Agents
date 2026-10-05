@@ -208,6 +208,10 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     def ui_ai(t: str, model: Literal["chronos", "kronos"] = "chronos"):
         return ok(hub.ai_forecast(ticker(t), model))
 
+    @app.get("/ui/ticker", dependencies=[Depends(auth)])
+    def ui_ticker():
+        return ok(hub.ticker())
+
     @app.get("/ui/sectors", dependencies=[Depends(auth)])
     def ui_sectors():
         n = hub.names()
@@ -215,13 +219,13 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
 
     @app.get("/ui/features", dependencies=[Depends(auth)])
     def ui_features():
-        return {"ml": hub.ml_enabled(), "kronos": hub.ml_enabled() and __import__("stockintel.analysis.kronos_model",
-                                                                                 fromlist=["available"]).available()}
+        from .analysis import kronos_model, remote_models
+        return {"ml": hub.ml_enabled(), "kronos": hub.ml_enabled() and (bool(remote_models.space()) or kronos_model.available())}
 
     @app.get("/manifest.webmanifest")
     def manifest():
         return JSONResponse({"name": "StockIntel", "short_name": "StockIntel", "start_url": "/#/home", "display": "standalone",
-                             "background_color": "#ffffff", "theme_color": "#00b386",
+                             "background_color": "#06080b", "theme_color": "#06080b",
                              "icons": [{"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]},
                             media_type="application/manifest+json")
 

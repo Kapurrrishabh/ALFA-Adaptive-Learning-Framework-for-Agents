@@ -6,8 +6,11 @@ them. Change them here and nowhere else.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Dict, Optional
+
+TORCH_DEVICE = os.environ.get("STOCKINTEL_TORCH_DEVICE", "cpu")    # "cuda" inside the ZeroGPU model Space
 
 
 @dataclass(frozen=True)

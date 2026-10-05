@@ -18,13 +18,14 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from . import performance
 from .data.panel import CACHE_DIR, index_constituents, universe_panel
 from .data.provider import DataUnavailable
 from .knowledge import knowledge_base
 from .nlu import ALIASES
 from .orchestrator import Orchestrator
 from .signals import factors as F
-from .signals.advisor import STOP_PCT, market_state, next_rebalance
+from .signals.advisor import N_DEFAULT, STOP_PCT, market_state, next_rebalance
 
 log = logging.getLogger("stockintel.hub")
 
@@ -198,6 +199,10 @@ class Hub:
                  "hi50": round(last * float(np.exp(z50 * sigma * np.sqrt(k))), 2)} for k, d in enumerate(future, 1)]
         fwd = close.shift(-horizon) / close - 1
         base_up = float((fwd.dropna() > 0).mean())
+        rec = performance.track_record()
+        cov = [c["coverage"] for c in rec["forecast"]["coverage"] if c["horizon"] == horizon] if rec else []
+        held = (f"Out of sample it held {np.median(cov):.0%} of outcomes in the 80% band (median of {len(cov)} stocks)." if cov
+                else "Its out-of-sample record is not built yet (`stockintel build-performance`).")
         # trendlines of the current pattern, extended over the projection window
         projections = []
         for p_ in pats:
@@ -219,11 +224,11 @@ class Hub:
             "support": tech.details.get("support_levels", []), "resistance": tech.details.get("resistance_levels", []),
             "markers": markers, "patterns": pats, "projections": projections,
             "cone": cone, "cone_note": (f"Grey band: where {horizon} trading days could plausibly end, from current "
-                                        f"volatility ({sigma * np.sqrt(252) * 100:.0f}% a year). Out of sample it held "
-                                        f"about 79% of outcomes in the 80% band. It shows size of move, not direction: "
+                                        f"volatility ({sigma * np.sqrt(252) * 100:.0f}% a year). {held} It shows size of move, not direction: "
                                         f"historically this stock was up after {horizon} days {base_up:.0%} of the time, "
                                         "and no model we tested predicted direction better than that."),
-            "base_rate_up": round(base_up, 3), "horizon": horizon,
+            "base_rate_up": round(base_up, 3), "horizon": horizon, "held_note": held,
+            "stop": round(last * (1 - STOP_PCT), 2), "stop_pct": round(STOP_PCT * 100, 1),
         }
 
     INTRADAY = {"1D": ("1d", "5m"), "5D": ("5d", "15m"), "1M": ("1mo", "60m")}
@@ -362,19 +367,15 @@ class Hub:
         price = a.price
         return {
             "symbol": sym, "verdict": verdict, "tone": tone, "headline": headline, "held": held,
-            "momentum_rank": rank, "universe_size": total, "research_label": d.decision_support_label,
+            "momentum_rank": rank, "universe_size": total, "buy_rank": BUY_RANK, "keep_rank": KEEP_RANK, "research_label": d.decision_support_label,
             "research_score": d.score, "research_confidence": d.confidence, "conflict": d.conflict,
             "why_buy": why_buy[:7], "why_not": why_not[:7],
             "plan": {"stop_loss": round(price * (1 - STOP_PCT), 2) if tone == "positive" else None,
                      "next_review": next_rebalance(date.today()),
-                     "position_size": "equal slice of your momentum portfolio (≈5% with 20 stocks)"
+                     "position_size": f"equal slice of your momentum portfolio (≈{100 / N_DEFAULT:.0f}% with {N_DEFAULT} stocks)"
                      if tone == "positive" else None},
             "market": m, "analysis_timestamp": a.analysis_timestamp, "data_as_of": a.quality["last_date"],
-            "evidence_note": ("The buy/sell rule is NSE's momentum method. Its live ETF beat the Nifty 500 by "
-                              "about 1.5–2.5 points a year (Sep 2022–Sep 2026), but unevenly: +15 points in 2023, −10 in 2025, "
-                              "and backtests fell up to 35% in bad stretches. "
-                              "Pattern, candle and forecast signals were tested and showed no edge, so they "
-                              "only appear as context."),
+            "evidence_note": performance.evidence_note(performance.track_record()),
         }
 
     def portfolio_history(self) -> Dict[str, Any]:
@@ -414,46 +415,50 @@ class Hub:
     def ml_enabled(self) -> bool:
         import importlib.util
         import os
-        return os.environ.get("STOCKINTEL_ML", "1") != "0" and importlib.util.find_spec("torch") is not None
+        from .analysis import remote_models
+        return os.environ.get("STOCKINTEL_ML", "1") != "0" and (
+            bool(remote_models.space()) or importlib.util.find_spec("torch") is not None)
 
     def ai_forecast(self, symbol: str, model: str = "chronos") -> Dict[str, Any]:
         """Chronos quantile fan or Kronos projected candles, cached for the day, with the
         model's measured out-of-sample record attached."""
-        from .performance import MODELS_PATH
         if model not in ("chronos", "kronos"):
             raise ValueError("model must be chronos or kronos")
         if not self.ml_enabled():
-            raise DataUnavailable("open-source models are disabled on this server (STOCKINTEL_ML=0 or torch missing)")
+            raise DataUnavailable("open-source models are disabled on this server "
+                                  "(STOCKINTEL_ML=0, or neither torch nor STOCKINTEL_MODEL_SPACE)")
         df = self.orch.service().history(symbol)
         key = (symbol.upper(), model, str(df.index[-1].date()))
         cache = self.__dict__.setdefault("_ai_cache", {})
         if key not in cache:
-            with self._lock:
+            from .analysis import kronos_model, remote_models, tsfm
+            local = not remote_models.space()
+            # its own lock: a model call (or a queued Space) must not block the panel
+            with self.__dict__.setdefault("_ai_lock", threading.Lock()):
                 if model == "chronos":
-                    from .analysis import tsfm
                     horizon = 10
-                    q = tsfm.fan(df["close"], horizon)
+                    q = (tsfm.fan if local else remote_models.fan)(df["close"], horizon)
                     dates = [str(d.date()) for d in pd.bdate_range(df.index[-1], periods=horizon + 1)[1:]]
                     cache[key] = {"dates": dates, **q}
                 else:
-                    from .analysis import kronos_model
-                    cache[key] = kronos_model.next_candles(df, pred_len=5, samples=8)
+                    cache[key] = (kronos_model.next_candles if local else remote_models.next_candles)(df, pred_len=5, samples=8)
         record = {}
-        if MODELS_PATH.exists():
+        if performance.MODELS_PATH.exists():
             import json as _json
-            ev = _json.loads(MODELS_PATH.read_text()).get(model, {})
-            record = ev
+            record = _json.loads(performance.MODELS_PATH.read_text()).get(model, {})
+        verdicts = performance.model_verdicts({model: record})
         if model == "chronos":
             h5 = next((h for h in record.get("horizons", []) if h["horizon"] == 5), None)
             note = ("Chronos-Bolt (open-source AI model) forecast range. "
-                    + (f"Tested on {h5['n']} past 5-day forecasts: direction right {h5['chronos_direction_acc']:.0%} vs {h5['base_rate_acc']:.0%} for the base rate, "
-                       f"80% band held {h5['chronos_cover80']:.0%} of outcomes — as good as plain volatility, not better."
+                    + (f"Tested on {h5['n']} past {h5['horizon']}-day forecasts: direction right {h5['chronos_direction_acc']:.0%} vs "
+                       f"{h5['base_rate_acc']:.0%} for the base rate, 80% band held {h5['chronos_cover80']:.0%} of outcomes "
+                       f"(plain volatility {h5['ewma_cover80']:.0%}) — {verdicts['chronos']}."
                        if h5 else "evaluation not run yet (`stockintel evaluate-models`)."))
         else:
             note = ("Kronos (open-source candlestick AI) projected candles — EXPERIMENTAL. Tested on "
                     + (f"{record['n']} past forecasts: direction right {record['direction_acc']:.0%} vs {record['base_rate_acc']:.0%} base rate, "
-                       f"and its 5-day price error was {record['mae_pct']:.1f}% vs {record['no_change_mae_pct']:.1f}% for assuming no change. "
-                       "Treat these candles as a picture of what the model imagines, not a forecast."
+                       f"and its {record['horizon']}-day price error was {record['mae_pct']:.1f}% vs {record['no_change_mae_pct']:.1f}% for assuming no change — "
+                       f"{verdicts['kronos']}."
                        if record else "evaluation not run yet."))
         return {"symbol": symbol.upper(), "model": model, "as_of": key[2], **cache[key], "record": record, "note": note}
 
@@ -469,7 +474,8 @@ class Hub:
         names = self.names()
         excl = {x.lower() for x in exclude_sectors or []}
         uni = [r.symbol for r in names.itertuples() if r.nifty200 and r.sector.lower() not in excl]
-        p = plan(self.panel(), self.bench(), capital, [], strategy=strategy, risk_mode=risk_mode, n=n, universe=uni)
+        p = plan(self.panel(), self.bench(), capital, [], strategy=strategy, risk_mode=risk_mode, n=n, universe=uni,
+                 measured=performance.momentum_evidence(performance.track_record()))
         buys = [a for a in p.actions if a.action == "BUY"]
         sector = dict(zip(names["symbol"], names["sector"]))
         name_of = dict(zip(names["symbol"], names["name"]))
@@ -517,6 +523,16 @@ class Hub:
                         "spark": [round(float(x), 2) for x in c.iloc[-60:]]})
         return out
 
+    def ticker(self, n: int = 16) -> List[Dict[str, Any]]:
+        """Indices plus the most-traded Nifty 200 names, for the scrolling strip."""
+        p, names = self.panel(), self.names().set_index("symbol")
+        uni = [s for s in names.index[names["nifty200"]] if s in p.close.columns]
+        traded = (p.close[uni] * p.volume[uni]).iloc[-20:].mean().nlargest(n).index
+        c = p.close[traded].iloc[-2:].dropna(axis=1)
+        return ([{"symbol": i["name"], "price": i["value"], "change_pct": i["change_pct"], "index": True} for i in self.indices()]
+                + [{"symbol": s, "price": round(float(c[s].iloc[-1]), 2), "index": False,
+                    "change_pct": round(float(c[s].iloc[-1] / c[s].iloc[-2] - 1) * 100, 2)} for s in c.columns])
+
     def explore(self) -> Dict[str, Any]:
         p = self.panel()
         n = self.names().set_index("symbol")
@@ -532,8 +548,9 @@ class Hub:
                 "r6_pct": round(float(rk.loc[s, "r6"]) * 100, 1), "r12_pct": round(float(rk.loc[s, "r12"]) * 100, 1),
                 "price": round(float(p.close[s].iloc[-1]), 2)} for s in rk.index[:10]]
         from .data import insider
+        days, min_value = 30, 1e7
         try:
-            buys = insider.recent_buys(insider.load(), days=30, min_value=1e7)
+            buys = insider.recent_buys(insider.load(), days=days, min_value=min_value)
             agg = buys.groupby("symbol").agg(value=("value", "sum"), day=("day", "max"),
                                              filings=("filings", "sum")).sort_values("value", ascending=False).head(8)
             ins = [{"symbol": s_, "name": n.loc[s_, "name"] if s_ in n.index else s_,
@@ -544,7 +561,7 @@ class Hub:
         return {"as_of": str(p.close.index[-1].date()), "indices": self.indices(),
                 "market": market_state(self.bench(), self.bench().index[-1]),
                 "gainers": rows(list(chg.index[-5:][::-1])), "losers": rows(list(chg.index[:5])),
-                "momentum_top": top, "insider_buys": ins}
+                "momentum_top": top, "insider_buys": ins, "insider_rule": {"days": days, "min_value_cr": min_value / 1e7}}
 
     # --- learn --------------------------------------------------------------------------------
     def learn_index(self) -> List[Dict[str, Any]]:
@@ -569,7 +586,7 @@ def _record_summary(h: Dict[str, Any]) -> Dict[str, Any]:
     return {"verdict": verdict, "has_edge": edge,
             "events": src.get("events", 0), "stocks": src.get("stocks"),
             "excess_pct": src.get("excess_mean_pct"), "z": src.get("z"),
-            "scope": "48 NSE stocks pooled" if pooled else "this stock's history",
+            "scope": f"{src.get('stocks')} NSE stocks pooled" if pooled else "this stock's history",
             "summary": (f"Tested {src.get('events', 0)} times"
                         + (f" across {src['stocks']} stocks" if src.get("stocks") else " on this stock")
                         + (f": average excess return {src['excess_mean_pct']:+.2f}%" if src.get("excess_mean_pct") is not None else "")
