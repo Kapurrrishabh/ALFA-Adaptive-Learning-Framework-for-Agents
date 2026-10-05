@@ -15,12 +15,13 @@ from typing import Any, Dict
 import numpy as np
 import pandas as pd
 
+from ..config import FORECAST_DAYS
 from ..data.provider import DataUnavailable
 from .tsfm import QUANTILES
 
 PATH = os.environ.get("STOCKINTEL_ALFA_PATH", "")
 WEIGHTS = "artifacts/returns.npz"
-STEPS, PATHS = 10, 500
+STEPS, PATHS = FORECAST_DAYS, 500
 _LOADED = None
 
 

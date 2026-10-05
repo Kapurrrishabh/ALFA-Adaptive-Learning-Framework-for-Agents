@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from stockintel import report as R
 from stockintel.alerts import evaluate
 from stockintel.api import create_app
+from stockintel.config import FORECAST_DAYS
 from stockintel.orchestrator import Orchestrator
 from stockintel.screener import screen
 from stockintel.service import AnalysisService
@@ -409,7 +410,7 @@ def test_technical_range_claim_and_stop_come_from_data(app_client, tmp_path, mon
 
 def test_model_verdicts_call_small_accuracy_gaps_noise():
     from stockintel.performance import model_verdicts
-    v = model_verdicts({"chronos": {"horizons": [{"horizon": 5, "n": 660, "pinball_skill": 0.0,
+    v = model_verdicts({"chronos": {"horizons": [{"horizon": FORECAST_DAYS, "n": 660, "pinball_skill": 0.0,
                                                   "chronos_direction_acc": 0.574, "base_rate_acc": 0.565}]},
                         "kronos": {"n": 528, "mae_pct": 5.2, "no_change_mae_pct": 2.2, "direction_acc": 0.492, "base_rate_acc": 0.536}})
     assert v["chronos"] == "its range was about as good as plain volatility, and its direction was right about as often as the base rate"
@@ -431,14 +432,14 @@ def test_ai_forecast_uses_the_model_space_when_one_is_set(app_client, monkeypatc
     import json as _json
     import stockintel.analysis.remote_models as rm
     from stockintel.analysis.tsfm import CONTEXT
-    fan = {f"q{q}": [100.0 + q] * 10 for q in (10, 25, 50, 75, 90)}
+    fan = {f"q{q}": [100.0 + q] * FORECAST_DAYS for q in (10, 25, 50, 75, 90)}
     fake = _FakeSpace(_json.dumps(fan))
     monkeypatch.setenv("STOCKINTEL_MODEL_SPACE", "you/stockintel-models")
     monkeypatch.setattr(rm, "_client", lambda: fake)
     r = app_client.get("/ui/stock/TEST/ai?model=chronos", headers={"X-API-Key": KEY}).json()
-    assert r["q50"] == fan["q50"] and len(r["dates"]) == 10
+    assert r["q50"] == fan["q50"] and len(r["dates"]) == FORECAST_DAYS
     api_name, (closes, horizon) = fake.calls[0]
-    assert api_name == "/chronos_fan" and horizon == 10 and 0 < len(_json.loads(closes)) <= CONTEXT
+    assert api_name == "/chronos_fan" and horizon == FORECAST_DAYS and 0 < len(_json.loads(closes)) <= CONTEXT
 
 
 def test_a_failing_model_space_is_a_clean_404_naming_the_space(app_client, monkeypatch):
@@ -526,14 +527,14 @@ def test_fine_tuned_weights_bring_their_own_record_into_the_note(app_client, mon
     import json as _json
     import stockintel.analysis.remote_models as rm
     record = {"model": "chronos-2-nse",
-              "test": {"horizons": [{"horizon": 5, "n": 5472, "pinball_skill": -0.0445, "chronos_direction_acc": 0.4889,
+              "test": {"horizons": [{"horizon": FORECAST_DAYS, "n": 5472, "pinball_skill": -0.0445, "chronos_direction_acc": 0.4889,
                                      "base_rate_acc": 0.5168, "chronos_cover80": 0.8087, "ewma_cover80": 0.8282}]},
-              "precision_calls": [{"horizon": 5, "call_rate": 0.1142, "precision": 0.5168, "precision_lo": 0.4254,
+              "precision_calls": [{"horizon": FORECAST_DAYS, "call_rate": 0.1142, "precision": 0.5168, "precision_lo": 0.4254,
                                    "precision_hi": 0.6077, "base_rate": 0.5203}]}
-    fan = {**{f"q{q}": [100.0] * 10 for q in (10, 25, 50, 75, 90)}, "served_model": "you/chronos-2-nse", "served_record": record}
+    fan = {**{f"q{q}": [100.0] * FORECAST_DAYS for q in (10, 25, 50, 75, 90)}, "served_model": "you/chronos-2-nse", "served_record": record}
     monkeypatch.setenv("STOCKINTEL_MODEL_SPACE", "you/stockintel-models")
     monkeypatch.setattr(rm, "_client", lambda: _FakeSpace(_json.dumps(fan)))
     note = app_client.get("/ui/stock/TEST/ai?model=chronos", headers={"X-API-Key": KEY}).json()["note"]
-    assert note.startswith("Chronos-2 fine-tuned on NSE prices by us.") and "Tested on 5472 past 5-day forecasts" in note
+    assert note.startswith("Chronos-2 fine-tuned on NSE prices by us.") and f"Tested on 5472 past {FORECAST_DAYS}-day forecasts" in note
     assert "its range was worse than plain volatility" in note
     assert "most confident 11% of 'up' calls were right 52% (95% range 43%–61%) vs 52% for always 'up'" in note

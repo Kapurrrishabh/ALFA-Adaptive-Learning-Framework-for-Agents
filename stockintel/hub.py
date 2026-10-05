@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from . import performance
+from .config import FORECAST_DAYS
 from .data.panel import CACHE_DIR, index_constituents, universe_panel
 from .data.provider import DataUnavailable
 from .knowledge import knowledge_base
@@ -141,7 +142,7 @@ class Hub:
                 "close": [round(float(x), 2) for x in df["close"]],
                 "volume": [float(x) for x in df["volume"]]}
 
-    def technical(self, symbol: str, bars: int = 180, horizon: int = 20) -> Dict[str, Any]:
+    def technical(self, symbol: str, bars: int = 180, horizon: int = FORECAST_DAYS) -> Dict[str, Any]:
         """Everything the candlestick chart draws. Every overlay carries its tested
         track record so a clean-looking shape is never shown as a proven signal."""
         from .analysis import candlesticks, indicators as ind, patterns, technical
@@ -439,8 +440,8 @@ class Hub:
             # its own lock: a model call (or a queued Space) must not block the panel
             with self.__dict__.setdefault("_ai_lock", threading.Lock()):
                 if model == "chronos":
-                    horizon = 10
-                    cache[key] = {"dates": future(horizon), **(tsfm.fan if local else remote_models.fan)(df["close"], horizon)}
+                    cache[key] = {"dates": future(FORECAST_DAYS),
+                                  **(tsfm.fan if local else remote_models.fan)(df["close"], FORECAST_DAYS)}
                 elif model == "alfa":
                     q = (alfa_model.fan(df["close"]) if alfa_model.available()
                          else remote_models.alfa_fan(df["close"], alfa_model.STEPS, alfa_model.PATHS))
@@ -451,7 +452,9 @@ class Hub:
             d = cache[key]["drawer"]
             m = d["measured"]
             note = ((f"Our return model (ALFA project, {d['name']}): on next-day returns from {d['test_from']} it beat "
-                     f"GARCH(1,1)-t by {-m['vs_garch']:.3f} ± {m['vs_garch_error']:.3f} nats per return over {m['scored']:,} returns. ")
+                     f"GARCH(1,1)-t by {-m['vs_garch']:.3f} ± {m['vs_garch_error']:.3f} nats per return over {m['scored']:,} returns. "
+                     f"That score is for one day ahead; the record saved with the model does not score the "
+                     f"{len(cache[key]['dates'])}-day fan drawn here. ")
                     if d["name"] == "generative" else "GARCH(1,1)-t draws these paths: ALFA's return model has not beaten it on its own record. ")
             return {"symbol": symbol.upper(), "model": model, "as_of": key[2], **cache[key], "record": m,
                     "note": note + cache[key]["direction_note"]}
@@ -460,13 +463,15 @@ class Hub:
         if not served and performance.MODELS_PATH.exists():
             import json as _json
             record = _json.loads(performance.MODELS_PATH.read_text()).get(model, {})
-        verdicts = performance.model_verdicts({model: record})
-        calls = next((c for c in (served or {}).get("precision_calls", []) if c["horizon"] == 5), None)
+        # the fan drawn is FORECAST_DAYS long; Kronos draws its own shorter candle horizon
+        shown = FORECAST_DAYS if model == "chronos" else record.get("horizon", FORECAST_DAYS)
+        verdicts = performance.model_verdicts({model: record}, shown)
+        calls = next((c for c in (served or {}).get("precision_calls", []) if c["horizon"] == shown), None)
         call_note = (f" Its most confident {c['call_rate']:.0%} of 'up' calls were right {c['precision']:.0%} "
                      f"(95% range {c['precision_lo']:.0%}–{c['precision_hi']:.0%}) vs {c['base_rate']:.0%} for always 'up'."
                      if (c := calls) and c["precision"] is not None else "")
         if model == "chronos":
-            h5 = next((h for h in record.get("horizons", []) if h["horizon"] == 5), None)
+            h5 = next((h for h in record.get("horizons", []) if h["horizon"] == shown), None)
             note = (("Chronos-2 fine-tuned on NSE prices by us. " if served else "Chronos-Bolt (open-source AI model) forecast range. ")
                     + (f"Tested on {h5['n']} past {h5['horizon']}-day forecasts: direction right {h5['chronos_direction_acc']:.0%} vs "
                        f"{h5['base_rate_acc']:.0%} for the base rate, 80% band held {h5['chronos_cover80']:.0%} of outcomes "

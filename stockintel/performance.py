@@ -15,6 +15,7 @@ import pandas as pd
 
 from .analysis import forecast
 from .analysis.stats import auc, brier, norm_ppf
+from .config import FORECAST_DAYS
 from .data.panel import CACHE_DIR, universe_panel
 from .evidence import utcnow_iso
 from .storage import Store
@@ -195,10 +196,10 @@ def _vs_base(acc: float, base: float, n: int) -> str:
             else "about as often as")
 
 
-def model_verdicts(evals: Dict[str, Any]) -> Dict[str, str]:
-    """One plain sentence per open-source model, read off its measured record."""
+def model_verdicts(evals: Dict[str, Any], horizon: int = FORECAST_DAYS) -> Dict[str, str]:
+    """One plain sentence per open-source model, read off its record at `horizon`."""
     out = {}
-    h5 = next((h for h in evals.get("chronos", {}).get("horizons", []) if h["horizon"] == 5), None)
+    h5 = next((h for h in evals.get("chronos", {}).get("horizons", []) if h["horizon"] == horizon), None)
     if h5:
         skill = h5["pinball_skill"]
         out["chronos"] = ("its range was " + ("better than" if skill > TIE_SKILL else "worse than" if skill < -TIE_SKILL else "about as good as")
