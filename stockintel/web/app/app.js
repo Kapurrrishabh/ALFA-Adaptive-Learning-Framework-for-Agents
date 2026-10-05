@@ -29,7 +29,7 @@ function toast(msg) { const t = h("div", { class: "toast" }, msg); document.body
 // ---------- auth + api ----------
 (function captureKey() {
   const m = location.hash.match(/key=([A-Za-z0-9]+)/);
-  if (m) { localStorage.setItem("si-key", m[1]); history.replaceState(null, "", location.pathname + "#/explore"); }
+  if (m) { localStorage.setItem("si-key", m[1]); history.replaceState(null, "", location.pathname + "#/home"); }
 })();
 async function api(path, opts = {}) {
   const res = await fetch(path, { ...opts, headers: { "X-API-Key": localStorage.getItem("si-key") || "", "Content-Type": "application/json", ...(opts.headers || {}) } });
@@ -143,7 +143,8 @@ function spark(values, w = 120, hgt = 36) {
 // ---------- candlestick chart with pattern overlays ----------
 function candleChart(container, t, layers, selected, onPick) {
   container.replaceChildren();
-  const n = t.dates.length, fut = layers.cone ? t.cone.length : 0, total = n + fut;
+  const n = t.dates.length, fan = t.fan, ghost = t.ghost;
+  const fut = Math.max(layers.cone ? t.cone.length : 0, fan ? fan.dates.length : 0, ghost ? ghost.dates.length : 0), total = n + fut;
   const W = container.clientWidth || 760, H = 380, volH = 54, m = { l: 8, r: 64, t: 12, b: 24 };
   const pw = W - m.l - m.r, ph = H - m.t - m.b - volH - 8, step = pw / total;
   const vals = [...t.low, ...t.high];
@@ -151,14 +152,16 @@ function candleChart(container, t, layers, selected, onPick) {
   if (layers.cone) vals.push(...t.cone.map((c) => c.lo80), ...t.cone.map((c) => c.hi80));
   if (layers.stop && t.stop) vals.push(t.stop);
   if (layers.patterns) for (const p of t.patterns) { if (p.target) vals.push(p.target); }
+  if (fan) vals.push(...fan.q10, ...fan.q90);
+  if (ghost) vals.push(...ghost.low, ...ghost.high);
   let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.05; lo -= pad; hi += pad;
   const dateIdx = new Map(t.dates.map((d, i) => [d, i])); t.cone.forEach((c, k) => dateIdx.set(c.date, n + k));
   const X = (i) => m.l + step * (i + 0.5), Y = (v) => m.t + ph - ((v - lo) / (hi - lo)) * ph;
   const XD = (d) => X(dateIdx.has(d) ? dateIdx.get(d) : d < t.dates[0] ? 0 : n - 1);   // clamp dates outside the window
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Candlestick chart of ${t.symbol} with detected patterns` });
   const txt = (x, y, str, attrs = {}) => { const e = s("text", { x, y, "font-size": 11, fill: css("--muted"), ...attrs }); e.textContent = str; svg.append(e); return e; };
-  for (let k = 0; k <= 5; k++) { const v = lo + (hi - lo) * k / 5; svg.append(s("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: css("--line") })); txt(W - m.r + 6, Y(v) + 4, num(v, v > 1000 ? 0 : 2)); }
-  const every = Math.max(1, Math.floor(total / 6));
+  for (let k = 1; k <= 3; k++) { const v = lo + (hi - lo) * k / 4; svg.append(s("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: css("--line"), "stroke-dasharray": "2 4" })); txt(W - m.r + 6, Y(v) + 4, num(v, v > 1000 ? 0 : 2)); }
+  const every = Math.max(1, Math.floor(total / 5));
   for (let i = 0; i < total; i += every) { const d = i < n ? t.dates[i] : t.cone[i - n].date; txt(X(i), H - 6, new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" }), { "text-anchor": "middle" }); }
   // forward range cone
   if (layers.stop && t.stop) {
@@ -173,8 +176,8 @@ function candleChart(container, t, layers, selected, onPick) {
     svg.append(s("path", { d: `M${start} L${pts("hi50").join(" L")} L${pts("lo50").reverse().join(" L")} Z`, fill: css("--cone"), "fill-opacity": 0.18 }));
     svg.append(s("line", { x1: X(n - 1), x2: X(total - 1), y1: Y(t.close[n - 1]), y2: Y(t.close[n - 1]), stroke: css("--cone"), "stroke-dasharray": "4 4" }));
     const last = t.cone[t.cone.length - 1];
-    txt(X(total - 1) - 4, Y(last.hi80) - 4, `80%: ${inr(last.hi80, 0)}`, { "text-anchor": "end" });
-    txt(X(total - 1) - 4, Y(last.lo80) + 13, `80%: ${inr(last.lo80, 0)}`, { "text-anchor": "end" });
+    if (!fan) { txt(X(total - 1) - 4, Y(last.hi80) - 4, `80%: ${inr(last.hi80, 0)}`, { "text-anchor": "end" });
+      txt(X(total - 1) - 4, Y(last.lo80) + 13, `80%: ${inr(last.lo80, 0)}`, { "text-anchor": "end" }); }
     svg.append(s("line", { x1: X(n - 0.5), x2: X(n - 0.5), y1: m.t, y2: m.t + ph, stroke: css("--line"), "stroke-width": 1 }));
     txt(X(n) + 2, m.t + 10, "next " + t.horizon + " days", { "font-size": 10 });
   }
@@ -199,6 +202,19 @@ function candleChart(container, t, layers, selected, onPick) {
     const top = Y(Math.max(t.open[i], t.close[i])), hgt = Math.max(1, Math.abs(Y(t.open[i]) - Y(t.close[i])));
     svg.append(s("rect", { x: X(i) - bw / 2, y: top, width: bw, height: hgt, fill: up ? css("--card") : col, stroke: col, "stroke-width": 1 }));
   }
+  if (fan) {
+    const ai = css("--ai"), xs = fan.dates.map((d, k) => X(n + k)), start = `${X(n - 1)},${Y(t.close[n - 1])}`;
+    const band = (a, b) => `M${start} L${xs.map((x, k) => `${x},${Y(fan[a][k])}`).join(" L")} L${xs.map((x, k) => `${x},${Y(fan[b][k])}`).reverse().join(" L")} Z`;
+    svg.append(s("path", { d: band("q90", "q10"), fill: ai, "fill-opacity": 0.1 }), s("path", { d: band("q75", "q25"), fill: ai, "fill-opacity": 0.18 }));
+    svg.append(s("path", { d: `M${start} L${xs.map((x, k) => `${x},${Y(fan.q50[k])}`).join(" L")}`, fill: "none", stroke: ai, "stroke-width": 2, "stroke-dasharray": "5 4" }));
+    fan.q50.forEach((v, k) => { const dot = s("circle", { cx: xs[k], cy: Y(v), r: Math.min(3.2, step * 0.4), fill: ai, stroke: css("--card"), "stroke-width": 1.5, cursor: "help" });
+      dot.addEventListener("mousemove", (ev) => showTip(ev, [h("b", {}, `AI median · ${fan.dates[k]}`), `${inr(v)} (50% range ${inr(fan.q25[k], 0)}–${inr(fan.q75[k], 0)})`, `80% range ${inr(fan.q10[k], 0)}–${inr(fan.q90[k], 0)}`]));
+      dot.addEventListener("mouseleave", () => hideTip()); svg.append(dot); });
+    const last = fan.q50.length - 1; txt(xs[last], Y(fan.q10[last]) + 14, `AI median ${inr(fan.q50[last], 0)}`, { fill: ai, "text-anchor": "middle", "font-weight": 700 });
+  }
+  if (ghost) ghost.dates.forEach((d, k) => { const x = X(n + k), up = ghost.close[k] >= ghost.open[k], col = up ? css("--up") : css("--down");
+    svg.append(s("line", { x1: x, x2: x, y1: Y(ghost.high[k]), y2: Y(ghost.low[k]), stroke: col, opacity: 0.6 }));
+    svg.append(s("rect", { x: x - bw / 2, y: Y(Math.max(ghost.open[k], ghost.close[k])), width: bw, height: Math.max(1, Math.abs(Y(ghost.open[k]) - Y(ghost.close[k]))), fill: "none", stroke: col, "stroke-dasharray": "2 2", opacity: 0.8 })); });
   // volume
   const vmax = Math.max(...t.volume) || 1, vy = H - m.b - volH;
   for (let i = 0; i < n; i++) svg.append(s("rect", { x: X(i) - bw / 2, y: vy + volH - (t.volume[i] / vmax) * volH, width: bw, height: (t.volume[i] / vmax) * volH, fill: css("--bg-3") }));
@@ -387,18 +403,29 @@ function analyticsSection(sym) {
   return root;
 }
 
+// older candle markers crowd the chart and none has a proven edge, so only recent ones are drawn
+const RECENT_MARKERS = 15;
+let featuresP; const features = () => featuresP || (featuresP = api("/ui/features").catch((e) => { featuresP = null; throw e; }));
 function technicalPanel(sym, opts = {}) {
   const wrap = h("div"), plot = h("div", { class: "chart" }), cards = h("div", { class: "pattern-cards" }), note = h("div", { class: "chart-note" });
   const layers = opts.line ? { line: true, ma: true, sr: true, patterns: false, candles: false, neutral: false, cone: true, stop: true }
-    : { ma: true, sr: true, patterns: true, candles: true, neutral: false, cone: true, stop: false };
-  let data = null, selected = null, bars = opts.bars || 63;
+    : { ma: true, sr: false, patterns: true, candles: true, neutral: false, cone: true, stop: false };
+  let data = null, selected = null, bars = opts.bars || 63; const ai = {};
   const names = opts.line ? { cone: "Next 20 days range", stop: "Stop-loss level", sr: "Support / resistance", ma: "50/200-day averages", patterns: "Pattern target" }
     : { patterns: "Chart patterns", candles: "Candle signals", neutral: "Show indecision (doji)", ma: "50/200-day averages", sr: "Support / resistance", cone: "Next 20 days range" };
-  const toggles = h("div", { class: "overlay-toggles" }, ...Object.keys(names).map((k) => { const cb = h("input", { type: "checkbox" }); cb.checked = layers[k];
-    cb.addEventListener("change", () => { layers[k] = cb.checked; draw(); }); return h("label", {}, cb, names[k]); }));
+  const toggle = (k) => { const cb = h("input", { type: "checkbox" }); cb.checked = layers[k];
+    cb.addEventListener("change", () => { layers[k] = cb.checked; loadAi(); draw(); drawCards(); }); return h("label", {}, cb, names[k]); };
+  const toggles = h("div", { class: "overlay-toggles" }, ...Object.keys(names).map(toggle));
+  features().then((f) => { if (f.ml) { names.ai = "AI forecast (Chronos)"; layers.ai = true; toggles.prepend(toggle("ai")); }
+    if (f.kronos) { names.kronos = "AI candles (Kronos, experimental)"; toggles.append(toggle("kronos")); } loadAi(); }).catch((e) => toast(e.message));
+  const loadAi = () => { for (const [k, model] of [["ai", "chronos"], ["kronos", "kronos"]]) if (layers[k] && !(model in ai)) {
+    ai[model] = null;
+    api(`/ui/stock/${encodeURIComponent(sym)}/ai?model=${model}`).then((r) => { ai[model] = r; draw(); drawCards(); })
+      .catch((e) => { delete ai[model]; toast(`${model}: ${e.message}`); }); } };
   const seg = h("div", { class: "seg" }, ...[["1M", 21], ["3M", 63], ["6M", 126], ["1Y", 252], ["2Y", 500]].map(([lab, b]) => h("button", { class: b === bars ? "active" : "", onclick: (e) => { bars = b; for (const x of seg.children) x.classList.remove("active"); e.target.classList.add("active"); load(); } }, lab)));
-  const draw = () => { if (!data) return; candleChart(plot, data, layers, selected, (k) => { selected = selected === k ? null : k; draw(); drawCards(); }); };
+  const draw = () => { if (!data) return; candleChart(plot, { ...data, fan: layers.ai && ai.chronos, ghost: layers.kronos && ai.kronos }, layers, selected, (k) => { selected = selected === k ? null : k; draw(); drawCards(); }); };
   const drawCards = () => {
+    if (!data) return;
     cards.replaceChildren(...(data.patterns.length > 1 ? [h("div", { class: "muted", style: "grid-column:1/-1;font-size:12px" },
       selected == null ? "Showing all patterns — click a card to focus on one." : "Showing the highlighted pattern — click another card to switch, or the same card to show all.")] : []),
       ...(data.patterns.length ? data.patterns.map((p, k) => h("div", { class: `pattern-card ${selected === k ? "sel" : ""}`, onclick: () => { selected = selected === k ? null : k; draw(); drawCards(); } },
@@ -410,10 +437,12 @@ function technicalPanel(sym, opts = {}) {
       : [h("p", { class: "muted" }, "No chart pattern is forming in this window.")]));
     const counts = {}; for (const mk of data.markers) if (mk.direction !== 0) counts[mk.label] = (counts[mk.label] || 0) + 1;
     note.replaceChildren(data.cone_note, h("br"),
-      Object.keys(counts).length ? `Candle signals in view: ${Object.entries(counts).map(([k, v]) => `${k} ×${v}`).join(", ")}. Hover a marker to see how that formation did across 48 NSE stocks.` : "");
+      Object.keys(counts).length ? `Candle signals in the last ${RECENT_MARKERS} sessions: ${Object.entries(counts).map(([k, v]) => `${k} ×${v}`).join(", ")}. Hover a marker to see how that formation did across 48 NSE stocks.` : "",
+      ...[["ai", "chronos"], ["kronos", "kronos"]].filter(([k, model]) => layers[k] && ai[model]).flatMap(([, model]) => [h("br"), h("span", { style: "color:var(--ai)" }, ai[model].note)]));
   };
   const load = async () => { plot.replaceChildren(skel(380)); try { data = await api(`/ui/stock/${encodeURIComponent(sym)}/technical?bars=${bars}`);
     data.stop = Math.round(data.close[data.close.length - 1] * 0.9 * 100) / 100;
+    const recent = new Set(data.dates.slice(-RECENT_MARKERS)); data.markers = data.markers.filter((mk) => recent.has(mk.date));
     // one pattern at a time reads clearly; start with the most confident, cards switch it
     selected = data.patterns.length ? data.patterns.reduce((best, p, k) => p.confidence > data.patterns[best].confidence ? k : best, 0) : null;
     draw(); drawCards(); } catch (e) { plot.replaceChildren(errorBox(e)); } };
@@ -441,7 +470,7 @@ function lineChart(container, dates, series, { height = 300, fmt = (v) => num(v)
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
   for (let k = 0; k <= 4; k++) { const tv = lo + (hi - lo) * k / 4, v = logScale ? Math.exp(tv) : tv, yy = m.t + ph - (k / 4) * ph;
     svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: yy, y2: yy, stroke: css("--line") })); const t = s("text", { x: m.l + pw + 6, y: yy + 4, "font-size": 11, fill: css("--muted") }); t.textContent = fmt(v); svg.append(t); }
-  const every = Math.max(1, Math.floor(dates.length / 6));
+  const every = Math.max(1, Math.ceil(dates.length / Math.max(2, Math.min(6, Math.floor(pw / 80)))));
   for (let i = 0; i < dates.length; i += every) { const t = s("text", { x: x(i), y: H - 6, "font-size": 11, fill: css("--muted"), "text-anchor": i === 0 ? "start" : "middle" }); t.textContent = new Date(dates[i]).toLocaleDateString("en-IN", { month: "short", year: "2-digit" }); svg.append(t); }
   const ends = [];
   series.forEach((sr) => {
@@ -589,6 +618,14 @@ async function pagePerformance(view) {
     h("div", { class: "verdict-line" }, `Verdict: ${candles.filter((r) => Math.abs(r.z || 0) >= d.bonferroni_z).length} of ${candles.length} candle patterns have an edge. Every line crosses zero.`)),
     h("div", { class: "card", style: "margin-top:18px" }, h("h3", {}, "6 · Chart patterns — do they predict the next 10 days?"), h("p", { class: "sub" }, "Same test for triangles, double tops, head-and-shoulders and the rest, replayed point-in-time across 48 NSE stocks."), f2,
       h("div", { class: "verdict-line" }, `Verdict: ${chartsP.filter((r) => Math.abs(r.z || 0) >= d.bonferroni_z).length} of ${chartsP.length} chart patterns have an edge. The app still draws them so you can see them — with this record attached.`)));
+  const om = d.open_models, omBars = h("div");
+  if (om) { const ch = om.chronos.horizons, kr = om.kronos;
+    view.append(h("div", { class: "card", style: "margin-top:18px" }, h("h3", {}, "7 · Open-source AI models: Chronos (price range) and Kronos (candles)"),
+      h("p", { class: "sub" }, `Walk-forward on ${ch[0].stocks} large caps: each forecast saw only the prices before its date. Direction accuracy against the base rate (guessing the stock's usual direction).`), omBars,
+      h("div", { class: "kv", style: "margin-top:12px" }, ...ch.flatMap((x) => [h("span", { class: "k" }, `Chronos ${x.horizon}-day 80% range held`), h("span", { class: "num" }, `${num(x.chronos_cover80 * 100, 1)}% (plain volatility band ${num(x.ewma_cover80 * 100, 1)}%)`)]),
+        h("span", { class: "k" }, "Kronos 5-day price error"), h("span", { class: "num down" }, `${num(kr.mae_pct, 1)}% (assuming no change: ${num(kr.no_change_mae_pct, 1)}%)`)),
+      h("div", { class: "verdict-line" }, "Verdict: Chronos draws a range as good as plain volatility, not better, and its direction edge is within noise — shown on charts with this record. Kronos is worse than assuming no change, so it is off by default and marked experimental.")));
+  }
   const drawAll = () => {
     lineChart(plot1, mom.dates, series, { fmt: (v) => "₹" + num(v, 2), logScale: true });
     barChart(liveBars, live.bars.map((b, k) => ({ label: b.label, value: b.cagr, color: css(["--series-1", "--series-4", "--series-1", "--series-2"][k]), faded: !b.real })), { fmt: (v) => pct(v, 1) + "/yr" });
@@ -598,6 +635,8 @@ async function pagePerformance(view) {
     barChart(cov, d.forecast.coverage.filter((c) => c.horizon === 5).map((c) => ({ label: `${c.symbol} (5-day)`, value: c.coverage * 100, color: css("--series-3") })), { fmt: (v) => num(v, 0) + "%", ref: 80, refLabel: "target 80%" });
     barChart(ins, d.insider.map((r, k) => ({ label: r.test, value: r.excess_20d, color: css(k === 1 ? "--muted" : "--series-1") })), { fmt: (v) => pct(v, 2) });
     forestPlot(f1, candles, { threshold: d.bonferroni_z }); forestPlot(f2, chartsP, { threshold: d.bonferroni_z });
+    if (om) barChart(omBars, [...om.chronos.horizons.flatMap((x) => [{ label: `Chronos ${x.horizon}-day`, value: x.chronos_direction_acc * 100, color: css("--ai") }, { label: `Base rate ${x.horizon}-day`, value: x.base_rate_acc * 100, color: css("--muted") }]),
+      { label: "Kronos 5-day", value: om.kronos.direction_acc * 100, color: css("--ai") }, { label: "Base rate (Kronos sample)", value: om.kronos.base_rate_acc * 100, color: css("--muted") }], { fmt: (v) => num(v, 1) + "%" });
   };
   requestAnimationFrame(drawAll);
 }
@@ -870,6 +909,10 @@ async function pageChat(view, params) {
   const history = JSON.parse(sessionStorage.getItem("si-chat-log") || "[]");
   const bubble = (who, text, meta) => { const b = h("div", { class: `bubble ${who}` }, text, meta ? h("span", { class: "meta" }, meta) : null); log.append(b); log.scrollTop = log.scrollHeight; return b; };
   for (const m of history) bubble(m.who, m.text, m.meta);
+  const useAgent = h("input", { type: "checkbox" }); useAgent.checked = localStorage.getItem("si-agent") === "1";
+  useAgent.addEventListener("change", () => localStorage.setItem("si-agent", useAgent.checked ? "1" : "0"));
+  const agentRow = h("label", { class: "agent-toggle", hidden: true }, useAgent, "Also ask my self-learning agent (a second opinion that stays quiet when unsure)");
+  api("/ui/agent/status").then((st) => { agentRow.hidden = !st.available; }).catch((e) => toast(e.message));
   const send = async (q) => {
     q = (q || input.value).trim(); if (!q) return; input.value = "";
     bubble("me", q); history.push({ who: "me", text: q });
@@ -877,13 +920,18 @@ async function pageChat(view, params) {
     try { const r = await api("/chat", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) });
       b.replaceChildren(r.text, h("span", { class: "meta" }, `${r.intent}${r.tools_used.length ? " · " + r.tools_used.join(", ") : ""}`)); history.push({ who: "bot", text: r.text, meta: r.intent }); }
     catch (e) { b.textContent = e.message; }
+    if (useAgent.checked && !agentRow.hidden) { const a = bubble("bot agent", "Asking the self-learning agent…");
+      try { const t = await api("/ui/agent/ask", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) });
+        const meta = `self-learning agent · data as of ${t.as_of} · ` + (t.spoke ? `confidence ${num(t.confidence)}` : `held back: ${t.because}`);
+        a.replaceChildren(t.served, h("span", { class: "meta" }, meta)); history.push({ who: "bot agent", text: t.served, meta }); }
+      catch (e) { a.textContent = `Self-learning agent: ${e.message}`; } }
     sessionStorage.setItem("si-chat-log", JSON.stringify(history.slice(-40))); log.scrollTop = log.scrollHeight;
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
   const chips = h("div", { class: "chips" }, ...["What should I buy with ₹1 lakh?", "Is the market in a downtrend?", "Analyze RELIANCE", "Why?", "Compare it with TCS", "How is my portfolio performing?", "What is a Sharpe ratio?", "Check my stops"]
     .map((q) => h("button", { class: "chip", onclick: () => send(q) }, q)));
   view.append(h("div", { class: "card chat" }, h("div", { class: "spread" }, h("h2", { style: "margin:0" }, "Ask StockIntel"),
-    h("button", { class: "btn small", onclick: () => { sessionStorage.removeItem("si-chat-log"); sessionStorage.removeItem("si-chat"); route(); } }, "New chat")), chips, log,
+    h("button", { class: "btn small", onclick: () => { sessionStorage.removeItem("si-chat-log"); sessionStorage.removeItem("si-chat"); route(); } }, "New chat")), chips, agentRow, log,
     h("div", { class: "composer" }, input, h("button", { class: "btn primary", onclick: () => send() }, "Send"))));
   if (!history.length) bubble("bot", "Hi! I can analyse any NSE stock, tell you whether it qualifies as a buy and why, explain concepts, check your portfolio, and build a buy/sell plan. Every number comes from real data — I'll say so when something is unavailable.");
   if (params.get("q")) send(params.get("q")); else input.focus();
@@ -931,15 +979,129 @@ async function pageReport(view, id) {
     h("div", { class: "row" }, h("a", { class: "btn small", href: `#/stock/${encodeURIComponent(r.symbol)}` }, `Open ${r.symbol}`), h("button", { class: "btn small", onclick: () => window.print() }, "Print / PDF"))), ...mdToNodes(r.body)));
 }
 
+// ---------- home + builder ----------
+function heroArt() {
+  // decorative only: an illustration of candles running into a forecast fan, no data
+  const W = 420, H = 260, svg = s("svg", { viewBox: `0 0 ${W} ${H}`, "aria-hidden": "true", class: "hero-art" });
+  let p = 150; const pts = [];
+  for (let i = 0; i < 18; i++) { const o = p, c = p - 6 * Math.sin(i * 1.3) - 2.2, x = 24 + i * 15, up = c < o;
+    svg.append(s("line", { x1: x, x2: x, y1: Math.min(o, c) - 7, y2: Math.max(o, c) + 7, stroke: css(up ? "--up" : "--down") }),
+      s("rect", { x: x - 4.5, y: Math.min(o, c), width: 9, height: Math.max(2, Math.abs(o - c)), rx: 1.5, fill: css(up ? "--up" : "--down") }));
+    p = c; pts.push([x, c]); }
+  const [x0, y0] = pts[pts.length - 1], x1 = W - 20;
+  svg.append(s("path", { d: `M${x0} ${y0} L${x1} ${y0 - 80} L${x1} ${y0 + 20} Z`, fill: css("--ai"), "fill-opacity": 0.14 }),
+    s("path", { d: `M${x0} ${y0} L${x1} ${y0 - 30}`, stroke: css("--ai"), "stroke-width": 2, "stroke-dasharray": "5 4" }));
+  for (let k = 1; k <= 4; k++) svg.append(s("circle", { cx: x0 + (x1 - x0) * k / 4, cy: y0 - 30 * k / 4, r: 3.5, fill: css("--ai") }));
+  return svg;
+}
+
+async function pageHome(view) {
+  const keyInput = h("input", { type: "password", placeholder: "Paste your StockIntel key", autocomplete: "current-password" });
+  const login = () => { const k = keyInput.value.trim(); if (!k) return toast("Paste the key first"); localStorage.setItem("si-key", k); route(); };
+  keyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+  const hasKey = !!localStorage.getItem("si-key");
+  view.append(h("section", { class: "landing card" },
+    h("div", { class: "landing-copy" }, h("div", { class: "welcome-kicker" }, "Your personal NSE stock assistant"),
+      h("h1", {}, "Know what to buy, what to skip — and how sure to be"),
+      h("p", {}, "Search any NSE stock and get a plain buy / wait / don't-buy call with the reasons on both sides. Build a portfolio in seconds, see patterns and AI forecast ranges drawn on the chart, and ask questions in plain English. Every method shows its tested track record."),
+      hasKey ? h("div", { class: "row" }, h("a", { class: "btn primary", href: "#/builder" }, "Build a portfolio"), h("a", { class: "btn", href: "#/explore" }, "Explore the market"), h("a", { class: "btn ghost", href: "#/chat" }, "Ask AI →"))
+        : h("div", { class: "login-box" }, h("b", {}, "Log in"), h("p", { class: "muted" }, "Your key is printed in the terminal by `stockintel app`, or is STOCKINTEL_API_KEY in your server's settings."),
+          h("div", { class: "row" }, keyInput, h("button", { class: "btn primary", onclick: login }, "Continue")))),
+    heroArt()));
+  const stats = h("div");
+  view.append(stats);
+  const feature = (icon, title, text, href) => h("a", { class: "card feature", href }, h("div", { class: "feature-icon" }, icon), h("h3", {}, title), h("p", { class: "muted" }, text), h("span", { class: "feature-go" }, "Open →"));
+  view.append(h("h2", { style: "margin:22px 0 12px" }, "What you can do"), h("div", { class: "grid cols-3" },
+    feature("🧭", "Should I buy?", "Open any stock for a BUY / WAIT / DON'T BUY call, why you might and why you might not, a stop-loss and a position size.", "#/explore"),
+    feature("🧱", "Portfolio builder", "Enter an amount, pick a style and risk level, and get a ready basket with share counts, stops, risk and a sector split.", "#/builder"),
+    feature("🕯️", "Pattern charts", "Candlesticks with each pattern's swing points, trendlines, breakout and textbook target drawn — and its tested record.", "#/stock/RELIANCE"),
+    feature("✨", "AI forecast range", "An open-source model (Chronos) draws the next 10 days' likely range with prediction points, next to its measured accuracy.", "#/stock/TCS"),
+    feature("💬", "Ask AI", "Chat with memory: “Should I buy ITC?”, “Why?”, “Compare it with HUL”. Optionally add your self-learning agent's view.", "#/chat"),
+    feature("📊", "Track record", "How well each method did on data it never saw — including the ones that don't work.", "#/performance")));
+  view.append(h("p", { class: "footer-note" }, "Decision support, not investment advice. Verify figures against NSE/BSE filings before acting."));
+  if (!hasKey) return;
+  let d; try { d = await api("/ui/performance"); } catch (e) { stats.replaceChildren(h("p", { class: "muted", style: "margin-top:14px" }, "Run `stockintel build-performance` once to show the measured track record here.")); return; }
+  const live = d.momentum.live_check, cov5 = d.forecast.coverage.filter((c) => c.horizon === 5);
+  const edge = d.patterns.filter((r) => Math.abs(r.z || 0) >= d.bonferroni_z).length, ch5 = d.open_models && d.open_models.chronos.horizons.find((x) => x.horizon === 5);
+  const tile = (v, k, sub) => h("div", { class: "card kpi" }, h("div", { class: "v num" }, v), h("div", { class: "k" }, k), h("div", { class: "muted", style: "font-size:12px" }, sub));
+  stats.replaceChildren(h("h2", { style: "margin:22px 0 12px" }, "Measured, not promised"), h("div", { class: "grid cols-4" },
+    tile(`${pct(live.bars[0].cagr - live.bars[1].cagr, 1)}/yr`, "Momentum fund vs Nifty 500", `live ETF, ${live.window}`),
+    tile(`${num(cov5.reduce((a, c) => a + c.coverage, 0) / cov5.length * 100, 0)}%`, "Outcomes inside the 80% range", "5-day band, out of sample"),
+    tile(`${edge} of ${d.patterns.length}`, "Patterns with a proven edge", "so patterns are shown, never traded"),
+    ch5 ? tile(`${num(ch5.chronos_direction_acc * 100, 1)}%`, "AI (Chronos) 5-day direction", `vs ${num(ch5.base_rate_acc * 100, 1)}% base rate — within noise`)
+      : tile("—", "AI model record", "run `stockintel evaluate-models`")));
+}
+
+async function pageBuilder(view) {
+  const state = { capital: 100000, strategy: "momentum", risk: "balanced", n: 10, exclude: [], ...JSON.parse(localStorage.getItem("si-builder") || "{}") };
+  let timer, seq = 0;
+  const out = h("div", { class: "grid", style: "margin-top:18px" });
+  const set = (patch) => { Object.assign(state, patch); localStorage.setItem("si-builder", JSON.stringify(state)); clearTimeout(timer); timer = setTimeout(build, 450); };
+  const cap = h("input", { type: "number", min: "1000", step: "1000", value: state.capital, class: "big-input", "aria-label": "Amount to invest" });
+  cap.addEventListener("input", () => set({ capital: +cap.value }));
+  const capChips = h("div", { class: "chips" }, ...[25000, 50000, 100000, 500000].map((v) => h("button", { class: "chip", onclick: () => { cap.value = v; set({ capital: v }); } }, compactInr(v))));
+  const seg = (key, opts) => { const el = h("div", { class: "seg" }, ...opts.map(([v, lab]) => h("button", { class: state[key] === v ? "active" : "",
+    onclick: (e) => { for (const b of el.children) b.classList.remove("active"); e.target.classList.add("active"); set({ [key]: v }); } }, lab))); return el; };
+  const nOut = h("b", { class: "num" }, state.n), nRange = h("input", { type: "range", min: 3, max: 25, value: state.n, "aria-label": "Number of stocks" });
+  nRange.addEventListener("input", () => { nOut.textContent = nRange.value; set({ n: +nRange.value }); });
+  const sectors = h("div", { class: "chips" });
+  api("/ui/sectors").then((list) => sectors.replaceChildren(...list.map((sec) => { const b = h("button", { class: `chip ${state.exclude.includes(sec) ? "off" : ""}` }, sec);
+    b.addEventListener("click", () => { b.classList.toggle("off"); set({ exclude: state.exclude.includes(sec) ? state.exclude.filter((x) => x !== sec) : [...state.exclude, sec] }); }); return b; })))
+    .catch((e) => sectors.replaceChildren(errorBox(e)));
+  view.append(h("div", { class: "card" }, h("h2", {}, "Portfolio builder"), h("p", { class: "muted", style: "margin-top:-6px" }, "Pick an amount and a style; the basket rebuilds as you change anything. Stocks come from the Nifty 200."),
+    h("div", { class: "grid cols-2 builder-controls" },
+      h("div", { class: "grid", style: "align-content:start" }, h("label", { class: "ctl" }, h("span", { class: "k" }, "Amount to invest (₹)"), cap), capChips,
+        h("div", { class: "ctl" }, h("span", { class: "k" }, "Style"), seg("strategy", [["momentum", "Momentum"], ["lowvol", "Low volatility"], ["blend", "Blend"]])),
+        h("div", { class: "ctl" }, h("span", { class: "k" }, "Risk"), seg("risk", [["full", "Always invested"], ["balanced", "Balanced"], ["defensive", "Defensive"]]))),
+      h("div", { class: "grid", style: "align-content:start" }, h("label", { class: "ctl" }, h("span", { class: "k" }, "Number of stocks: ", nOut), nRange),
+        h("div", { class: "ctl" }, h("span", { class: "k" }, "Tap a sector to leave it out"), sectors),
+        h("p", { class: "muted", style: "font-size:12.5px;margin:0" }, "Momentum uses NSE's Nifty200 Momentum 30 method, the one signal here with a measured edge. Balanced halves the position in crash-risk markets; Defensive also holds cash when the market trend is down.")))), out);
+  const build = async () => {
+    if (!(state.capital >= 1000)) { out.replaceChildren(h("div", { class: "card" }, h("p", { class: "muted" }, "Enter at least ₹1,000."))); return; }
+    const my = ++seq;
+    out.replaceChildren(h("div", { class: "card" }, h("p", { class: "muted" }, "Picking stocks and sizing positions… (the first run loads the Nifty 200, about a minute)"), skel(220)));
+    let b; try { b = await api(`/ui/builder?capital=${state.capital}&strategy=${state.strategy}&risk=${state.risk}&n=${state.n}&exclude=${encodeURIComponent(state.exclude.join(","))}`); }
+    catch (e) { if (my === seq) out.replaceChildren(errorBox(e)); return; }
+    if (my === seq) renderBuild(b);
+  };
+  const renderBuild = (b) => {
+    const warn = b.warnings.length ? h("div", { class: "card" }, h("h3", {}, "Heads-up"), h("ul", { class: "checks con" }, ...b.warnings.map((w) => h("li", {}, w)))) : null;
+    if (!b.holdings.length) { out.replaceChildren(h("div", { class: "card empty" }, h("div", { class: "big" }, "🧱"), h("p", {}, "No stock to buy with these settings.")), warn || ""); return; }
+    const r = b.risk, maxW = Math.max(...b.holdings.map((x) => x.weight_pct));
+    const apply = async () => {
+      if (!confirm(`Add ${b.holdings.length} BUY transactions dated today to your portfolio? Do this after you have actually bought them.`)) return;
+      try { await api("/ui/builder/apply", { method: "POST", body: JSON.stringify({ holdings: b.holdings.map((x) => ({ symbol: x.symbol, shares: x.shares, price: x.price })) }) });
+        toast("Added to your portfolio"); location.hash = "#/portfolio"; } catch (e) { toast(e.message); } };
+    const kpi = (k, v, sub, c = "") => h("div", { class: "stat kpi" }, h("div", { class: "k" }, k), h("div", { class: `v num ${c}` }, v), h("div", { class: "muted", style: "font-size:12px" }, sub));
+    const kpis = h("div", { class: "card" }, h("div", { class: "grid cols-4" }, kpi("Invested", inr(b.capital - b.cash_left, 0), `${b.holdings.length} stocks`), kpi("Cash left", inr(b.cash_left, 0), `plan invests ${Math.round(b.invest_fraction * 100)}% now`),
+      kpi("Volatility", `${num(r.portfolio_vol_pct, 1)}%`, `a year · beta ${num(r.beta)}`), kpi("Worst fall, past year", `${num(r.max_drawdown_pct, 1)}%`, `bad day (95%): ${num(r.var_95_1d_pct, 1)}%`, "down")),
+      h("p", { class: "muted", style: "font-size:12.5px;margin:12px 0 0" }, `Next review: ${b.next_rebalance}. Market trend ${b.market.trend}.`));
+    const table = h("div", { class: "card" }, h("div", { class: "spread" }, h("h3", { style: "margin:0" }, "Your basket"), h("button", { class: "btn primary", onclick: apply }, "Add all to my portfolio")),
+      h("div", { class: "table-wrap" }, h("table", { class: "basket" }, h("tr", {}, h("th", {}, "Stock"), h("th", { class: "r" }, "Shares"), h("th", { class: "r" }, "Price"), h("th", { class: "r" }, "Amount"), h("th", {}, "Weight"), h("th", { class: "r" }, "Stop-loss")),
+        ...b.holdings.map((x) => h("tr", { class: "link", title: x.why, onclick: () => location.hash = `#/stock/${encodeURIComponent(x.symbol)}` },
+          h("td", {}, h("div", { class: "stack" }, h("div", { class: "avatar" }, initials(x.symbol)), h("div", {}, h("div", { class: "t" }, x.name), h("div", { class: "s" }, `#${x.rank} · ${x.sector}`)))),
+          h("td", { class: "r num" }, x.shares), h("td", { class: "r num" }, inr(x.price)), h("td", { class: "r num" }, inr(x.value, 0)),
+          h("td", {}, h("div", { class: "wbar" }, h("span", { style: `width:${(x.weight_pct / maxW) * 100}%` }), h("em", { class: "num" }, `${num(x.weight_pct, 1)}%`))),
+          h("td", { class: "r num" }, x.stop ? inr(x.stop, 0) : "—"))))));
+    const donutHost = h("div"), curveHost = h("div", { class: "chart" });
+    out.replaceChildren(kpis, table, h("div", { class: "grid cols-2" },
+      h("div", { class: "card" }, h("h3", {}, "Sector split"), h("p", { class: "sub" }, "Share of the amount, cash included"), donutHost),
+      h("div", { class: "card" }, h("h3", {}, "This basket over the past year"), h("p", { class: "sub" }, b.note), legend([["This basket", css("--series-1")], ["Nifty 50", css("--series-4"), true]]), curveHost)), warn || "");
+    requestAnimationFrame(() => { donut(donutHost, Object.entries(r.sector_exposure_pct).sort((a, c) => c[1] - a[1]).map(([k, v]) => ({ label: k, value: v })));
+      lineChart(curveHost, b.backcast.dates, [{ name: "This basket", short: "Basket", values: b.backcast.basket, color: css("--series-1") }, { name: "Nifty 50", short: "Nifty", values: b.backcast.nifty, color: css("--series-4"), dashed: true }], { fmt: (v) => compactInr(v), height: 240 }); });
+  };
+  build();
+}
+
 // ---------- router ----------
 async function route() {
-  const hash = location.hash || "#/explore";
+  const hash = location.hash || "#/home";
   const [path, query] = hash.slice(2).split("?"); const parts = path.split("/"); const params = new URLSearchParams(query || "");
   for (const a of document.querySelectorAll("#nav a, #bnav a")) a.classList.toggle("active", a.dataset.r === parts[0] || (parts[0] === "report" && a.dataset.r === "reports"));
   const view = $("#view"); view.replaceChildren(); window.scrollTo(0, 0);
-  const pages = { explore: () => pageExplore(view), stock: () => pageStock(view, decodeURIComponent(parts[1] || "").toUpperCase()), portfolio: () => pagePortfolio(view),
+  const pages = { home: () => pageHome(view), builder: () => pageBuilder(view), explore: () => pageExplore(view), stock: () => pageStock(view, decodeURIComponent(parts[1] || "").toUpperCase()), portfolio: () => pagePortfolio(view),
     signals: () => pageSignals(view), chat: () => pageChat(view, params), performance: () => pagePerformance(view), learn: () => pageLearn(view), reports: () => pageReports(view), report: () => pageReport(view, parts[1]) };
-  try { await (pages[parts[0]] || pages.explore)(); } catch (e) { view.replaceChildren(errorBox(e)); }
+  try { await (pages[parts[0]] || pages.home)(); } catch (e) { view.replaceChildren(errorBox(e)); }
 }
 window.addEventListener("hashchange", route);
-if (!localStorage.getItem("si-key")) askKey(); else route();
+route();

@@ -410,6 +410,99 @@ class Hub:
                 "value": [round(float(v), 2) for v in value.iloc[::step]],
                 "invested": [round(float(v), 2) for v in invested.iloc[::step]]}
 
+    # --- open-source models --------------------------------------------------------------
+    def ml_enabled(self) -> bool:
+        import importlib.util
+        import os
+        return os.environ.get("STOCKINTEL_ML", "1") != "0" and importlib.util.find_spec("torch") is not None
+
+    def ai_forecast(self, symbol: str, model: str = "chronos") -> Dict[str, Any]:
+        """Chronos quantile fan or Kronos projected candles, cached for the day, with the
+        model's measured out-of-sample record attached."""
+        from .performance import MODELS_PATH
+        if model not in ("chronos", "kronos"):
+            raise ValueError("model must be chronos or kronos")
+        if not self.ml_enabled():
+            raise DataUnavailable("open-source models are disabled on this server (STOCKINTEL_ML=0 or torch missing)")
+        df = self.orch.service().history(symbol)
+        key = (symbol.upper(), model, str(df.index[-1].date()))
+        cache = self.__dict__.setdefault("_ai_cache", {})
+        if key not in cache:
+            with self._lock:
+                if model == "chronos":
+                    from .analysis import tsfm
+                    horizon = 10
+                    q = tsfm.fan(df["close"], horizon)
+                    dates = [str(d.date()) for d in pd.bdate_range(df.index[-1], periods=horizon + 1)[1:]]
+                    cache[key] = {"dates": dates, **q}
+                else:
+                    from .analysis import kronos_model
+                    cache[key] = kronos_model.next_candles(df, pred_len=5, samples=8)
+        record = {}
+        if MODELS_PATH.exists():
+            import json as _json
+            ev = _json.loads(MODELS_PATH.read_text()).get(model, {})
+            record = ev
+        if model == "chronos":
+            h5 = next((h for h in record.get("horizons", []) if h["horizon"] == 5), None)
+            note = ("Chronos-Bolt (open-source AI model) forecast range. "
+                    + (f"Tested on {h5['n']} past 5-day forecasts: direction right {h5['chronos_direction_acc']:.0%} vs {h5['base_rate_acc']:.0%} for the base rate, "
+                       f"80% band held {h5['chronos_cover80']:.0%} of outcomes — as good as plain volatility, not better."
+                       if h5 else "evaluation not run yet (`stockintel evaluate-models`)."))
+        else:
+            note = ("Kronos (open-source candlestick AI) projected candles — EXPERIMENTAL. Tested on "
+                    + (f"{record['n']} past forecasts: direction right {record['direction_acc']:.0%} vs {record['base_rate_acc']:.0%} base rate, "
+                       f"and its 5-day price error was {record['mae_pct']:.1f}% vs {record['no_change_mae_pct']:.1f}% for assuming no change. "
+                       "Treat these candles as a picture of what the model imagines, not a forecast."
+                       if record else "evaluation not run yet."))
+        return {"symbol": symbol.upper(), "model": model, "as_of": key[2], **cache[key], "record": record, "note": note}
+
+    # --- portfolio builder ---------------------------------------------------------------
+    def build_portfolio(self, capital: float, strategy: str = "momentum", risk_mode: str = "balanced",
+                        n: int = 10, exclude_sectors: Optional[List[str]] = None) -> Dict[str, Any]:
+        """A fresh portfolio for `capital`: the plan's buys, plus what that basket's risk
+        and last year would have looked like (a backcast, not a forecast)."""
+        from .portfolio import Position, analyze as analyze_portfolio
+        from .signals.advisor import plan
+        if not 3 <= n <= 25:
+            raise ValueError("number of stocks must be between 3 and 25")
+        names = self.names()
+        excl = {x.lower() for x in exclude_sectors or []}
+        uni = [r.symbol for r in names.itertuples() if r.nifty200 and r.sector.lower() not in excl]
+        p = plan(self.panel(), self.bench(), capital, [], strategy=strategy, risk_mode=risk_mode, n=n, universe=uni)
+        buys = [a for a in p.actions if a.action == "BUY"]
+        sector = dict(zip(names["symbol"], names["sector"]))
+        name_of = dict(zip(names["symbol"], names["name"]))
+        close = self.panel().close
+        positions = {a.symbol: Position(a.symbol, a.shares, a.value, 0.0, sector.get(a.symbol)) for a in buys}
+        spent = sum(a.value for a in buys)
+        risk, curve = {}, {"dates": [], "basket": [], "nifty": []}
+        if positions:
+            prices = {s: close[s].dropna() for s in positions}
+            rep = analyze_portfolio(positions, capital - spent, prices, "moderate", bench=self.bench())
+            risk = {k: rep.risk.get(k) for k in ("portfolio_vol_pct", "max_drawdown_pct", "var_95_1d_pct", "beta",
+                                                  "diversification_ratio")}
+            risk["sector_exposure_pct"] = rep.sector_exposure_pct
+            risk["effective_holdings"] = rep.concentration["effective_holdings"]
+            w = pd.Series({a.symbol: a.value for a in buys}) / spent
+            px = close[list(w.index)].iloc[-253:].ffill()
+            basket = (px / px.iloc[0] * w).sum(axis=1)
+            b = self.bench().reindex(px.index).ffill()
+            step = 3
+            curve = {"dates": [str(d.date()) for d in px.index[::step]],
+                     "basket": [round(float(v) * capital, 0) for v in basket.iloc[::step]],
+                     "nifty": [round(float(v) * capital, 0) for v in (b / b.iloc[0]).iloc[::step]]}
+        return {"capital": capital, "strategy": strategy, "risk_mode": risk_mode, "n": n,
+                "invest_fraction": p.invest_fraction, "market": p.market,
+                "holdings": [{"symbol": a.symbol, "name": name_of.get(a.symbol, a.symbol),
+                              "sector": sector.get(a.symbol, "Unknown"), "shares": a.shares, "price": a.price,
+                              "value": a.value, "weight_pct": round(a.value / capital * 100, 2), "rank": a.rank,
+                              "stop": a.stop_level, "why": a.reasons[0] if a.reasons else ""} for a in buys],
+                "cash_left": round(capital - spent, 2), "risk": risk, "backcast": curve,
+                "warnings": p.warnings, "next_rebalance": p.next_rebalance,
+                "note": ("The backcast shows how this exact basket moved over the past year — the stocks were picked "
+                         "because they rose, so it will look good by construction. It is not a forecast.")}
+
     # --- explore ----------------------------------------------------------------------------
     def indices(self) -> List[Dict[str, Any]]:
         out = []

@@ -86,6 +86,16 @@ class CashIn(BaseModel):
     horizon: Literal["short", "medium", "long"] = "medium"
 
 
+class BuilderHolding(BaseModel):
+    symbol: str = Field(pattern=r"^[A-Za-z0-9&\-\.]{1,20}$")
+    shares: int = Field(gt=0)
+    price: float = Field(gt=0)
+
+
+class BuilderApplyIn(BaseModel):
+    holdings: List[BuilderHolding] = Field(min_length=1, max_length=30)
+
+
 class WhatIfIn(BaseModel):
     amount: float = Field(gt=0, lt=1e10)
     symbols: List[str] = Field(min_length=1, max_length=6)
@@ -136,6 +146,8 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
         return {"status": "ok"}
 
     from .hub import Hub
+    from .selfagent_client import SelfAgentClient
+    agent_client = SelfAgentClient()
     hub = Hub(orch, preload=preload)
     app.state.hub = orch._hub = hub      # one hub (and one cached panel) for the API and chat
     app.mount("/static", StaticFiles(directory=WEB_DIR / "app"), name="static")
@@ -191,6 +203,59 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     @app.get("/ui/stock/{t}/indicators", dependencies=[Depends(auth)])
     def ui_indicators(t: str, bars: int = Query(default=126, ge=30, le=1000)):
         return ok(hub.indicators(ticker(t), bars))
+
+    @app.get("/ui/stock/{t}/ai", dependencies=[Depends(auth)])
+    def ui_ai(t: str, model: Literal["chronos", "kronos"] = "chronos"):
+        return ok(hub.ai_forecast(ticker(t), model))
+
+    @app.get("/ui/sectors", dependencies=[Depends(auth)])
+    def ui_sectors():
+        n = hub.names()
+        return sorted(n.loc[n["nifty200"], "sector"].unique().tolist())
+
+    @app.get("/ui/features", dependencies=[Depends(auth)])
+    def ui_features():
+        return {"ml": hub.ml_enabled(), "kronos": hub.ml_enabled() and __import__("stockintel.analysis.kronos_model",
+                                                                                 fromlist=["available"]).available()}
+
+    @app.get("/manifest.webmanifest")
+    def manifest():
+        return JSONResponse({"name": "StockIntel", "short_name": "StockIntel", "start_url": "/#/home", "display": "standalone",
+                             "background_color": "#ffffff", "theme_color": "#00b386",
+                             "icons": [{"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]},
+                            media_type="application/manifest+json")
+
+    @app.get("/sw.js")
+    def service_worker():
+        return FileResponse(WEB_DIR / "app" / "sw.js", media_type="application/javascript")
+
+    @app.get("/ui/builder", dependencies=[Depends(auth)])
+    def ui_builder(capital: float = Query(gt=999, lt=1e9), strategy: Literal["momentum", "lowvol", "blend"] = "momentum",
+                   risk: Literal["full", "balanced", "defensive"] = "balanced", n: int = Query(default=10, ge=3, le=25),
+                   exclude: str = ""):
+        return ok(hub.build_portfolio(capital, strategy, risk, n, [x for x in exclude.split(",") if x]))
+
+    @app.post("/ui/builder/apply", dependencies=[Depends(auth)])
+    def ui_builder_apply(body: BuilderApplyIn):
+        p = orch.store.portfolio(orch.portfolio_name) or {"cash": 0.0, "risk_profile": "moderate",
+                                                         "horizon": "medium", "transactions": []}
+        today = date.today().isoformat()
+        txs = p["transactions"] + [{"symbol": h.symbol, "side": "BUY", "quantity": h.shares, "price": h.price,
+                                    "trade_date": today} for h in body.holdings]
+        n = orch.save_portfolio(p["cash"], p["risk_profile"], p["horizon"], txs)
+        return {"status": "saved", "transactions": n}
+
+    @app.get("/ui/agent/status", dependencies=[Depends(auth)])
+    def ui_agent_status():
+        return agent_client.status()
+
+    @app.post("/ui/agent/ask", dependencies=[Depends(auth)])
+    def ui_agent_ask(body: ChatIn):
+        from .selfagent_client import AgentUnavailable
+        try:
+            return ok(agent_client.ask(body.message, ""))
+        except AgentUnavailable as exc:
+            raise HTTPException(503, str(exc)) from None
 
     @app.get("/ui/stock/{t}/insider", dependencies=[Depends(auth)])
     def ui_insider(t: str):

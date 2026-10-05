@@ -17,10 +17,14 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "pydantic>=2.6",
     "anthropic>=1.0",
+    "httpx>=0.27",
+    "websockets>=13",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "httpx>=0.27"]
+dev = ["pytest>=8"]
+# open-source forecast models (Chronos, Kronos); ~1 GB of downloads, so the server image leaves them out
+ml = ["torch>=2.2", "chronos-forecasting>=2.0", "einops>=0.7"]
 
 [project.scripts]
 stockintel = "stockintel.cli:main"

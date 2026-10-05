@@ -447,14 +447,31 @@ def cmd_app(args) -> int:
     import webbrowser
     import uvicorn
     from .api import create_app
-    key = os.environ.get("STOCKINTEL_API_KEY") or secrets.token_hex(24)
+    # the key is kept between runs so a phone that logged in once stays logged in
+    key_file = Path.home() / ".stockintel" / "app_key"
+    key = os.environ.get("STOCKINTEL_API_KEY") or (key_file.read_text().strip() if key_file.exists() else "")
+    if not key:
+        key = secrets.token_hex(24)
+        key_file.parent.mkdir(parents=True, exist_ok=True)
+        key_file.write_text(key)
+        key_file.chmod(0o600)
     app = create_app(_orchestrator(args, args.llm), api_key=key, preload=True)
     url = f"http://{args.host}:{args.port}/#key={key}"
     print(f"StockIntel is running at {url}\n(the key in the link logs you in; keep it private)")
+    if args.lan:
+        print(f"On your phone (same Wi-Fi): http://{_lan_ip()}:{args.port}/#key={key}\n"
+              "Use this on your home network only: the traffic is not encrypted.")
     if not args.no_browser:
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    uvicorn.run(app, host="0.0.0.0" if args.lan else args.host, port=args.port, log_level="warning")
     return 0
+
+
+def _lan_ip() -> str:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect(("10.255.255.255", 1))        # UDP connect sends nothing; it only picks the Wi-Fi interface
+        return s.getsockname()[0]
 
 
 def cmd_build_performance(args) -> int:
@@ -464,6 +481,13 @@ def cmd_build_performance(args) -> int:
     print(f"Saved {performance.PATH}: {len(out['patterns'])} patterns, "
           f"{len(out['forecast']['horizons'])} forecast horizons, {len(out['momentum']['curves'])} equity curves, "
           f"{len(out['insider'])} insider tests.")
+    return 0
+
+
+def cmd_evaluate_models(args) -> int:
+    from . import performance
+    out = performance.evaluate_models(_orchestrator(args).service())
+    print(json.dumps(out, indent=2))
     return 0
 
 
@@ -578,10 +602,14 @@ def build_parser() -> argparse.ArgumentParser:
     bp = sub.add_parser("build-performance", help="compute the app's Performance page (a few minutes)")
     bp.set_defaults(fn=cmd_build_performance)
 
+    em = sub.add_parser("evaluate-models", help="walk-forward test of Chronos and Kronos (needs torch; minutes)")
+    em.set_defaults(fn=cmd_evaluate_models)
+
     ap = sub.add_parser("app", help="open the web app (creates a login key automatically)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8931)
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--lan", action="store_true", help="also listen on your Wi-Fi so your phone can open it")
     ap.add_argument("--llm", **llm)
     ap.set_defaults(fn=cmd_app)
 

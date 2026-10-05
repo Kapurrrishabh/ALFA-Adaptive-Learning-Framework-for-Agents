@@ -302,3 +302,58 @@ def test_performance_endpoint_reports_missing_build_cleanly(app_client, monkeypa
     monkeypatch.setattr(perf, "PATH", tmp_path / "none.json")
     r = app_client.get("/ui/performance", headers={"X-API-Key": KEY})
     assert r.status_code == 404 and "build-performance" in r.json()["detail"]
+
+
+def test_builder_spends_within_capital_and_apply_records_the_buys(app_client, orch):
+    from datetime import date as _date
+    h = {"X-API-Key": KEY}
+    b = app_client.get("/ui/builder?capital=100000&n=3&risk=full", headers=h).json()
+    assert b["holdings"] and b["cash_left"] >= 0
+    assert sum(x["value"] for x in b["holdings"]) + b["cash_left"] == pytest.approx(100000, abs=0.01)
+    assert len(b["backcast"]["dates"]) == len(b["backcast"]["basket"]) == len(b["backcast"]["nifty"])
+    body = {"holdings": [{"symbol": x["symbol"], "shares": x["shares"], "price": x["price"]} for x in b["holdings"]]}
+    assert app_client.post("/ui/builder/apply", json=body, headers=h).status_code == 200
+    txs = orch.store.portfolio("default")["transactions"]
+    assert [t["symbol"] for t in txs] == [x["symbol"] for x in b["holdings"]]
+    assert all(t["side"] == "BUY" and t["trade_date"] == _date.today().isoformat() for t in txs)
+
+
+def test_builder_leaves_out_excluded_sectors_and_rejects_bad_input(app_client):
+    h = {"X-API-Key": KEY}
+    b = app_client.get("/ui/builder?capital=100000&n=3&risk=full&exclude=Energy", headers=h).json()
+    assert "PEER" not in [x["symbol"] for x in b["holdings"]]
+    assert app_client.get("/ui/builder?capital=500", headers=h).status_code == 422
+    assert app_client.get("/ui/builder?capital=100000&n=2", headers=h).status_code == 422
+
+
+def test_ai_forecast_says_why_when_models_are_switched_off(app_client, monkeypatch):
+    monkeypatch.setenv("STOCKINTEL_ML", "0")
+    h = {"X-API-Key": KEY}
+    assert app_client.get("/ui/features", headers=h).json() == {"ml": False, "kronos": False}
+    r = app_client.get("/ui/stock/TEST/ai?model=chronos", headers=h)
+    assert r.status_code == 404 and "STOCKINTEL_ML" in r.json()["detail"]
+
+
+def _closed_port() -> int:
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_agent_ask_is_503_not_500_when_the_agent_is_down(orch, monkeypatch, tmp_path):
+    import stockintel.selfagent_client as sc
+    monkeypatch.setattr(sc, "CREDENTIALS", tmp_path / "agent.json")
+    monkeypatch.setenv("SELFAGENT_URL", f"http://127.0.0.1:{_closed_port()}")
+    client = TestClient(create_app(orch, api_key=KEY))
+    h = {"X-API-Key": KEY}
+    assert client.get("/ui/agent/status", headers=h).json()["available"] is False
+    r = client.post("/ui/agent/ask", json={"message": "Should I buy ITC?"}, headers=h)
+    assert r.status_code == 503 and "not reachable" in r.json()["detail"]
+
+
+def test_phone_install_manifest_and_service_worker_are_served(app_client):
+    m = app_client.get("/manifest.webmanifest").json()
+    assert m["start_url"] == "/#/home" and m["display"] == "standalone"
+    sw = app_client.get("/sw.js")
+    assert sw.status_code == 200 and "javascript" in sw.headers["content-type"]

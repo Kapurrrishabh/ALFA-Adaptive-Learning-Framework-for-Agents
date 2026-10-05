@@ -168,7 +168,25 @@ def build(orch) -> Dict[str, Any]:
     return out
 
 
+MODELS_PATH = CACHE_DIR / "model_evals.json"
+
+
+def evaluate_models(service) -> Dict[str, Any]:
+    """Open-source forecasting models, walk-forward on the forecast stocks. Slow (minutes, torch)."""
+    from .analysis import kronos_model, tsfm
+    out: Dict[str, Any] = {"built_at": utcnow_iso()}
+    closes = {s: service.history(s)["close"] for s in FORECAST_STOCKS}
+    out["chronos"] = tsfm.evaluate(closes)
+    if kronos_model.available():
+        out["kronos"] = kronos_model.evaluate({s: service.history(s) for s in FORECAST_STOCKS})
+    MODELS_PATH.write_text(json.dumps(out))
+    return out
+
+
 def load() -> Dict[str, Any]:
     if not PATH.exists():
         raise FileNotFoundError("performance results not built yet; run `stockintel build-performance`")
-    return json.loads(PATH.read_text())
+    out = json.loads(PATH.read_text())
+    if MODELS_PATH.exists():
+        out["open_models"] = json.loads(MODELS_PATH.read_text())
+    return out

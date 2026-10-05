@@ -25,6 +25,10 @@ each time it runs. This is decision support, not a guarantee.
 
 A Groww-style web app for personal use:
 
+- **Home:** what the app does, the measured track record at a glance, and a login box.
+- **Portfolio builder:** enter an amount, pick a style (momentum, low volatility, blend), a risk level
+  and how many stocks; get share counts, stops, risk, a sector split and last year's backcast, then
+  add the whole basket to your portfolio in one tap.
 - **Explore:** Nifty/Sensex/Bank Nifty cards, market-trend banner, top momentum picks,
   top movers, and promoters buying this month.
 - **Search:** type a company or symbol (all Nifty 500 names).
@@ -37,7 +41,8 @@ A Groww-style web app for personal use:
 - **Technical chart** (stock page → "Technical"): candlesticks with the detected pattern drawn on
   them (labelled swing points such as Top 1 / Neckline / Top 2, trendlines, breakout and textbook
   target), ▲/▼ candle-signal markers, 50/200-day averages, support/resistance, and the next-20-day
-  price range. Every drawing carries its tested record ("tested 73 times across 32 stocks — no
+  price range, plus an optional **AI forecast range** from the open-source Chronos model (median
+  points and 50%/80% bands for the next 10 days). Every drawing carries its tested record ("tested 73 times across 32 stocks — no
   edge"), so a clean-looking shape is never presented as a proven signal.
 - **Performance:** charts of how well each part works out of sample: momentum vs the market and
   the live ETF year by year, forecast accuracy and calibration, price-range coverage, promoter
@@ -46,12 +51,15 @@ A Groww-style web app for personal use:
 - **Portfolio:** add or delete transactions; see value over time vs money invested, P&L,
   holdings, a sector donut, risk and flags.
 - **Signals:** a full buy/sell/trim plan for your money and holdings.
-- **Ask AI:** chat with memory ("Should I buy TCS?", "Why?", "Compare it with INFY").
+- **Ask AI:** chat with memory ("Should I buy TCS?", "Why?", "Compare it with INFY"). If the
+  self-learning agent from the sibling project is running, tick "Also ask my self-learning agent"
+  for its answer as a second bubble (it stays quiet when it isn't sure).
 - **Learn:** plain-English lessons with search.
 - **Reports:** 18-section research reports you can print to PDF.
 
-Light and dark themes; works on phones (bottom tab bar). The login key is created and passed
-in the link automatically; the server listens only on your machine.
+Light and dark themes; works on phones (bottom tab bar) and can be added to the home screen. The
+login key is created once, saved in `~/.stockintel/app_key` and passed in the link; the server
+listens only on your machine unless you add `--lan`.
 
 ## Quick start
 
@@ -64,7 +72,7 @@ python3 -m venv .venv                               # Python 3.11 or newer
 .venv/bin/stockintel --demo analyze RELIANCE         # offline, SYNTHETIC data, no network
 .venv/bin/stockintel analyze RELIANCE                # live NSE data (Yahoo Finance + Google News)
 .venv/bin/stockintel chat                            # multi-turn research conversation
-.venv/bin/pytest                                     # 212 tests, ~5 s, fully offline
+.venv/bin/pytest                                     # 217 tests, ~5 s, fully offline
 ```
 
 Dashboard and REST API:
@@ -145,6 +153,10 @@ All on real NSE data, reproducible with the commands shown. Details in
   refuses to promote such a model.
 - **Ranges**: the EWMA 80% range covered a median 79.4% (5-day) and 77.2% (20-day) of realized
   outcomes out of sample.
+- **Open-source models** (`evaluate-models`, 12 large caps, walk-forward): Chronos-Bolt-small got
+  5-day direction right 57.4% vs 56.5% for the base rate, and its 80% band held 79.9% vs 79.2% for
+  the EWMA band, a tie. Kronos-small got 5-day direction right 49.2% vs 53.6%, with a 5.2% price
+  error vs 2.2% for "no change". So Chronos is shown with that record, and Kronos is off by default.
 
 ## Layout
 
@@ -160,7 +172,7 @@ stockintel/
   portfolio.py   screener.py  alerts.py  report.py  knowledge.py (+ knowledge_base/)
   backtest/      engine (next-open fills, costs, stops), strategies, comparison
   storage.py     SQLite  registry.py  monitoring.py  api.py  web/index.html  cli.py
-tests/           212 offline tests
+tests/           217 offline tests
 docs/DESIGN.md   design specification, decisions, research answers, measured results
 ```
 
@@ -180,6 +192,34 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 
 Windows: use `.venv\Scripts\pip` and `.venv\Scripts\stockintel`. Your data (portfolio, reports,
 cache) stays in `~/.stockintel/` on your machine.
+
+## Use it on your phone
+
+**Same Wi-Fi as your computer (simplest):**
+```bash
+.venv/bin/stockintel app --lan
+```
+It prints a second link, `http://<your-computer's-IP>:8931/#key=…`. Open it on the phone, then
+use *Share → Add to Home Screen* (iPhone) or *⋮ → Install app* (Android). Use this on your home
+network only: the traffic is not encrypted, and anyone on the network who sees the key can log in.
+
+**Anywhere:** deploy it (next section) and open the `https://…onrender.com/#key=…` link on the phone.
+
+## Optional: open-source AI models and the self-learning agent
+
+```bash
+.venv/bin/pip install -e ".[ml]"                                    # torch + Chronos (~1 GB)
+git clone https://github.com/shiyu-coder/Kronos ~/.stockintel/vendor/kronos   # Kronos code (optional)
+.venv/bin/stockintel evaluate-models                                # measure both (~10 min, CPU)
+```
+With these installed, the chart shows the Chronos layer, and the Kronos toggle appears if the clone exists.
+`STOCKINTEL_ML=0` turns both off. The server image leaves them out to stay small.
+
+The self-learning agent (the sibling project) runs as its own process and needs about 5 GB of RAM:
+```bash
+cd "<sibling project folder>" && <python> scripts/serve.py --port 8010
+```
+StockIntel finds it at `http://127.0.0.1:8010`; set `SELFAGENT_URL` if it runs elsewhere.
 
 ## Put it on the web (a link others can open)
 
@@ -212,4 +252,4 @@ Things to know before going public:
 
 ## Tests
 
-`pytest -q` runs 212 offline tests (no network). GitHub Actions runs them on every push.
+`pytest -q` runs 217 offline tests (no network). GitHub Actions runs them on every push.
