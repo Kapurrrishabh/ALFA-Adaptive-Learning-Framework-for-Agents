@@ -420,46 +420,65 @@ class Hub:
             bool(remote_models.space()) or importlib.util.find_spec("torch") is not None)
 
     def ai_forecast(self, symbol: str, model: str = "chronos") -> Dict[str, Any]:
-        """Chronos quantile fan or Kronos projected candles, cached for the day, with the
-        model's measured out-of-sample record attached."""
-        if model not in ("chronos", "kronos"):
-            raise ValueError("model must be chronos or kronos")
-        if not self.ml_enabled():
+        """Chronos quantile fan, Kronos projected candles or ALFA's sampled-path fan, cached for
+        the day, with the model's measured out-of-sample record attached."""
+        from .analysis import alfa_model, kronos_model, remote_models, tsfm
+        if model not in ("chronos", "kronos", "alfa"):
+            raise ValueError("model must be chronos, kronos or alfa")
+        if model == "alfa" and not (alfa_model.available() or remote_models.space()):
+            raise DataUnavailable("our return model is not reachable: set STOCKINTEL_ALFA_PATH or STOCKINTEL_MODEL_SPACE")
+        if model != "alfa" and not self.ml_enabled():
             raise DataUnavailable("open-source models are disabled on this server "
                                   "(STOCKINTEL_ML=0, or neither torch nor STOCKINTEL_MODEL_SPACE)")
         df = self.orch.service().history(symbol)
         key = (symbol.upper(), model, str(df.index[-1].date()))
         cache = self.__dict__.setdefault("_ai_cache", {})
         if key not in cache:
-            from .analysis import kronos_model, remote_models, tsfm
             local = not remote_models.space()
+            future = lambda n: [str(d.date()) for d in pd.bdate_range(df.index[-1], periods=n + 1)[1:]]
             # its own lock: a model call (or a queued Space) must not block the panel
             with self.__dict__.setdefault("_ai_lock", threading.Lock()):
                 if model == "chronos":
                     horizon = 10
-                    q = (tsfm.fan if local else remote_models.fan)(df["close"], horizon)
-                    dates = [str(d.date()) for d in pd.bdate_range(df.index[-1], periods=horizon + 1)[1:]]
-                    cache[key] = {"dates": dates, **q}
+                    cache[key] = {"dates": future(horizon), **(tsfm.fan if local else remote_models.fan)(df["close"], horizon)}
+                elif model == "alfa":
+                    q = (alfa_model.fan(df["close"]) if alfa_model.available()
+                         else remote_models.alfa_fan(df["close"], alfa_model.STEPS, alfa_model.PATHS))
+                    cache[key] = {"dates": future(alfa_model.STEPS), **q}
                 else:
                     cache[key] = (kronos_model.next_candles if local else remote_models.next_candles)(df, pred_len=5, samples=8)
-        record = {}
-        if performance.MODELS_PATH.exists():
+        if model == "alfa":
+            d = cache[key]["drawer"]
+            m = d["measured"]
+            note = ((f"Our return model (ALFA project, {d['name']}): on next-day returns from {d['test_from']} it beat "
+                     f"GARCH(1,1)-t by {-m['vs_garch']:.3f} ± {m['vs_garch_error']:.3f} nats per return over {m['scored']:,} returns. ")
+                    if d["name"] == "generative" else "GARCH(1,1)-t draws these paths: ALFA's return model has not beaten it on its own record. ")
+            return {"symbol": symbol.upper(), "model": model, "as_of": key[2], **cache[key], "record": m,
+                    "note": note + cache[key]["direction_note"]}
+        served = cache[key].get("served_record")          # fine-tuned weights carry their own test record
+        record = served["test"] if served else {}
+        if not served and performance.MODELS_PATH.exists():
             import json as _json
             record = _json.loads(performance.MODELS_PATH.read_text()).get(model, {})
         verdicts = performance.model_verdicts({model: record})
+        calls = next((c for c in (served or {}).get("precision_calls", []) if c["horizon"] == 5), None)
+        call_note = (f" Its most confident {c['call_rate']:.0%} of 'up' calls were right {c['precision']:.0%} "
+                     f"(95% range {c['precision_lo']:.0%}–{c['precision_hi']:.0%}) vs {c['base_rate']:.0%} for always 'up'."
+                     if (c := calls) and c["precision"] is not None else "")
         if model == "chronos":
             h5 = next((h for h in record.get("horizons", []) if h["horizon"] == 5), None)
-            note = ("Chronos-Bolt (open-source AI model) forecast range. "
+            note = (("Chronos-2 fine-tuned on NSE prices by us. " if served else "Chronos-Bolt (open-source AI model) forecast range. ")
                     + (f"Tested on {h5['n']} past {h5['horizon']}-day forecasts: direction right {h5['chronos_direction_acc']:.0%} vs "
                        f"{h5['base_rate_acc']:.0%} for the base rate, 80% band held {h5['chronos_cover80']:.0%} of outcomes "
                        f"(plain volatility {h5['ewma_cover80']:.0%}) — {verdicts['chronos']}."
-                       if h5 else "evaluation not run yet (`stockintel evaluate-models`)."))
+                       if h5 else "evaluation not run yet (`stockintel evaluate-models`).")) + call_note
         else:
-            note = ("Kronos (open-source candlestick AI) projected candles — EXPERIMENTAL. Tested on "
+            note = (("Kronos fine-tuned on NSE candles by us" if served else "Kronos (open-source candlestick AI)")
+                    + " projected candles — EXPERIMENTAL. Tested on "
                     + (f"{record['n']} past forecasts: direction right {record['direction_acc']:.0%} vs {record['base_rate_acc']:.0%} base rate, "
                        f"and its {record['horizon']}-day price error was {record['mae_pct']:.1f}% vs {record['no_change_mae_pct']:.1f}% for assuming no change — "
                        f"{verdicts['kronos']}."
-                       if record else "evaluation not run yet."))
+                       if record else "evaluation not run yet.")) + call_note
         return {"symbol": symbol.upper(), "model": model, "as_of": key[2], **cache[key], "record": record, "note": note}
 
     # --- portfolio builder ---------------------------------------------------------------

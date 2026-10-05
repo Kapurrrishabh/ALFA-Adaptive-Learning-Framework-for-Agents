@@ -329,7 +329,7 @@ def test_builder_leaves_out_excluded_sectors_and_rejects_bad_input(app_client):
 def test_ai_forecast_says_why_when_models_are_switched_off(app_client, monkeypatch):
     monkeypatch.setenv("STOCKINTEL_ML", "0")
     h = {"X-API-Key": KEY}
-    assert app_client.get("/ui/features", headers=h).json() == {"ml": False, "kronos": False}
+    assert app_client.get("/ui/features", headers=h).json() == {"ml": False, "kronos": False, "alfa": False}
     r = app_client.get("/ui/stock/TEST/ai?model=chronos", headers=h)
     assert r.status_code == 404 and "STOCKINTEL_ML" in r.json()["detail"]
 
@@ -503,3 +503,37 @@ def test_state_needs_a_token_and_says_where_to_get_one(monkeypatch):
     monkeypatch.delenv("HF_TOKEN", raising=False)
     with pytest.raises(RuntimeError, match="huggingface.co/settings/tokens"):
         hfstate._token()
+
+
+def test_alfa_forecast_quotes_its_own_saved_record(app_client, monkeypatch):
+    import stockintel.analysis.alfa_model as am
+    drawer = {"name": "generative", "test_from": "2023-01-02",
+              "measured": {"vs_garch": -0.0323, "vs_garch_error": 0.0032, "scored": 80576}}
+    monkeypatch.setattr(am, "available", lambda: True)
+    monkeypatch.setattr(am, "fan", lambda close: {**{f"q{q}": [100.0] * am.STEPS for q in (10, 25, 50, 75, 90)},
+                                                   "drawer": drawer, "direction_note": "No direction."})
+    r = app_client.get("/ui/stock/TEST/ai?model=alfa", headers={"X-API-Key": KEY}).json()
+    assert len(r["dates"]) == am.STEPS and r["q50"] == [100.0] * am.STEPS
+    assert "beat GARCH(1,1)-t by 0.032 ± 0.003 nats per return over 80,576 returns" in r["note"] and r["note"].endswith("No direction.")
+
+
+def test_alfa_says_how_to_reach_it_when_it_cannot(app_client):
+    r = app_client.get("/ui/stock/TEST/ai?model=alfa", headers={"X-API-Key": KEY})
+    assert r.status_code == 404 and "STOCKINTEL_ALFA_PATH" in r.json()["detail"]
+
+
+def test_fine_tuned_weights_bring_their_own_record_into_the_note(app_client, monkeypatch):
+    import json as _json
+    import stockintel.analysis.remote_models as rm
+    record = {"model": "chronos-2-nse",
+              "test": {"horizons": [{"horizon": 5, "n": 5472, "pinball_skill": -0.0445, "chronos_direction_acc": 0.4889,
+                                     "base_rate_acc": 0.5168, "chronos_cover80": 0.8087, "ewma_cover80": 0.8282}]},
+              "precision_calls": [{"horizon": 5, "call_rate": 0.1142, "precision": 0.5168, "precision_lo": 0.4254,
+                                   "precision_hi": 0.6077, "base_rate": 0.5203}]}
+    fan = {**{f"q{q}": [100.0] * 10 for q in (10, 25, 50, 75, 90)}, "served_model": "you/chronos-2-nse", "served_record": record}
+    monkeypatch.setenv("STOCKINTEL_MODEL_SPACE", "you/stockintel-models")
+    monkeypatch.setattr(rm, "_client", lambda: _FakeSpace(_json.dumps(fan)))
+    note = app_client.get("/ui/stock/TEST/ai?model=chronos", headers={"X-API-Key": KEY}).json()["note"]
+    assert note.startswith("Chronos-2 fine-tuned on NSE prices by us.") and "Tested on 5472 past 5-day forecasts" in note
+    assert "its range was worse than plain volatility" in note
+    assert "most confident 11% of 'up' calls were right 52% (95% range 43%–61%) vs 52% for always 'up'" in note

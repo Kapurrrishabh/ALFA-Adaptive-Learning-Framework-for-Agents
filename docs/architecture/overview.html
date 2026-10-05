@@ -1,0 +1,75 @@
+<!doctype html>
+<!-- Source of overview.png: open in a browser, or render with Playwright at 1600px wide. -->
+<html><head><meta charset="utf-8"><style>
+  body { margin: 0; background: #fff; font: 14px/1.35 Inter, Helvetica, Arial, sans-serif; color: #1b1d29; }
+  .wrap { width: 1560px; padding: 28px 20px; }
+  h1 { font-size: 22px; margin: 0 0 4px; } .sub { color: #6b7280; margin: 0 0 18px; }
+  .layer { display: grid; grid-template-columns: 170px 1fr; gap: 14px; margin-bottom: 10px; align-items: stretch; }
+  .tag { border-radius: 12px; padding: 12px; font-weight: 700; display: flex; flex-direction: column; justify-content: center; color: #fff; }
+  .tag small { font-weight: 500; opacity: .85; margin-top: 4px; }
+  .row { display: grid; gap: 10px; }
+  .box { border: 1.5px solid; border-radius: 12px; padding: 10px 12px; background: #fff; }
+  .box b { display: block; margin-bottom: 3px; } .box span { color: #4b5563; font-size: 12.5px; }
+  .ours { box-shadow: inset 0 0 0 2px #dcb862; }
+  .arrow { text-align: center; color: #9ca3af; font-size: 18px; line-height: 1; margin: -2px 0 6px 184px; }
+  .c1 .tag { background: #0f766e; } .c1 .box { border-color: #0f766e55; }
+  .c2 .tag { background: #2563eb; } .c2 .box { border-color: #2563eb55; }
+  .c3 .tag { background: #7c3aed; } .c3 .box { border-color: #7c3aed55; }
+  .c4 .tag { background: #c2410c; } .c4 .box { border-color: #c2410c55; }
+  .c5 .tag { background: #475569; } .c5 .box { border-color: #47556955; }
+  .c6 .tag { background: #111827; } .c6 .box { border-color: #11182755; background: #f9fafb; }
+  .legend { margin-top: 14px; color: #6b7280; font-size: 12.5px; }
+</style></head><body><div class="wrap">
+  <h1>StockIntel — how the parts fit</h1>
+  <p class="sub">Each row only calls the rows below it. The same code runs on your computer (everything in one process, plus the ALFA agent) or in the free cloud setup (models moved to a Hugging Face Space).</p>
+
+  <div class="layer c1"><div class="tag">You<small>browser, phone, terminal</small></div>
+    <div class="row" style="grid-template-columns: 3fr 1fr">
+      <div class="box"><b>Web app / phone app (PWA)</b><span>Home · Explore · Stock (technical, intraday, projection) · Builder · Portfolio · Signals · Ask AI · Learn · Reports · Performance</span></div>
+      <div class="box"><b>Command line</b><span>stockintel analyze · signals · train-chronos · state push …</span></div>
+    </div></div>
+  <div class="arrow">▼</div>
+
+  <div class="layer c2"><div class="tag">API<small>api.py · FastAPI</small></div>
+    <div class="row" style="grid-template-columns: repeat(3, 1fr)">
+      <div class="box"><b>Login key + rate limit</b><span>one private key per copy of the app</span></div>
+      <div class="box"><b>JSON endpoints</b><span>/ui/* pages · /chat · /signals · /portfolio · /ui/stock/{t}/ai</span></div>
+      <div class="box"><b>Static web app</b><span>app.js · app.css · service worker · manifest</span></div>
+    </div></div>
+  <div class="arrow">▼</div>
+
+  <div class="layer c3"><div class="tag">Application<small>what each page or question needs</small></div>
+    <div class="row" style="grid-template-columns: 1fr 1fr">
+      <div class="box"><b>hub.py</b><span>stock pages, charts, verdict, portfolio builder, ticker, AI forecast fans with their tested records</span></div>
+      <div class="box"><b>orchestrator.py</b><span>chat: question → intent → tools → answer (optional Claude narration, every number checked)</span></div>
+    </div></div>
+  <div class="arrow">▼</div>
+
+  <div class="layer c4"><div class="tag">Decisions<small>rules, statistics, models</small></div>
+    <div class="row" style="grid-template-columns: 1.2fr 1fr 1fr 1fr">
+      <div class="box"><b>Analysis engines → fusion</b><span>technical · 15 candle rules · 19 chart patterns · fundamentals · news · risk · regime · forecast · analogues → research label with evidence for and against</span></div>
+      <div class="box"><b>Signal system</b><span>NSE Nifty200 Momentum 30 rank · trend + volatility overlay · 10% stops · tax notes · buy/sell plan</span></div>
+      <div class="box ours"><b>Forecast models</b><span>Chronos-2-NSE · Kronos-NSE (fine-tuned by us) · ALFA return generator · Chronos-Bolt · EWMA band</span></div>
+      <div class="box"><b>Track record</b><span>performance.py: every figure shown comes from measured results</span></div>
+    </div></div>
+  <div class="arrow">▼</div>
+
+  <div class="layer c5"><div class="tag">Adapters<small>talk to the outside</small></div>
+    <div class="row" style="grid-template-columns: repeat(5, 1fr)">
+      <div class="box"><b>Data providers</b><span>yahoo (curl_cffi) · rss · NSE insider · quality gate</span></div>
+      <div class="box"><b>Model runners</b><span>in process (torch / NumPy) or remote_models.py → Space</span></div>
+      <div class="box"><b>selfagent_client.py</b><span>HTTP + WebSocket to the ALFA agent</span></div>
+      <div class="box"><b>storage.py</b><span>SQLite: portfolio, reports, plans, pattern records</span></div>
+      <div class="box"><b>hfstate.py</b><span>restore on start, save every 10 min and on shutdown</span></div>
+    </div></div>
+  <div class="arrow">▼</div>
+
+  <div class="layer c6"><div class="tag">Outside<small>other services</small></div>
+    <div class="row" style="grid-template-columns: repeat(4, 1fr)">
+      <div class="box"><b>Market data</b><span>Yahoo Finance · Google News RSS · nseindia.com</span></div>
+      <div class="box ours"><b>Hugging Face</b><span>ZeroGPU Space "stockintel-models" · private model repos (weights + test records) · private state dataset</span></div>
+      <div class="box ours"><b>ALFA chat agent</b><span>its own server, about 5 GB RAM: your computer, or a paid PRO Space</span></div>
+      <div class="box"><b>Claude (optional)</b><span>Anthropic API or Bedrock; off by default</span></div>
+    </div></div>
+  <p class="legend">Gold outline: runs or hosts models we trained, in this project or in ALFA.</p>
+</div></body></html>

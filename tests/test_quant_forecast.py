@@ -121,3 +121,15 @@ def test_short_histories_with_a_benchmark_do_not_crash(n, bench):
     from stockintel.data import synthetic
     df = synthetic.ohlcv(n, seed=4, end="2026-09-25")
     assert quant.analyze(df, bench, 0.0).available
+
+
+def test_up_calls_take_their_cut_from_validation_and_score_on_test():
+    from stockintel.analysis.tsfm_train import selective
+    val = [{"horizon": h, "date": f"2022-{m:02d}-01", "p_up": p, "y": 0.0} for h in (5, 20) for m in range(1, 11)
+           for p in [i / 10 for i in range(10)]]                       # 10% of validation clears p_up >= 0.9
+    test = [{"horizon": h, "date": f"2024-{m:02d}-01", "p_up": p, "y": y} for h in (5, 20) for m in range(1, 5)
+            for p, y in ((0.95, 0.01), (0.95, -0.01), (0.95, 0.02), (0.5, -0.03))]
+    r = {x["horizon"]: x for x in selective(val, test)}[5]
+    assert 0.8 < r["cut"] <= 0.9 and r["calls"] == 12 and r["of"] == 16      # top 10% of validation
+    assert r["precision"] == round(8 / 12, 4) and r["base_rate"] == 0.5
+    assert r["precision_lo"] <= r["precision"] <= r["precision_hi"]

@@ -44,6 +44,10 @@ def fan(close: pd.Series, horizon: int) -> Dict[str, list]:
     return _call("/chronos_fan", json.dumps([round(float(x), 4) for x in c]), horizon)
 
 
+def alfa_fan(close: pd.Series, steps: int, count: int) -> Dict[str, Any]:
+    return _call("/return_paths", json.dumps([round(float(x), 4) for x in close.dropna()]), steps, count)
+
+
 def next_candles(df: pd.DataFrame, pred_len: int = 5, samples: int = 8) -> Dict[str, list]:
     w = df.iloc[-LOOKBACK:]
     payload = {"dates": [str(d.date()) for d in w.index],

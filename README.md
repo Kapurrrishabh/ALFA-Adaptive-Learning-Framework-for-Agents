@@ -229,18 +229,17 @@ Spaces, and Render's free plan has 512 MB of RAM and no disk. So the app is spli
 | Part | Where | Why there |
 |---|---|---|
 | Website, signals, verdicts, charts | Render free web service (Docker) | Needs ~250 MB without torch; sleeps after 15 idle minutes, wakes in about a minute |
-| Chronos and Kronos models | Your own ZeroGPU Space on Hugging Face (`deploy/hf-models-space`) | Free accounts may host 2 ZeroGPU Spaces; 5 GPU-minutes a day, and each forecast takes seconds |
+| Forecast models: Chronos-2 and Kronos fine-tuned on NSE, ALFA's return generator | Your own ZeroGPU Space on Hugging Face (`deploy/hf-models-space`), weights in private model repos | Free accounts may host 2 ZeroGPU Spaces; 5 GPU-minutes a day, and each forecast takes seconds |
 | Portfolio, reports, caches | A private Hugging Face dataset | Render's free disk is wiped on restart; the app restores on start and saves every 10 minutes and on shutdown |
 
 **1. Hugging Face (once).** Your account must have a verified email and be at least 30 days old to host
-a ZeroGPU Space. Make a *write* token at huggingface.co/settings/tokens, then:
+a ZeroGPU Space. Push this repository to GitHub first (the Space installs StockIntel from there), then:
 ```bash
-.venv/bin/hf auth login                                         # paste the write token
-.venv/bin/hf repo create <you>/stockintel-models --repo-type space --space-sdk gradio --private
-.venv/bin/hf upload <you>/stockintel-models deploy/hf-models-space . --repo-type space
+.venv/bin/hf auth login                                         # paste a write token
+.venv/bin/python deploy/publish_to_hf.py --alfa "<ALFA project folder>"
 ```
-In the Space's *Settings → Hardware*, choose **ZeroGPU**. The Space installs this repository from GitHub,
-so push your changes to GitHub first.
+It creates private repos for the fine-tuned Chronos-2 and Kronos weights and ALFA's return generator, uploads
+the model Space with ALFA's code, sets its variables and token, and asks for ZeroGPU hardware.
 
 **2. Save your current state from this computer** (portfolio, track record, price cache):
 ```bash

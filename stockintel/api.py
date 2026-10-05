@@ -205,7 +205,7 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
         return ok(hub.indicators(ticker(t), bars))
 
     @app.get("/ui/stock/{t}/ai", dependencies=[Depends(auth)])
-    def ui_ai(t: str, model: Literal["chronos", "kronos"] = "chronos"):
+    def ui_ai(t: str, model: Literal["chronos", "kronos", "alfa"] = "chronos"):
         return ok(hub.ai_forecast(ticker(t), model))
 
     @app.get("/ui/ticker", dependencies=[Depends(auth)])
@@ -219,8 +219,10 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
 
     @app.get("/ui/features", dependencies=[Depends(auth)])
     def ui_features():
-        from .analysis import kronos_model, remote_models
-        return {"ml": hub.ml_enabled(), "kronos": hub.ml_enabled() and (bool(remote_models.space()) or kronos_model.available())}
+        from .analysis import alfa_model, kronos_model, remote_models
+        space = bool(remote_models.space())
+        return {"ml": hub.ml_enabled(), "kronos": hub.ml_enabled() and (space or kronos_model.available()),
+                "alfa": space or alfa_model.available()}
 
     @app.get("/manifest.webmanifest")
     def manifest():

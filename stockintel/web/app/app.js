@@ -165,8 +165,10 @@ function spark(values, w = 120, hgt = 36) {
 // ---------- candlestick chart with pattern overlays ----------
 function candleChart(container, t, layers, selected, onPick) {
   container.replaceChildren();
-  const n = t.dates.length, fan = t.fan, ghost = t.ghost;
-  const fut = Math.max(layers.cone ? t.cone.length : 0, fan ? fan.dates.length : 0, ghost ? ghost.dates.length : 0), total = n + fut;
+  const n = t.dates.length, ghost = t.ghost;
+  // each forecast fan: [data, colour, name, label below (1) or above (-1) the band]
+  const fans = [[t.fan, css("--ai"), "AI", 1], [t.alfa, css("--gold"), "Our model", -1]].filter(([f]) => f);
+  const fut = Math.max(layers.cone ? t.cone.length : 0, ghost ? ghost.dates.length : 0, ...fans.map(([f]) => f.dates.length)), total = n + fut;
   const W = container.clientWidth || 760, H = 380, volH = 54, m = { l: 8, r: 64, t: 12, b: 24 };
   const pw = W - m.l - m.r, ph = H - m.t - m.b - volH - 8, step = pw / total;
   const vals = [...t.low, ...t.high];
@@ -174,7 +176,7 @@ function candleChart(container, t, layers, selected, onPick) {
   if (layers.cone) vals.push(...t.cone.map((c) => c.lo80), ...t.cone.map((c) => c.hi80));
   if (layers.stop && t.stop) vals.push(t.stop);
   if (layers.patterns) for (const p of t.patterns) { if (p.target) vals.push(p.target); }
-  if (fan) vals.push(...fan.q10, ...fan.q90);
+  for (const [f] of fans) vals.push(...f.q10, ...f.q90);
   if (ghost) vals.push(...ghost.low, ...ghost.high);
   let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.05; lo -= pad; hi += pad;
   const dateIdx = new Map(t.dates.map((d, i) => [d, i])); t.cone.forEach((c, k) => dateIdx.set(c.date, n + k));
@@ -198,7 +200,7 @@ function candleChart(container, t, layers, selected, onPick) {
     svg.append(s("path", { d: `M${start} L${pts("hi50").join(" L")} L${pts("lo50").reverse().join(" L")} Z`, fill: css("--cone"), "fill-opacity": 0.18 }));
     svg.append(s("line", { x1: X(n - 1), x2: X(total - 1), y1: Y(t.close[n - 1]), y2: Y(t.close[n - 1]), stroke: css("--cone"), "stroke-dasharray": "4 4" }));
     const last = t.cone[t.cone.length - 1];
-    if (!fan) { txt(X(total - 1) - 4, Y(last.hi80) - 4, `80%: ${inr(last.hi80, 0)}`, { "text-anchor": "end" });
+    if (!fans.length) { txt(X(total - 1) - 4, Y(last.hi80) - 4, `80%: ${inr(last.hi80, 0)}`, { "text-anchor": "end" });
       txt(X(total - 1) - 4, Y(last.lo80) + 13, `80%: ${inr(last.lo80, 0)}`, { "text-anchor": "end" }); }
     svg.append(s("line", { x1: X(n - 0.5), x2: X(n - 0.5), y1: m.t, y2: m.t + ph, stroke: css("--line"), "stroke-width": 1 }));
     txt(X(n) + 2, m.t + 10, "next " + t.horizon + " days", { "font-size": 10 });
@@ -224,15 +226,16 @@ function candleChart(container, t, layers, selected, onPick) {
     const top = Y(Math.max(t.open[i], t.close[i])), hgt = Math.max(1, Math.abs(Y(t.open[i]) - Y(t.close[i])));
     svg.append(s("rect", { x: X(i) - bw / 2, y: top, width: bw, height: hgt, fill: col, stroke: col, "stroke-width": 1 }));
   }
-  if (fan) {
-    const ai = css("--ai"), xs = fan.dates.map((d, k) => X(n + k)), start = `${X(n - 1)},${Y(t.close[n - 1])}`;
+  for (const [fan, ai, name, side] of fans) {
+    const xs = fan.dates.map((d, k) => X(n + k)), start = `${X(n - 1)},${Y(t.close[n - 1])}`;
     const band = (a, b) => `M${start} L${xs.map((x, k) => `${x},${Y(fan[a][k])}`).join(" L")} L${xs.map((x, k) => `${x},${Y(fan[b][k])}`).reverse().join(" L")} Z`;
     svg.append(s("path", { d: band("q90", "q10"), fill: ai, "fill-opacity": 0.1 }), s("path", { d: band("q75", "q25"), fill: ai, "fill-opacity": 0.18 }));
     svg.append(s("path", { d: `M${start} L${xs.map((x, k) => `${x},${Y(fan.q50[k])}`).join(" L")}`, fill: "none", stroke: ai, "stroke-width": 2, "stroke-dasharray": "5 4", filter: glow(svg, W, H, 2.5) }));
     fan.q50.forEach((v, k) => { const dot = s("circle", { cx: xs[k], cy: Y(v), r: Math.min(3.2, step * 0.4), fill: ai, stroke: css("--card"), "stroke-width": 1.5, cursor: "help" });
-      dot.addEventListener("mousemove", (ev) => showTip(ev, [h("b", {}, `AI median · ${fan.dates[k]}`), `${inr(v)} (50% range ${inr(fan.q25[k], 0)}–${inr(fan.q75[k], 0)})`, `80% range ${inr(fan.q10[k], 0)}–${inr(fan.q90[k], 0)}`]));
+      dot.addEventListener("mousemove", (ev) => showTip(ev, [h("b", {}, `${name} median · ${fan.dates[k]}`), `${inr(v)} (50% range ${inr(fan.q25[k], 0)}–${inr(fan.q75[k], 0)})`, `80% range ${inr(fan.q10[k], 0)}–${inr(fan.q90[k], 0)}`]));
       dot.addEventListener("mouseleave", () => hideTip()); svg.append(dot); });
-    const last = fan.q50.length - 1; txt(xs[last], Y(fan.q10[last]) + 14, `AI median ${inr(fan.q50[last], 0)}`, { fill: ai, "text-anchor": "middle", "font-weight": 700 });
+    const last = fan.q50.length - 1;
+    txt(xs[last], side > 0 ? Y(fan.q10[last]) + 14 : Y(fan.q90[last]) - 8, `${name} median ${inr(fan.q50[last], 0)}`, { fill: ai, "text-anchor": "middle", "font-weight": 700 });
   }
   if (ghost) ghost.dates.forEach((d, k) => { const x = X(n + k), up = ghost.close[k] >= ghost.open[k], col = up ? css("--up") : css("--down");
     svg.append(s("line", { x1: x, x2: x, y1: Y(ghost.high[k]), y2: Y(ghost.low[k]), stroke: col, opacity: 0.6 }));
@@ -438,14 +441,16 @@ function technicalPanel(sym, opts = {}) {
   const toggle = (k) => { const cb = h("input", { type: "checkbox" }); cb.checked = layers[k];
     cb.addEventListener("change", () => { layers[k] = cb.checked; loadAi(); draw(); drawCards(); }); return h("label", {}, cb, names[k]); };
   const toggles = h("div", { class: "overlay-toggles" }, ...Object.keys(names).map(toggle));
-  features().then((f) => { if (f.ml) { names.ai = "AI forecast (Chronos)"; layers.ai = true; toggles.prepend(toggle("ai")); }
+  features().then((f) => { if (f.alfa) { names.alfa = "Our return model (ALFA)"; layers.alfa = true; toggles.prepend(toggle("alfa")); }
+    if (f.ml) { names.ai = "AI forecast (Chronos)"; layers.ai = false; toggles.append(toggle("ai")); }
     if (f.kronos) { names.kronos = "AI candles (Kronos, experimental)"; toggles.append(toggle("kronos")); } loadAi(); }).catch((e) => toast(e.message));
-  const loadAi = () => { for (const [k, model] of [["ai", "chronos"], ["kronos", "kronos"]]) if (layers[k] && !(model in ai)) {
+  const AI_LAYERS = [["alfa", "alfa"], ["ai", "chronos"], ["kronos", "kronos"]];
+  const loadAi = () => { for (const [k, model] of AI_LAYERS) if (layers[k] && !(model in ai)) {
     ai[model] = null;
     api(`/ui/stock/${encodeURIComponent(sym)}/ai?model=${model}`).then((r) => { ai[model] = r; draw(); drawCards(); })
       .catch((e) => { delete ai[model]; toast(`${model}: ${e.message}`); }); } };
   const seg = h("div", { class: "seg" }, ...[["1M", 21], ["3M", 63], ["6M", 126], ["1Y", 252], ["2Y", 500]].map(([lab, b]) => h("button", { class: b === bars ? "active" : "", onclick: (e) => { bars = b; for (const x of seg.children) x.classList.remove("active"); e.target.classList.add("active"); load(); } }, lab)));
-  const draw = () => { if (!data) return; candleChart(plot, { ...data, fan: layers.ai && ai.chronos, ghost: layers.kronos && ai.kronos }, layers, selected, (k) => { selected = selected === k ? null : k; draw(); drawCards(); }); };
+  const draw = () => { if (!data) return; candleChart(plot, { ...data, fan: layers.ai && ai.chronos, alfa: layers.alfa && ai.alfa, ghost: layers.kronos && ai.kronos }, layers, selected, (k) => { selected = selected === k ? null : k; draw(); drawCards(); }); };
   const drawCards = () => {
     if (!data) return;
     cards.replaceChildren(...(data.patterns.length > 1 ? [h("div", { class: "muted", style: "grid-column:1/-1;font-size:12px" },
@@ -460,7 +465,7 @@ function technicalPanel(sym, opts = {}) {
     const counts = {}; for (const mk of data.markers) if (mk.direction !== 0) counts[mk.label] = (counts[mk.label] || 0) + 1;
     note.replaceChildren(data.cone_note, h("br"),
       Object.keys(counts).length ? `Candle signals in the last ${RECENT_MARKERS} sessions: ${Object.entries(counts).map(([k, v]) => `${k} ×${v}`).join(", ")}. Hover a marker to see that formation's tested record.` : "",
-      ...[["ai", "chronos"], ["kronos", "kronos"]].filter(([k, model]) => layers[k] && ai[model]).flatMap(([, model]) => [h("br"), h("span", { style: "color:var(--ai)" }, ai[model].note)]));
+      ...AI_LAYERS.filter(([k, model]) => layers[k] && ai[model]).flatMap(([, model]) => [h("br"), h("span", { style: `color:var(${model === "alfa" ? "--gold" : "--ai"})` }, ai[model].note)]));
   };
   const load = async () => { plot.replaceChildren(skel(380)); try { data = await api(`/ui/stock/${encodeURIComponent(sym)}/technical?bars=${bars}`);
     const recent = new Set(data.dates.slice(-RECENT_MARKERS)); data.markers = data.markers.filter((mk) => recent.has(mk.date));
@@ -1058,7 +1063,7 @@ async function pageHome(view) {
     feature("compass", "Should I buy?", "Open any stock for a BUY / WAIT / DON'T BUY call, why you might and why you might not, a stop-loss and a position size.", "#/explore"),
     feature("layers", "Portfolio builder", "Enter an amount, pick a style and risk level, and get a ready basket with share counts, stops, risk and a sector split.", "#/builder"),
     feature("candles", "Pattern charts", "Candlesticks with each pattern's swing points, trendlines, breakout and textbook target drawn — and its tested record.", "#/stock/RELIANCE"),
-    feature("sparkle", "AI forecast range", "An open-source model (Chronos) draws the likely range for the coming days with prediction points, next to its measured accuracy.", "#/stock/TCS"),
+    feature("sparkle", "Our forecast models", "Our ALFA return model, plus Chronos and Kronos fine-tuned on NSE prices, draw the likely range for the coming days, each next to its tested record.", "#/stock/TCS"),
     feature("chat", "Ask AI", "Chat with memory: “Should I buy ITC?”, “Why?”, “Compare it with HUL”. Optionally add your self-learning agent's view.", "#/chat"),
     feature("chart", "Track record", "How well each method did on data it never saw — including the ones that don't work.", "#/performance")));
   view.append(h("p", { class: "footer-note" }, "Decision support, not investment advice. Verify figures against NSE/BSE filings before acting."));

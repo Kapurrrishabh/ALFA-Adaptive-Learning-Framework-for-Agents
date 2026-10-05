@@ -324,7 +324,7 @@ def cmd_monitor(args) -> int:
 
 def _signal_inputs(args, orch=None):
     import yfinance as yf
-    from .data.panel import index_constituents, universe_panel
+    from .data.panel import CACHE_DIR, index_constituents, universe_panel
     panel = universe_panel("nifty500", "10y", refresh=getattr(args, "refresh", False))
     bench = yf.Ticker("^NSEI").history(period="5y", auto_adjust=True)["Close"]
     bench.index = bench.index.tz_localize(None)
@@ -485,6 +485,38 @@ def cmd_build_performance(args) -> int:
     return 0
 
 
+def cmd_train_chronos(args) -> int:
+    from .analysis import tsfm_train
+    from .data.panel import CACHE_DIR, index_constituents, universe_panel
+    logging.getLogger("stockintel.tsfm_train").setLevel(logging.INFO)
+    out_dir = Path.home() / ".stockintel" / "models"
+    results = tsfm_train.run(universe_panel("nifty500", "10y").close, list(index_constituents("nifty200")["symbol"]), out_dir)
+    path = CACHE_DIR / "chronos_training.json"
+    path.write_text(json.dumps(sanitize(results), indent=2))
+    print(f"chosen {results['chosen']}; model saved to {out_dir / 'chronos-2-nse'}; results in {path}")
+    return 0
+
+
+def cmd_train_kronos(args) -> int:
+    import pandas as pd
+    from .analysis import kronos_train
+    from .data.panel import CACHE_DIR, index_constituents, universe_panel
+    logging.getLogger("stockintel.kronos_train").setLevel(logging.INFO)
+    p = universe_panel("nifty500", "10y")
+    frames = {s: pd.DataFrame({"open": p.open[s], "high": p.high[s], "low": p.low[s], "close": p.close[s],
+                               "volume": p.volume[s]}).dropna() for s in p.close.columns}
+    # sampled inference is the slow part, so it is scored on the most-traded names only
+    traded = (p.close * p.volume).iloc[-250:].mean()
+    names = [s for s in index_constituents("nifty200")["symbol"] if s in frames]
+    eval_names = sorted(names, key=lambda s: -traded.get(s, 0))[:args.eval_stocks]
+    out_dir = Path.home() / ".stockintel" / "models"
+    results = kronos_train.run(frames, {s: frames[s] for s in eval_names}, out_dir)
+    path = CACHE_DIR / "kronos_training.json"
+    path.write_text(json.dumps(sanitize(results), indent=2))
+    print(f"chosen lr {results['chosen_lr']}; model saved to {out_dir / 'kronos-nse'}; results in {path}")
+    return 0
+
+
 def cmd_evaluate_models(args) -> int:
     out = performance.evaluate_models(_orchestrator(args).service())
     print(json.dumps(out, indent=2))
@@ -639,6 +671,13 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--port", type=int, default=8000)
     sv.add_argument("--llm", **llm)
     sv.set_defaults(fn=cmd_serve)
+
+    tc = sub.add_parser("train-chronos", help="fine-tune Chronos-2 on NSE prices and test it (CPU, about an hour)")
+    tc.set_defaults(fn=cmd_train_chronos)
+
+    tk = sub.add_parser("train-kronos", help="fine-tune the Kronos predictor on NSE candles and test it (CPU)")
+    tk.add_argument("--eval-stocks", type=int, default=50)
+    tk.set_defaults(fn=cmd_train_kronos)
 
     st = sub.add_parser("state", help="save or restore the portfolio and caches in a private Hugging Face dataset")
     st.add_argument("action", choices=["push", "pull"])
