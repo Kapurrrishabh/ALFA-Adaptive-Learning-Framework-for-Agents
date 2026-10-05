@@ -474,7 +474,7 @@ class Hub:
                        if h5 else "evaluation not run yet (`stockintel evaluate-models`).")) + call_note
         else:
             note = (("Kronos fine-tuned on NSE candles by us" if served else "Kronos (open-source candlestick AI)")
-                    + " projected candles — EXPERIMENTAL. Tested on "
+                    + ": projected candles — EXPERIMENTAL. Tested on "
                     + (f"{record['n']} past forecasts: direction right {record['direction_acc']:.0%} vs {record['base_rate_acc']:.0%} base rate, "
                        f"and its {record['horizon']}-day price error was {record['mae_pct']:.1f}% vs {record['no_change_mae_pct']:.1f}% for assuming no change — "
                        f"{verdicts['kronos']}."

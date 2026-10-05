@@ -213,6 +213,15 @@ git clone https://github.com/shiyu-coder/Kronos ~/.stockintel/vendor/kronos   # 
 .venv/bin/stockintel evaluate-models                                # measure both (~10 min, CPU)
 ```
 With these installed, the chart shows the Chronos layer, and the Kronos toggle appears if the clone exists.
+
+Our own models: `stockintel train-chronos` and `stockintel train-kronos` fine-tune Chronos-2 and Kronos on NSE
+data (CPU, about an hour each) and save the weights and their test records in `~/.stockintel/models/`. To serve
+them, and ALFA's return generator, on this computer:
+```bash
+export STOCKINTEL_CHRONOS_MODEL=~/.stockintel/models/chronos-2-nse STOCKINTEL_KRONOS_MODEL=~/.stockintel/models/kronos-nse
+export STOCKINTEL_ALFA_PATH="<ALFA project folder>"              # holds backend/, selfagent/, artifacts/returns.npz
+.venv/bin/stockintel app
+```
 `STOCKINTEL_ML=0` turns both off. The server image leaves them out to stay small.
 
 The self-learning agent (the sibling project) runs as its own process and needs about 5 GB of RAM:

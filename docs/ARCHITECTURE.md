@@ -145,7 +145,7 @@ cut, and unjudged ones are stored but do not move it.
 | Chronos-Bolt-small | Amazon time-series model | Amazon (zero-shot) | Server or Space | Optional range layer | Range worse than the band; direction no better than the base rate |
 | **Chronos-2-NSE** | AutoGluon Chronos-2-small (28M parameters), fine-tuned on NSE | **Us** | Server or Space | Range layer | Range −4.5% / −0.6% vs band; direction 48.9% / 52.0% vs 51.7% / 53.4% |
 | Kronos-small | Candlestick model + tokenizer | NeoQuasar (zero-shot) | Server or Space | Experimental candles | Worse than "no change" (5.2% vs 2.2% error) |
-| **Kronos-NSE** | Kronos-small predictor fine-tuned on NSE | **Us** | Server or Space | Experimental candles | See `kronos_training.json` |
+| **Kronos-NSE** | Kronos-small predictor fine-tuned on NSE | **Us** | Server or Space | Experimental candles | Error 4.0% vs 3.3% for "no change" (untuned: 9.7%); direction 48.8% vs 53.2% |
 | **ALFA return generator** | NumPy transformer, 875,776 parameters | **Us (ALFA)** | Server (local) or Space (CPU) | Gold "our model" fan | Beat GARCH(1,1)-t by 0.032 ± 0.003 nats per return over 80,576 returns; no direction edge |
 | GARCH(1,1)-t | Classic volatility model | ALFA, same run | Inside ALFA's loader | Draws the fan if the generator stops beating it | Baseline |
 | **ALFA chat agent** | NumPy transformer generator + retrieval index + price head + answer gate | **Us (ALFA)** | Its own server, about 5 GB RAM | "Also ask my self-learning agent" | Answers only above its fitted confidence cut |

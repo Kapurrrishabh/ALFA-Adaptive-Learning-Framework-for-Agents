@@ -166,8 +166,8 @@ function spark(values, w = 120, hgt = 36) {
 function candleChart(container, t, layers, selected, onPick) {
   container.replaceChildren();
   const n = t.dates.length, ghost = t.ghost;
-  // each forecast fan: [data, colour, name, label below (1) or above (-1) the band]
-  const fans = [[t.fan, css("--ai"), "AI", 1], [t.alfa, css("--gold"), "Our model", -1]].filter(([f]) => f);
+  // each forecast fan: [data, colour, name, label side]; the first shown labels below its band, a second above
+  const fans = [[t.alfa, css("--gold"), "Our model"], [t.fan, css("--ai"), "AI"]].filter(([f]) => f).map((f, i) => [...f, i ? -1 : 1]);
   const fut = Math.max(layers.cone ? t.cone.length : 0, ghost ? ghost.dates.length : 0, ...fans.map(([f]) => f.dates.length)), total = n + fut;
   const W = container.clientWidth || 760, H = 380, volH = 54, m = { l: 8, r: 64, t: 12, b: 24 };
   const pw = W - m.l - m.r, ph = H - m.t - m.b - volH - 8, step = pw / total;
