@@ -48,13 +48,14 @@ def main() -> None:
         api.upload_file(path_or_fileobj=f, path_in_repo=f.name, repo_id=repos["alfa"])
     print("uploaded", repos["alfa"])
 
-    api.create_repo(space, repo_type="space", space_sdk="gradio", private=True, exist_ok=True)
+    # free accounts may host Gradio Spaces only on ZeroGPU, so the hardware is set when the Space is created
+    api.create_repo(space, repo_type="space", space_sdk="gradio", space_hardware=SpaceHardware.ZERO_A10G, private=True,
+                    exist_ok=True)
     api.upload_folder(repo_id=space, repo_type="space", folder_path=HERE / "hf-models-space", commit_message="model Space")
     for key, value in (("STOCKINTEL_CHRONOS_MODEL", repos["chronos"]), ("STOCKINTEL_KRONOS_MODEL", repos["kronos"]),
                        ("ALFA_MODELS_REPO", repos["alfa"])):
         api.add_space_variable(space, key, value)
     api.add_space_secret(space, "HF_TOKEN", space_token)
-    api.request_space_hardware(space, SpaceHardware.ZERO_A10G)
     print(f"Space {space} is building on ZeroGPU: https://huggingface.co/spaces/{space}\n"
           f"On Render set STOCKINTEL_MODEL_SPACE={space} and ALFA_MODELS_REPO={repos['alfa']} (and HF_TOKEN).")
 
