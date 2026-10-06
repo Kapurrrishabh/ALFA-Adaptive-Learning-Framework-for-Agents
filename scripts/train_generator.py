@@ -28,10 +28,8 @@ from selfagent.tokenizer.wordpiece import WordPiece  # noqa: E402
 IGNORED = -100
 
 
-def load_split(artifacts, dataset, name):
-    return tuple(
-        np.load(artifacts / f"{dataset}_{name}_{part}.npy") for part in ("source", "keep", "target")
-    )
+def load_split(artifacts, dataset, name, parts=("source", "keep", "target")):
+    return tuple(np.load(artifacts / f"{dataset}_{name}_{part}.npy") for part in parts)
 
 
 def batch_loss(model, source, keep, target, vocab_size):

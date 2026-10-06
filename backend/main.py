@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from selfagent.backend import default_rng
 from selfagent.data import advisory
 
 from . import models
@@ -145,6 +146,29 @@ def create_app(agent, store, judge, refit, served):
                 "bands": models.price_bands(closes[-1], card["edges"], card["horizon"]),
                 "model": card, "direction": advisory.DIRECTION_SKILL}
 
+    @app.get("/instruments/{symbol}/scenarios")
+    async def scenarios(symbol: str, steps: int = 20, paths: int = 200, as_of: str = None, seed: int = 0,
+                        token=Header(default="", alias="Authorization")):
+        """Possible price paths from the as-of date, as a fan of quantiles plus a few whole paths.
+
+        Seeded, so the same request draws the same picture twice. Which model drew it and what it measured
+        travel with the answer, and so does `direction`: these are ranges, never calls.
+        """
+        _bearer(token)
+        held = symbol.upper()
+        if held not in agent.market.paths:
+            raise HTTPException(404, f"no price file for {symbol}; ask /instruments for the universe")
+        if agent.market.scenarios is None:
+            raise HTTPException(503, "no return model is loaded, so there are no paths to draw")
+        if not (1 <= steps <= 250 and 10 <= paths <= 2000):
+            raise HTTPException(400, f"steps must be 1-250 and paths 10-2000; got {steps} and {paths}")
+        taken, close, drawn = await run_in_threadpool(
+            agent.market.draw_paths, held, steps, paths, default_rng(seed), as_of)
+        return {"symbol": held, "as_of": str(taken), "close": close, "steps": steps, "paths": paths,
+                "fan": models.scenarios.fan(close, drawn),
+                "examples": models.scenarios.priced(close, drawn[:5]).tolist(),
+                "model": agent.market.scenarios.describe(), "direction": models.scenarios.DIRECTION}
+
     @app.get("/learned")
     async def learned(token=Header(default="", alias="Authorization")):
         """What this user's feedback has done to the agent, and what it was fitted from.
@@ -176,8 +200,9 @@ def create_app(agent, store, judge, refit, served):
             conversation = (opening.get("conversation")
                             or store.start_conversation(token, opening.get("subject", "")))
             # Reading it is the ownership check: someone else's conversation raises here rather than
-            # after the first answer has already been written into it.
-            store.recent(token, conversation)
+            # after the first answer has already been written into it. It also carries the subject over a
+            # reconnect, which is the case a variable in this loop cannot cover.
+            spoken = store.recent(token, conversation)
         except (KeyError, NotYours) as refused:
             await socket.send_json({"stage": "refused", "because": str(refused) or
                                     "the first frame has to carry a session token"})
@@ -187,6 +212,7 @@ def create_app(agent, store, judge, refit, served):
 
         await socket.send_json({"stage": "ready", "conversation": conversation,
                                 "answer_cut": agent.abstainer.cut})
+        subject = next((message.ticker for message in reversed(spoken) if message.ticker), "")
         while True:
             try:
                 frame = await socket.receive_json()
@@ -198,7 +224,10 @@ def create_app(agent, store, judge, refit, served):
                 continue
             await socket.send_json({"stage": "working", "question": question})
             async with generating:
-                turn = await run_in_threadpool(agent.answer, question, frame.get("as_of"))
+                turn = await run_in_threadpool(agent.answer, question, frame.get("as_of"), subject)
+            # Only ever replaced, never cleared: a general question in the middle of a conversation about
+            # one instrument does not mean the next one has changed the subject.
+            subject = turn.ticker or subject
             await socket.send_json({"stage": "turn", **_as_frame(turn)})
             await socket.send_json({"stage": "stored", **_store_turn(store, token, conversation, turn,
                                                                     judge, refit, agent)})

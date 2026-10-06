@@ -37,7 +37,7 @@ def app_from(args):
                                 args.wanted, args.warmup, args.price_head,
                                 reference_from(artifacts, args.reference_index,
                                                args.reference_checkpoint, args.paraphrase, args.live),
-                                args.symbols)
+                                args.symbols, args.scenarios)
     teacher = AgentTeacher(args.verdicts)
     store = Store(args.store)
     app = create_app(agent, store,
@@ -56,6 +56,8 @@ def main():
     parser.add_argument("--prices", default="data/prices")
     parser.add_argument("--gate", default="artifacts/route_gate.json")
     parser.add_argument("--price-head", default="artifacts/price_head.npz")
+    parser.add_argument("--scenarios", default="artifacts/returns.npz",
+                        help="the return generator; empty serves no sampled price paths")
     parser.add_argument("--reference-index", default="reference_index.npz",
                         help="empty serves the seven routed intents and refuses everything else")
     parser.add_argument("--reference-checkpoint", default="generator.npz")

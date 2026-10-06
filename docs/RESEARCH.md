@@ -178,6 +178,92 @@ onboarding a new user is provably a no-op until they teach it something.
 the InstructGPT shape — predict, explain, collect judgement, update — which is the structure worth
 citing in the report.
 
+### 2.5 Learning from a check instead of a label
+
+Two preference runs on StackExchange votes (plain DPO, then DPO plus the chosen answer's likelihood)
+beat nothing: the first stopped writing English, the second moved held-out agreement from 58.9% to
+59.2%. The cause was the data, not the algorithm. Of 62,155 supervised rows, **31,719 (51.0%) state
+a figure their own retrieved passages do not contain**, and a preference between two such answers
+cannot express grounding.
+
+What the literature says, and what it changed here:
+
+- **The algorithms are one family.** DeepSeekMath (Shao et al. 2024, §5.2) writes SFT, rejection
+  fine-tuning, DPO, PPO and GRPO as one gradient with three parts: where the samples come from, what
+  scores them, and how the score becomes a weight. The scorer matters more than the optimiser.
+- **A rule beats a learned judge when a rule can check the output.** Tülu 3's RLVR (Lambert et al.
+  2024) pays a fixed reward from a deterministic verifier. This project already has one:
+  `guardrails.unsupported_figures`, the rule the server screens every answer with.
+- **Rewarding correct answers does not buy faithful ones** (arXiv:2609.23053). Faithfulness has to be
+  its own reward.
+- **A faithfulness reward alone is won by saying nothing.** RLFKV (Yin et al. 2026) had to add an
+  informativeness term on financial RAG. Here, `verified.reward` pays a refusal less than a grounded
+  answer, and pays more for each grounded figure.
+- **RAFT, not PPO** (Dong et al. 2023): sample k answers, keep the best by reward, fine-tune on it.
+  It needs one model in memory, has four hyperparameters, and reuses the supervised loss. PPO's
+  clipped objective needs an elementwise minimum that this project's autograd does not have.
+- **A group with one score teaches nothing** (DAPO, Yu et al. 2025). `verified.winner` drops it. On
+  the generator corpus that is 9 of 96 groups, because samples are fully distinct (8.00 of 8).
+
+Two interventions came out of this. `prepare_generator.py --grounded-only` filters the corpus, and
+`train_verified.py` runs the RAFT loop over the model's own writing.
+
+### 2.6 A generative model of returns
+
+**Recipe.** Chronos (Ansari et al. 2024) showed that a plain language model learns time series if
+values are scaled, binned into tokens, trained with cross-entropy and sampled. Two changes were
+forced by what returns are:
+
+- **Bins uniform in asinh(r / s), not in r.** Returns are peaked at zero and fat-tailed. asinh is the
+  mu-law compander: fine at the centre, still reaching 30 scale units (a 39% day) at the edges.
+- **The scale is measured on the year before the window.** Chronos's context scale would divide
+  each input by a number that contains the returns being predicted.
+
+**The arithmetic.** Cross-entropy on bins is maximum likelihood, and it is the log score, which is
+strictly proper (Gneiting & Raftery 2007): it is minimised in expectation only by the true
+distribution. A bin's probability spread uniformly over its width is an exact density, so the
+model's score compares directly with GARCH's on the same returns. Multi-day paths are scored by
+CRPS in its energy form, E|X − y| − ½E|X − X′|.
+
+**The baseline to beat.** GARCH(1,1) with Student-t innovations (Bollerslev 1986, 1987). It is
+fitted by variance targeting and a grid, because scipy is banned outside evaluation. On the training
+period it fits α = 0.08, β = 0.90, ν = 4, the textbook daily-equity values.
+
+**Evaluation.** Realism is judged on the stylized facts in Cont (2001), using Quant GANs' distances
+(Wiese et al. 2020). Wiese et al. also chose checkpoints on the same metrics; here the checkpoint is
+chosen on 2021–22 and every quoted number is from 2023 to September 2026.
+
+| Question | Result, test period | Verdict |
+|---|---|---|
+| One-step log score vs GARCH-t | −0.0323 ± 0.0032 nats/return, 80,576 returns | model wins, 10 SE |
+| One-step log score vs trailing Gaussian | −0.154 ± 0.007 | model wins |
+| 5- and 20-day path CRPS vs both | within 1.2 SE | tie |
+| Tail index of generated paths | 2.98 (real 3.08, GARCH 2.35) | model closest |
+| 1-day / 5-day distribution distance (EMD) | 0.032 / 0.145 (GARCH 0.414 / 1.049) | model closest |
+| Leverage effect, lags 1–5 | −0.025 (real −0.017, GARCH −0.002) | learned; GARCH cannot |
+| Volatility clustering, acf of \|r\| lags 1–5 | 0.076 (real 0.047, GARCH 0.092) | present, too strong |
+| Direction, P(up) > 0.5 | 51.0% ± 0.2 vs 51.2% majority side | no skill |
+
+That last row agrees with Forecast Collapse (arXiv:2608.14106) and FinVerse (arXiv:2608.03259):
+time-series foundation models do not forecast equity direction. The product is the distribution and
+the paths drawn from it, and `backend/models/scenarios.DIRECTION` says so in every response.
+
+**Learning from outcomes, weights frozen.** `forecast.OnlineTemperature` takes one exact gradient
+step on the log score after each realised return:
+
+    d(−log p_y) / d(log T) = (z_y − E_p[z]) / T
+
+The whole test period was replayed day by day, and each forecast was scored before its day was
+learned from. The log score improved by **0.0078 ± 0.0017 nats per return** (4.6 SE, blocked by
+month) over 93,437 returns. The frozen model was already calibrated: its 90% interval held 89.9% of
+outcomes, and 90.9% with feedback. This is the project's question answered on the numeric side: the
+forecasts improve from feedback while the model under them stays fixed.
+
+**Served by measurement.** `scenarios.load` serves the generator only while its own file records a
+win over GARCH of more than one standard error. Otherwise GARCH draws the paths.
+`scripts/generate_paths.py` writes synthetic paths, with a sidecar recording the drawer, the
+checkpoint digest, the seed and the as-of date.
+
 ---
 
 ## 3. Design decisions, consolidated
@@ -194,6 +280,9 @@ citing in the report.
 | D8 | Replay buffer + diagonal EWC | Forgetting is the #1 online-learning failure | Hope |
 | D9 | Walk-forward / purged time splits everywhere | Random splits leak the future — invalidates every number | k-fold on shuffled rows |
 | D10 | Finite-difference gradient check as a build gate | A hand-written autograd bug is silent and fatal | Trusting the math |
+| D11 | Rule-checked reward (RAFT) over preference labels | The corpus cannot express grounding; the verifier can | DPO on votes, PPO/GRPO |
+| D12 | Tokenised returns, cross-entropy, sampled paths | Log score is proper; one loss covers forecasting and generation | GAN (training does not converge), point regression (collapses flat) |
+| D13 | Online temperature on frozen weights | Learns from each outcome with no retraining, and the step is exact | Periodic fine-tuning |
 
 ---
 
@@ -327,4 +416,12 @@ et al. 2017, *PPO* · Sener & Savarese 2018, *Core-set active learning* · Settl
 learning survey* · Su et al. 2021, *RoFormer/RoPE* · Vaswani et al. 2017, *Attention Is All You Need*
 · Vitter 1985, *Reservoir sampling* · Williams 1992, *REINFORCE* · Xiong et al. 2020, *On Layer
 Normalization in the Transformer* · Xu & Cohen 2018, *StockNet* · Yang et al. 2020, *FinBERT* · Zeng
-et al. 2023, *Are Transformers Effective for Time Series Forecasting?*
+et al. 2023, *Are Transformers Effective for Time Series Forecasting?* · Ansari et al. 2024,
+*Chronos* (arXiv:2403.07815) · Bollerslev 1986, *GARCH*; 1987, *GARCH with t innovations* · Cont 2001,
+*Empirical properties of asset returns: stylized facts* · Dong et al. 2023, *RAFT* (arXiv:2304.06767)
+· Gneiting & Raftery 2007, *Strictly proper scoring rules* · Lambert et al. 2024, *Tülu 3 / RLVR*
+(arXiv:2411.15124) · Shao et al. 2024, *DeepSeekMath / GRPO* (arXiv:2402.03300) · Wiese et al. 2020,
+*Quant GANs* (arXiv:1907.06673) · Yin et al. 2026, *RLFKV* (arXiv:2602.05723) · Yu et al. 2025, *DAPO*
+(arXiv:2503.14476) · Zelikman et al. 2022, *STaR* (arXiv:2203.14465) · arXiv:2608.14106, *Forecast
+Collapse in Time-Series Foundation Models* · arXiv:2608.03259, *FinVerse* · arXiv:2609.23053,
+*Attributable Post-Rationalization in RAG Citations*

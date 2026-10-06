@@ -7,18 +7,22 @@ import numpy as np
 import pytest
 
 from selfagent import pretrained
-from selfagent.data import indicators, prices, qa_pairs
+from selfagent.data import indicators, prices, qa_pairs, returns
 from selfagent.autograd import functional as F
 from selfagent.autograd import no_grad
 from selfagent.backend import default_rng
 from selfagent.config import ModelConfig
 from selfagent.data.features import to_features
-from selfagent.models import FinanceAgentModel, GroundedGenerator, MaskedLanguageModel, TextTower
+from selfagent.learn.preference import agreement, preference_loss, sequence_logprob
+from selfagent.models import (FinanceAgentModel, GroundedGenerator, MaskedLanguageModel, ReturnGenerator,
+                              TextTower)
+from selfagent.models.garch import Garch
 from selfagent.autograd.tensor import Tensor
 from selfagent.nn import TransformerDecoder, padding_mask
 from selfagent.optim import AdamW, clip_grad_norm
 from selfagent.data.masking import mask_tokens
-from selfagent.tokenizer.vocab import CLS_ID, CONTINUATION, SEP_ID, SPECIAL_TOKENS, UNK_ID, UNLABELLED
+from selfagent.tokenizer.vocab import (CLS_ID, CONTINUATION, PAD_ID, SEP_ID, SPECIAL_TOKENS, UNK_ID,
+                                       UNLABELLED)
 from selfagent.tokenizer.wordpiece import WordPiece, pretokenize
 
 TINY = ModelConfig(
@@ -236,6 +240,79 @@ def test_generator_overfits_a_small_batch():
 
     assert history[0] > np.log(TINY.vocab_size) * 0.8
     assert history[-1] < 0.1, f"failed to memorise the batch, final loss {history[-1]:.4f}"
+
+
+def _scores(*values):
+    """Log-probabilities as the tensors `preference_loss` expects, one per pair."""
+    return [Tensor(value, requires_grad=True) for value in values]
+
+
+def test_preference_costs_ln2_exactly_when_the_model_has_not_left_the_reference():
+    """The invariant the training run prints at step 0. If it holds, the reference is wired in; if the
+    ranking term starts anywhere else, the model is being anchored to something it never was."""
+    for taken, refused in ((-1.0, -2.0), (-4.5, -0.25)):
+        loss = preference_loss(_scores(taken), _scores(refused), [taken], [refused], sft=0.0)
+        assert loss.item() == pytest.approx(math.log(2), abs=1e-6)
+
+
+def test_preference_charges_for_losing_ground_the_reference_already_held():
+    """What stops the model raising the margin by crushing the rejected answer towards zero: the pair is
+    scored against where it began, so being right by less than the reference was still costs."""
+    taken, refused = _scores(-1.0), _scores(-2.0)
+    behind = preference_loss(taken, refused, [-1.0], [-3.0], sft=0.0).item()
+    ahead = preference_loss(taken, refused, [-2.0], [-1.0], sft=0.0).item()
+    assert behind > math.log(2) > ahead
+
+
+def test_preference_charges_for_winning_a_pair_by_making_both_answers_unwritable():
+    """The failure that cost a whole training run. Both pairs have an identical margin -- the chosen answer
+    beats the rejected one by exactly one nat, and by exactly as much as the reference did -- so the ranking
+    term alone scores them the same, and a model is free to drag the whole distribution down. It did: one
+    epoch of that objective ended up opening every answer with thirty copies of "you".
+    """
+    fluent = _scores(-1.0), _scores(-2.0)
+    mute = _scores(-5.0), _scores(-6.0)
+    assert preference_loss(*fluent, [-1.0], [-2.0], sft=0.0).item() == pytest.approx(
+        preference_loss(*mute, [-5.0], [-6.0], sft=0.0).item(), abs=1e-6)
+    assert (preference_loss(*mute, [-5.0], [-6.0]).item()
+            > preference_loss(*fluent, [-1.0], [-2.0]).item() + 3.0)
+
+
+def test_preference_scores_an_answer_by_its_mean_token_probability():
+    """A summed log-probability grows with length, and the preferred answer is the longer one in 57.6%
+    of these pairs, so a sum would be won by writing more rather than by writing better."""
+    model = GroundedGenerator(TINY)
+    model.eval()
+    source = np.zeros((2, TINY.max_text_length), dtype=int)
+    answer = np.full((2, TINY.max_answer_length), PAD_ID)
+    answer[0, :6] = [CLS_ID, 5, 6, 7, 8, SEP_ID]
+    answer[1, :4] = [CLS_ID, 5, 6, SEP_ID]
+
+    with no_grad():
+        scored = [one.item() for one in sequence_logprob(model, source, answer)]
+        logits = model(source, answer[:, :-1]).data
+
+    for row, length in ((0, 5), (1, 3)):
+        step = logits[row, :length]
+        step = step - step.max(axis=-1, keepdims=True)
+        log_probabilities = step - np.log(np.exp(step).sum(axis=-1, keepdims=True))
+        wanted = log_probabilities[np.arange(length), answer[row, 1 : length + 1]].mean()
+        assert scored[row] == pytest.approx(wanted, abs=1e-5)
+        assert scored[row] != pytest.approx(wanted * length, abs=1e-3)
+
+
+def test_preference_refuses_a_pair_with_nothing_to_score():
+    model = GroundedGenerator(TINY)
+    answer = np.full((2, TINY.max_answer_length), PAD_ID)
+    answer[0, :3] = [CLS_ID, 5, SEP_ID]
+    with pytest.raises(ValueError, match=r"rows \[1\] have no answer token"):
+        sequence_logprob(model, np.zeros((2, TINY.max_text_length), dtype=int), answer)
+
+
+def test_agreement_needs_the_preferred_answer_to_win_outright():
+    # A tie is not agreement. Counting it as one would report 100% for a model that scores every answer
+    # identically, which is what a collapsed decoder does.
+    assert agreement([-1.0, -3.0, -2.0], [-2.0, -1.0, -2.0]) == pytest.approx(1 / 3)
 
 
 def test_generation_stops_at_the_end_marker_and_strips_it():
@@ -746,3 +823,100 @@ def test_drawdown_is_negative_after_a_fall_and_zero_at_a_peak():
 def test_indicators_refuse_short_history_instead_of_guessing():
     with pytest.raises(ValueError, match="needs 15 bars"):
         indicators.relative_strength_index(np.arange(1.0, 10.0), 14)
+
+
+def _return_config(**overrides):
+    shape = dict(vocab_size=returns.BINS, price_window=16, dim=16, num_heads=2, num_layers=1, ffn_dim=32,
+                 dropout=0.0)
+    return ModelConfig(**{**shape, **overrides})
+
+
+def test_a_return_window_is_scaled_by_bars_before_it_and_never_by_its_own():
+    """The leak that would pass every loss check. A scale taken over the window divides each input by a
+    number that already contains the returns the model is asked to predict."""
+    series = np.random.default_rng(0).normal(0, 0.01, 400)
+    before = returns.scale_before(series, 300)
+    shocked = series.copy()
+    shocked[300:] *= 50
+    assert returns.scale_before(shocked, 300) == before
+    with pytest.raises(ValueError, match="needs 250"):
+        returns.scale_before(series, 100)
+
+
+def test_a_bin_prediction_is_a_density_that_integrates_to_one():
+    """What makes the log score comparable with a Gaussian's. If the bin widths were wrong the model would
+    be scored on a density that does not integrate to one, and could beat GARCH by that error alone."""
+    probabilities = np.random.default_rng(1).dirichlet(np.ones(returns.BINS))
+    scale = 0.013
+    bounds = returns._BOUNDS * scale
+    centres = (bounds[1:] + bounds[:-1]) / 2
+    widths = np.diff(bounds)
+    assert (returns.density(np.tile(probabilities, (returns.BINS, 1)), centres, scale) * widths).sum() \
+        == pytest.approx(1.0)
+
+
+def test_a_decoded_return_lands_in_the_bin_it_was_drawn_from():
+    """A sampler emitting values outside their bin would write paths whose density the model never
+    stated, so every synthetic statistic would describe a different model from the one scored."""
+    rng = np.random.default_rng(2)
+    real = rng.standard_t(3, 5000) * 0.013
+    ids = returns.encode(real, 0.013)
+    assert (returns.encode(returns.decode(ids, 0.013, rng), 0.013) == ids).all()
+
+
+def test_a_crash_past_the_last_bin_is_clipped_and_counted():
+    assert returns.encode([-0.9], 0.01)[0] == 0
+    assert returns.clipped([-0.9, 0.001], 0.01) == 1
+
+
+def test_the_return_model_cannot_see_the_return_it_predicts():
+    """Causality, pinned directly. A missing mask trains to a near-zero loss by reading the next token and
+    generates noise, and the training curve looks like the best run this project ever had."""
+    model = ReturnGenerator(_return_config())
+    model.eval()
+    ids = np.random.default_rng(3).integers(0, returns.BINS, (1, 16))
+    changed = ids.copy()
+    changed[0, 10] = (changed[0, 10] + 100) % returns.BINS
+    with no_grad():
+        first, second = model(ids).data, model(changed).data
+    np.testing.assert_allclose(first[0, :10], second[0, :10], atol=1e-6)
+    assert not np.allclose(first[0, 10], second[0, 10])
+
+
+def test_a_return_path_can_outrun_the_context_it_was_trained_on():
+    model = ReturnGenerator(_return_config())
+    paths = model.sample_paths(np.zeros((3, 16), dtype=int), steps=40, rng=np.random.default_rng(4))
+    assert paths.shape == (3, 40) and paths.min() >= 0 and paths.max() < returns.BINS
+
+
+def test_a_return_model_built_for_another_bin_count_is_refused():
+    with pytest.raises(ValueError, match="bins"):
+        ReturnGenerator(_return_config(vocab_size=returns.BINS + 1))
+
+
+def test_garch_variance_reads_only_the_returns_before_each_bar():
+    model = Garch(0.1, 0.85, 5.0)
+    series = np.random.default_rng(5).normal(0, 0.01, 50)
+    shocked = series.copy()
+    shocked[30] = 0.5
+    np.testing.assert_allclose(model.variance(series, 1e-4)[:31], model.variance(shocked, 1e-4)[:31])
+    assert model.variance(shocked, 1e-4)[31] > model.variance(series, 1e-4)[31]
+
+
+def test_garch_fit_recovers_the_process_that_generated_the_data():
+    """The baseline has to be a real GARCH fit. A broken fit would lose to anything, and the return model
+    would be promoted on beating a strawman."""
+    truth = Garch(0.08, 0.90, 5.0)
+    simulated = truth.simulate(4000, 1e-4, np.random.default_rng(6), paths=4)
+    fitted = Garch.fit(list(simulated))
+    assert abs(fitted.alpha - 0.08) <= 0.03 and abs(fitted.beta - 0.90) <= 0.04
+    assert 3.5 <= fitted.nu <= 8.0
+
+
+def test_a_realised_return_reads_its_place_in_the_forecast_distribution():
+    """The PIT a calibration check rests on. Read off the wrong side of the bin, every forecast looks biased
+    by half a bin, and the online temperature would learn to correct an error the model never made."""
+    probabilities = np.full((1, returns.BINS), 1.0 / returns.BINS)
+    assert returns.cdf(probabilities, [0.0], 0.01)[0] == pytest.approx(0.5)
+    assert returns.cdf(probabilities, [1.0], 0.01)[0] == pytest.approx(1.0)
+    assert returns.cdf(probabilities, [-1.0], 0.01)[0] == pytest.approx(0.0)

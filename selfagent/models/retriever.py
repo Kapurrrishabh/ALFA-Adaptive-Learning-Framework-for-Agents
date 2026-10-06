@@ -78,6 +78,17 @@ class BM25:
             for term, documents in self.postings.items()
         }
 
+    def weight(self, term):
+        """How rare this term is, and the rarest value this index can give for one it has never seen.
+
+        `scores` skips an unseen term, because it has no posting list to walk. A caller asking whether the
+        passages are about the question needs it counted at full weight instead: a term no passage holds
+        is the one whose absence decides the answer.
+        """
+        if term in self.inverse_document_frequency:
+            return self.inverse_document_frequency[term]
+        return float(xp.log(1.0 + (self.count + 0.5) / 0.5))
+
     def scores(self, query):
         """A BM25 score per passage. Zero means no query term appears in it at all."""
         total = xp.zeros(self.count)

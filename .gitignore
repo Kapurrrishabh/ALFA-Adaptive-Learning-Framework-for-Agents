@@ -11,9 +11,13 @@ artifacts/*
 # the learning curve is not reproducible from a clone. scripts/label_feedback.py --tell replays them.
 !artifacts/verdicts_given.jsonl
 !artifacts/served_verdicts.jsonl
+!artifacts/preference_given.jsonl
 
 __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
 reference/
+
+# StockIntel was developed as its own repository here; its history is merged under backend/ on this branch.
+/self_project/

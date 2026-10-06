@@ -12,14 +12,21 @@ earliest, and until then a question naming something we hold no bars for is answ
 """
 
 import re
+from collections import namedtuple
 
 from selfagent.data import advisory, prices
+
+from ..news import feed
 
 # Questions are lowercased by the tokenizer anyway, and a ticker is the one token whose case a user
 # varies freely: "aapl", "Aapl", "AAPL" all name the same file.
 _WORD = re.compile(r"[A-Za-z][A-Za-z.]*")
 
 REFUSAL = advisory.UNSUPPORTED
+
+# The routed intent that means "placed, and the figures do not carry it". Re-exported for the same reason
+# the refusal text is: the core acts on it and has no business knowing which dataset named it.
+UNANSWERABLE = advisory.UNSUPPORTED_INTENT
 
 # Re-exported rather than read from advisory by the core: the core knows about a domain, not about which
 # dataset built it, and a second domain would cap its questions somewhere else.
@@ -29,6 +36,33 @@ NO_SUBJECT = "i need to know which instrument you are asking about."
 
 UNKNOWN_QUESTION = "i am not sure what you are asking. i can talk about price, momentum, volatility, " \
                    "drawdown and week-ahead risk for one instrument."
+
+UNREACHABLE = "i would have to read something outside my own documents to answer that, and i could not " \
+              "reach it just now. ask again in a minute."
+
+
+class Subject(namedtuple("Subject", "ticker names cik")):
+    """An instrument a question is about: what a passage would call it, and its SEC number if it has one.
+
+    A domain fact, not a retrieval one, which is why it lives here and is handed to the reader. What
+    counts as a mention of RELIANCE.NS is the same judgement the news tagger already makes, and there is
+    one of it.
+    """
+
+    def mentions(self, text):
+        """Whether `text` is about this instrument, by its symbol or by one of the company's names."""
+        return self.ticker in feed.tag(text, {self.ticker: self.names})
+
+    @property
+    def named(self):
+        """The one name to search an outside source by: the registered name if known, else the symbol.
+
+        A wider net than `names` deliberately, and the two are not interchangeable. A search may be asked a
+        guess and ranks the answer; the gate may not, because a guess there is what lets a passage that is
+        not about this instrument be served as though it were.
+        """
+        return max(self.names, key=lambda name: (len(name), name)) if self.names \
+            else self.ticker.split(".")[0].lower()
 
 
 class Market:
@@ -42,13 +76,28 @@ class Market:
     evidence simply does not carry the figure and the core refuses the one intent that quotes it.
     """
 
-    def __init__(self, price_dir, advisor=None):
+    def __init__(self, price_dir, advisor=None, symbols=None, scenarios=None):
         self.paths = {path.stem.upper(): path for path in sorted(price_dir.glob("*.csv"))}
         if not self.paths:
             raise ValueError(f"no price files under {price_dir}; the agent would have no evidence to read")
         # "RELIANCE" should find RELIANCE.NS, but only when no plain RELIANCE.csv exists to prefer.
         self.aliases = {name.split(".")[0]: name for name in self.paths if "." in name}
+        self.registrants = feed.registrants(symbols, self.paths) if symbols else {}
         self.advisor = advisor
+        self.scenarios = scenarios
+
+    def subject(self, ticker):
+        """`ticker` as a thing a passage can be about. What the gate on a read-out answer is checked with.
+
+        Registered names only, never the symbol's own stem, which was measured: the stem of RELIANCE.NS is
+        the ordinary English word "reliance", and 1,082 dated corpus passages contain it -- Federal Reserve
+        releases about banks' reliance on funding, none of them about the company. So an instrument SEC's
+        table does not carry is known here by its full symbol and nothing else, no stored passage says that,
+        and its questions are answered by searching for it by name instead. Narrow, and honest about which
+        half of what we hold this file can recognise in prose at all.
+        """
+        cik, registered = self.registrants.get(ticker, (None, ()))
+        return Subject(ticker, tuple(sorted(registered)), cik)
 
     def resolve(self, text):
         """The ticker a question names, or None. Matched against what is on disk, never guessed."""
@@ -94,6 +143,16 @@ class Market:
         enough = self.advisor is not None and end + 1 >= self.advisor.bars_needed
         return (dates[start : end + 1], [float(close) for close in bars[start : end + 1, 3]],
                 [float(p) for p in self.advisor.probabilities(bars, end)] if enough else None)
+
+    def draw_paths(self, ticker, steps, count, rng, as_of=None):
+        """(as-of date, last close, (count, steps) sampled daily log returns) from bars up to `as_of`."""
+        dates, bars = prices.load_bars(self.paths[ticker])
+        end = prices.index_on_or_before(dates, as_of)
+        if end + 1 < self.scenarios.bars_needed:
+            raise ValueError(f"{ticker} has {end + 1} bars up to {dates[end]}, and drawing its paths needs "
+                             f"{self.scenarios.bars_needed}")
+        closes = bars[: end + 1, 3]
+        return dates[end], float(closes[-1]), self.scenarios.paths(closes, steps, count, rng)
 
 
 def examples(paraphrased=True):

@@ -571,6 +571,11 @@ _ANSWER = {
 
 INTENTS = tuple(_ASK)
 
+# The one intent whose answer is the refusal itself: the question was placed, and what it asks for is not
+# among the figures. Named so a caller can act on it rather than on a literal, and derived from the table
+# rather than written out, because a rename that left a copy behind would fail silently.
+UNSUPPORTED_INTENT, = (name for name, answer in _ANSWER.items() if answer is _unsupported)
+
 EVIDENCE_KEYS = tuple(_FORMATS) + ("outlook", "outlook_confidence")
 
 

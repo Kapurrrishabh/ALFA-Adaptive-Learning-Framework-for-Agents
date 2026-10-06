@@ -23,6 +23,21 @@ def verdict_key(question, answer):
     return hashlib.sha256(f"{question}\x00{answer}".encode()).hexdigest()[:16]
 
 
+def pair_key(question, chosen, rejected):
+    """What a pairwise verdict is filed under. Sorted, so the same two answers file under one key however
+    the corpus happened to rank them -- otherwise re-running with the order flipped would ask twice."""
+    return verdict_key(question, "\x00".join(sorted((chosen, rejected))))
+
+
+def shows_rejected_first(key):
+    """Whether the judge sees the lower-ranked answer first. Derived from the key rather than stored, so it
+    is the same on every run and `--tell` can undo it without a file to lose.
+
+    It has to vary: put the preferred answer first every time and a judge reads the position instead of the
+    answer, and the agreement number then measures the layout."""
+    return int(key, 16) % 2 == 1
+
+
 class OracleTeacher:
     """Judges against the gold answer the dataset carries. Exact, and only available on built rows."""
 
@@ -100,3 +115,59 @@ class AgentTeacher:
         with self.path.open("a") as handle:
             handle.write(json.dumps({"key": key, "is_right": bool(is_right), "why": why}) + "\n")
         self._verdicts[key] = (bool(is_right), why)
+
+
+class PairJudge:
+    """Judges which of two answers to the same question is the better one, again by reading Claude's
+    verdicts back from a file.
+
+    Not a subclass of AgentTeacher, and not sharing its verdict file: the question being answered is a
+    different one -- "which of these two" rather than "was this right" -- and a caller that swapped one for
+    the other would get a boolean whose meaning had silently changed. The mechanics are duplicated, which
+    is the cheaper of the two mistakes available here.
+
+    What the boolean means: the corpus ranked these two answers, and True says a reader agrees with that
+    ranking. So the agreement rate this produces is a measurement of the vote labels themselves, and the
+    pairs it disagrees on are the ones worth looking at before trusting 22,379 of them.
+    """
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._verdicts = self._read()
+        self.asked = []
+
+    def _read(self):
+        if not self.path.exists():
+            return {}
+        verdicts = {}
+        for line in self.path.read_text().splitlines():
+            if line.strip():
+                row = json.loads(line)
+                verdicts[row["key"]] = (row["agrees"], row.get("why", ""))
+        return verdicts
+
+    def judge(self, question, chosen, rejected):
+        """(agrees_with_the_corpus, why), or (None, reason) when this pair has no verdict yet."""
+        key = pair_key(question, chosen, rejected)
+        if key in self._verdicts:
+            return self._verdicts[key]
+        first, second = (rejected, chosen) if shows_rejected_first(key) else (chosen, rejected)
+        self.asked.append({"key": key, "question": question, "a": first, "b": second})
+        return None, "no verdict yet"
+
+    def write_requests(self, path):
+        """The pairs needing a verdict, one JSON object per line, with no sign of which way they were
+        ranked. That omission is the whole value of the number they produce."""
+        path = Path(path)
+        path.write_text("".join(json.dumps(row) + "\n" for row in self.asked))
+        return len(self.asked)
+
+    def record(self, key, better, why=""):
+        """One verdict. `better` is "a" or "b" as the request file laid them out, not as the corpus did."""
+        if better not in ("a", "b"):
+            raise ValueError(f"a pairwise verdict is 'a' or 'b', got {better!r} for pair {key}")
+        agrees = (better == "b") if shows_rejected_first(key) else (better == "a")
+        with self.path.open("a") as handle:
+            handle.write(json.dumps({"key": key, "agrees": agrees, "why": why}) + "\n")
+        self._verdicts[key] = (agrees, why)

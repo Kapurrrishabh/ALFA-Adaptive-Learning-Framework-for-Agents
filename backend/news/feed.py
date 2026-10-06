@@ -43,16 +43,24 @@ def provenance(manifest_path, source=SOURCE):
     return found
 
 
-def company_names(path, tickers):
-    """ticker -> the names it is called by, for the tickers asked for.
+def registrants(path, tickers):
+    """ticker -> (its 10-digit SEC number, the names it is called by), for the tickers asked for.
 
     Reads SEC's own symbol table. Restricted to the tickers passed in rather than reading the price
     directory itself, so this file learns nothing about which instruments the agent serves.
+
+    A ticker the table does not carry is simply absent, and half of what we hold is: 51 of our 101 are
+    Indian listings, which file with no-one here. Zero-padded because that is the form EDGAR's own search
+    takes, and a number is the only way to ask it for a company rather than for a word.
     """
     wanted = set(tickers)
-    return names_for({row["ticker"]: row["title"]
-                      for row in json.loads(Path(path).read_text()).values()
-                      if row["ticker"] in wanted})
+    return {row["ticker"]: (f"{row['cik_str']:010d}", _variants(row["title"]))
+            for row in json.loads(Path(path).read_text()).values() if row["ticker"] in wanted}
+
+
+def company_names(path, tickers):
+    """ticker -> the names it is called by, for the tickers asked for."""
+    return {ticker: names for ticker, (_, names) in registrants(path, tickers).items()}
 
 
 def names_for(titles):

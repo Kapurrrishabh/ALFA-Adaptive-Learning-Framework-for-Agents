@@ -3,7 +3,7 @@
 
 Four rates, and the point of the run is that the first three are free to be bad while the fourth is not:
 
-  coverage    a passage cleared the relevance floor, so something was said at all
+  coverage    passages were found and read as an answer, so something was said at all
   paraphrase  the model's own words were served, because every figure in them was in the passages
   quote       the passages' words were served instead, because the model stated a figure they did not
   invented    a figure in what the **user was served** that the evidence does not carry
@@ -21,6 +21,10 @@ a question invented alongside the system that answers it measures nothing.
 a question whose own thread was indexed could be answered by its own accepted answer. That is correct
 behaviour when serving and flattering when measuring, so the share of questions whose asked text appears
 in a retrieved passage is printed beside the rates.
+
+**These questions name no instrument, so the gate on the subject never fires.** Coverage here is what
+retrieval found, not what the gate allowed, and the score distribution is printed to show why a floor on
+the score could not stand in for the gate: the worst retrievals in this set score above the median.
 """
 
 import argparse
@@ -50,7 +54,7 @@ def measure(reference, questions, log):
     """One row per question: its top passage's score, what was served, how, and what it invented.
 
     The score is taken here rather than carried out of `look_up`, because the run needs the scores of the
-    questions the floor **rejected** and a serving path has no reason to report those.
+    questions that were **not** answered too, and a serving path has no reason to report those.
     """
     rows = []
     for count, question in enumerate(questions, 1):
@@ -62,17 +66,15 @@ def measure(reference, questions, log):
     return rows
 
 
-def report(rows, floor_at):
-    """The four rates, the score distribution the floor has to be read against, and the overlap."""
+def report(rows):
+    """The four rates, the score distribution no floor could have been set on, and the overlap."""
     answered = [(question, looked) for question, _, looked in rows if looked is not None]
-    print(f"\n{len(rows)} questions, floor {floor_at}")
+    print(f"\n{len(rows)} questions")
     print(f"  coverage     {len(answered)}/{len(rows)} ({len(answered) / len(rows):.1%})")
 
     tops = np.array([top for _, top, _ in rows])
-    below = tops[tops < floor_at]
     print(f"  top score    median {np.median(tops):.2f}, 10th pct {np.percentile(tops, 10):.2f}, "
-          f"max {tops.max():.2f}; {len(below)} under the floor"
-          + (f", the highest of them {below.max():.2f}" if len(below) else ""))
+          f"max {tops.max():.2f}")
     if not answered:
         return 0
 
@@ -117,7 +119,7 @@ def main():
     print(f"{len(reference.index.chunks)} chunks, {len(questions)} questions, {args.checkpoint}")
 
     rows = measure(reference, questions, print)
-    invented = report(rows, reference.floor)
+    invented = report(rows)
 
     for question, _, looked in [row for row in rows if row[2] is not None][: args.show]:
         print(f"\n> {question[:120]}")

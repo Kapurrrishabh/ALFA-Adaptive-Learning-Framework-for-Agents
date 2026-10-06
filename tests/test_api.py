@@ -39,7 +39,8 @@ class Scripted:
         self.served, self.spoke, self.written = served, spoke, written
         self.market = SimpleNamespace(
             advisor=SimpleNamespace(version="persistence@20d", describe=self._describe),
-            paths={"AAPL": Path("AAPL.csv")}, snapshot=self._snapshot, outlook=self._outlook)
+            paths={"AAPL": Path("AAPL.csv")}, snapshot=self._snapshot, outlook=self._outlook,
+            scenarios=SimpleNamespace(describe=lambda: {"name": "garch"}), draw_paths=self._draw_paths)
         self.gate = SimpleNamespace(cut=0.088)
         self.abstainer, self.calibrator = Abstainer(HAND_PICKED), None
         self.asked = []
@@ -53,11 +54,15 @@ class Scripted:
         return ["2026-09-16", "2026-09-17"], [330.0, 337.0], [0.2, 0.5, 0.3]
 
     @staticmethod
+    def _draw_paths(ticker, steps, count, rng, as_of=None):
+        return "2026-09-17", 337.0, rng.normal(0.0, 0.01, (count, steps))
+
+    @staticmethod
     def _describe():
         return {"serving": "gru", "horizon": 5, "edges": [0.011, 0.019], "accuracy": 0.49}
 
-    def answer(self, question, as_of=None):
-        self.asked.append(question)
+    def answer(self, question, as_of=None, subject=""):
+        self.asked.append((question, subject))
         # An empty `written` is how the real agent reports a turn that stopped before the decoder: no
         # words of its own and so no confidence either.
         written = self.served if self.written is None else self.written
@@ -117,6 +122,21 @@ def test_the_chat_loop_runs_over_the_socket_and_the_cut_moves(tmp_path):
     assert stored[-1]["answer_cut"] != HAND_PICKED and agent.abstainer.cut == stored[-1]["answer_cut"]
     assert len(store.recent(token, ready["conversation"], limit=10)) == 4
     assert len(store.feedback.rows(labeller=AGENT)) == 4
+
+
+def test_the_conversations_instrument_is_carried_into_the_next_question(tmp_path):
+    """What makes "how is it doing" a question. The first turn names one, so the second is asked under it,
+    and a general question in between does not clear it -- the subject is only ever replaced."""
+    client, agent, store = _app(tmp_path, judge=_verdicts())
+    token, headers = _signed_in(client)
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": token})
+        socket.receive_json()
+        for question in ("is AAPL overbought ?", "what is a stop loss ?", "hows it doing ?"):
+            _ask(socket, question)
+
+    assert [subject for _, subject in agent.asked] == ["", "AAPL", "AAPL"]
 
 
 def test_an_unjudged_turn_is_answered_and_stored_and_leaves_the_cut_alone(tmp_path):
@@ -272,3 +292,19 @@ def test_an_email_can_only_register_once(tmp_path, email):
     assert client.post("/auth/register", json={"email": email, "password": "a"}).status_code == 201
     again = client.post("/auth/register", json={"email": email, "password": "b"})
     assert again.status_code == 400 and "already has an account" in again.json()["detail"]
+
+
+def test_the_scenarios_route_is_seeded_names_its_model_and_never_makes_a_call(tmp_path):
+    """The same request has to draw the same picture, or a user comparing two looks at one chart sees
+    noise and reads it as news. And the sentence saying these are ranges travels with every response."""
+    client, _, _ = _app(tmp_path)
+    _, headers = _signed_in(client)
+    first = client.get("/instruments/aapl/scenarios?steps=10&paths=100&seed=3", headers=headers).json()
+    again = client.get("/instruments/aapl/scenarios?steps=10&paths=100&seed=3", headers=headers).json()
+    other = client.get("/instruments/aapl/scenarios?steps=10&paths=100&seed=4", headers=headers).json()
+
+    assert first["fan"] == again["fan"] and first["fan"] != other["fan"]
+    assert len(first["fan"]["0.5"]) == 10 and len(first["examples"]) == 5
+    assert first["model"]["name"] == "garch" and "not which way" in first["direction"]
+    assert client.get("/instruments/aapl/scenarios?steps=999", headers=headers).status_code == 400
+    assert client.get("/instruments/NOSUCH/scenarios", headers=headers).status_code == 404

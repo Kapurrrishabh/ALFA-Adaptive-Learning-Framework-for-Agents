@@ -170,6 +170,18 @@ class Hybrid:
         """
         return float(self.lexical.scores(query)[index])
 
+    def rare_terms(self, query, count):
+        """The query's `count` most distinctive words, rarest first, for a search that takes keywords.
+
+        Ties broken by the word itself, so the same question always searches for the same terms.
+        """
+        weights = self._weights(query)
+        return sorted(weights, key=lambda term: (-weights[term], term))[:count]
+
+    def _weights(self, query):
+        """term -> how rare it is, over the distinct words of the query."""
+        return {term: self.lexical.weight(term) for term in set(self.lexical.tokenize(query))}
+
     def _lexical(self, query, top_k, allowed):
         scores = self.lexical.scores(query) * allowed
         return self._best(scores, top_k, above=0.0)

@@ -12,6 +12,9 @@ from selfagent.learn import AGENT, ORACLE, FeedbackLog
 from selfagent.learn.abstain import Abstainer
 from selfagent.learn.calibrate import (Calibrator, expected_calibration_error, ranking_auc)
 from selfagent.learn.rank import best, consensus, rank
+from selfagent.learn.forecast import (OnlineTemperature, crps, hill_tail_index, paired, stylized,
+                                      stylized_gap)
+from selfagent.learn.verified import reward, winner
 from selfagent.learn.teacher import AgentTeacher, OracleTeacher, verdict_key
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -391,3 +394,102 @@ def test_a_cut_that_swings_either_side_of_the_bar_is_not_reported_as_hitting_it(
     # silent cut as a wrong one.
     assert average([(0.6, 0.5), (float("nan"), 0.0)], 0.6)[3] == 1
     assert average([(float("nan"), 0.0)], 0.6)[1] == 0.0
+
+
+def test_a_refusal_cannot_win_a_group_against_a_grounded_answer():
+    """The reward hack this design exists to dodge. An answer stating no figure has no unsupported figure,
+    so faithfulness alone is maximised by going quiet -- and this model already leans that way, carrying
+    its highest confidence on refusals. If the refusal ever outscored a grounded answer the loop would
+    train the model to stop answering and the unsupported-figure rate would read as a perfect zero."""
+    assert reward(GROUNDED_ANSWER, TURN["evidence"], REFUSAL) > reward(REFUSAL, TURN["evidence"], REFUSAL)
+    assert reward(REFUSAL, TURN["evidence"], REFUSAL) > reward(INVENTED_ANSWER, TURN["evidence"], REFUSAL)
+
+
+def test_grounding_more_figures_is_worth_more_than_grounding_one():
+    """Without this a grounded answer that states nothing scores the same as one that uses its evidence,
+    so the cheapest way into the kept set is to drop every figure. RLFKV had to add a second reward term
+    on financial RAG for the same reason."""
+    both = "ticker AAPL ; rsi_14 71 ; pe 29"
+    assert reward("its rsi is 71 and its pe is 29 .", both, REFUSAL) > reward("its rsi is 71 .", both,
+                                                                             REFUSAL)
+    assert reward("i see it .", both, REFUSAL) < reward("its rsi is 71 .", both, REFUSAL)
+
+
+def test_a_group_that_invented_a_figure_every_time_teaches_nothing():
+    """Best-of-k still returns something when every candidate is wrong, and fine-tuning on it would teach
+    the exact failure the reward exists to remove."""
+    invented = [reward(INVENTED_ANSWER, TURN["evidence"], REFUSAL)] * 4
+    assert winner(invented) is None
+
+
+def test_a_group_of_identical_scores_teaches_nothing():
+    """The expected case on this model, which draws 1.77 distinct answers out of 8. Every sample scoring
+    the same means the pick is not a judgement, so the step is the model copying itself -- it holds what
+    it already does in place and the loss still falls. DAPO dropped these groups for the neighbouring
+    reason and it was the largest single win in their ablation."""
+    assert winner([1.5, 1.5, 1.5]) is None
+    assert winner([1.5, 1.5, 0.1]) == 0
+
+
+
+def test_crps_matches_its_definition_on_every_pair():
+    """The sorted shortcut against the pairwise sum it replaces. An off-by-one in the rank weights still
+    returns a plausible positive number, and every CRPS comparison would then be wrong by a different amount
+    for ensembles of different spread."""
+    samples = np.random.default_rng(0).normal(0, 1, 50)
+    brute = np.abs(samples - 0.3).mean() - 0.5 * np.abs(samples[:, None] - samples[None, :]).mean()
+    assert crps(samples, 0.3) == pytest.approx(brute)
+    assert crps([2.0], 0.5) == pytest.approx(1.5)
+
+
+def test_a_standard_error_counts_windows_and_not_days():
+    """Days inside a window share a volatility regime. Counting each as independent shrinks the error bar
+    until a model is promoted on noise, which is the failure the price head's margin rule exists for."""
+    rng = np.random.default_rng(1)
+    per_window = rng.normal(0, 1, 20)
+    scores = np.repeat(per_window, 100)
+    blocks = np.repeat(np.arange(20), 100)
+    _, error = paired(scores, np.zeros_like(scores), blocks)
+    assert error == pytest.approx(per_window.std(ddof=1) / np.sqrt(20))
+
+
+def test_the_tail_index_reads_a_pareto_tail_it_was_given():
+    tail = (np.random.default_rng(2).pareto(3.0, 200000) + 1.0)
+    assert hill_tail_index(tail) == pytest.approx(3.0, rel=0.1)
+
+
+def test_gaussian_paths_are_told_apart_from_fat_tailed_clustered_ones():
+    """The check a synthetic generator is judged by has to be able to fail. A Gaussian random walk has
+    neither fat tails nor volatility clustering, and must score far from a GARCH-t series on both."""
+    from selfagent.models.garch import Garch
+
+    rng = np.random.default_rng(3)
+    real = stylized(Garch(0.1, 0.85, 4.0).simulate(2000, 1e-4, rng, paths=8))
+    gap = stylized_gap(real, stylized(rng.normal(0, 0.01, (8, 2000))))
+    assert gap["excess_kurtosis"] < -2.0
+    assert gap["acf_squared"] > 0.3
+
+
+def test_the_temperature_step_is_the_gradient_of_the_log_score():
+    """Pinned by finite differences. With the sign flipped the loop would sharpen after every surprise and
+    widen after every hit -- learning, measurably, to be wrong."""
+    logits = np.random.default_rng(4).normal(0, 2, 12)
+    online = OnlineTemperature(step=1.0)
+
+    def loss(log_temperature):
+        scaled = logits / np.exp(log_temperature)
+        return -(scaled[5] - np.log(np.exp(scaled).sum()))
+
+    numeric = (loss(1e-6) - loss(-1e-6)) / 2e-6
+    online.observe(logits, 5)
+    assert -online.log_temperature == pytest.approx(numeric, rel=1e-4)
+
+
+def test_repeated_surprises_widen_the_forecast():
+    """The feedback loop doing its job: outcomes the model thought unlikely, again and again, and the
+    temperature rises so the next forecast puts more mass away from the peak."""
+    logits = np.linspace(0, 5, 10)
+    online = OnlineTemperature(step=0.05)
+    for _ in range(40):
+        online.observe(logits, 0)
+    assert online.temperature > 1.5

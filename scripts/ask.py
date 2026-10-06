@@ -99,7 +99,7 @@ def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=Fal
 
 
 def build(artifacts, checkpoint, prices, gate, log, wanted, warmup, price_head, reference=None,
-          symbols=None):
+          symbols=None, scenarios=""):
     """The served agent, with every threshold loaded from what solved for it."""
     # Which checkpoint answers is the registry's to say. A default string here would serve a model on the
     # strength of its file name, and C6's gate exists because one of these files generates much worse.
@@ -111,7 +111,8 @@ def build(artifacts, checkpoint, prices, gate, log, wanted, warmup, price_head, 
     with FeedbackLog(log) as feedback:
         abstainer, calibrator, learned = adapt(feedback, wanted, warmup)
     advisor = models.load(Path(price_head)) if price_head else None
-    market = finance.Market(Path(prices), advisor, symbols)
+    market = finance.Market(Path(prices), advisor, symbols,
+                            models.scenarios.load(Path(scenarios)) if scenarios else None)
     return Agent(finance, market, router, Abstainer.load(gate), tokenizer,
                  model, config, abstainer, calibrator, np.random.default_rng(config.seed),
                  reference=reference), abstainer, learned, served

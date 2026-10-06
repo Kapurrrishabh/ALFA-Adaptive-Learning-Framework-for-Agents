@@ -18,13 +18,13 @@ from backend.agent.core import Agent, answered
 from backend.retrieval import Chunk, Hybrid
 from selfagent import pretrained
 from selfagent.config import ModelConfig
-from selfagent.data import advisory, prices
+from selfagent.data import advisory, prices, returns
 from selfagent.data.encode import build_sources
 from selfagent.data.qa_pairs import PASSAGES, QUESTION_TOKENS
 from selfagent.models.generator import ANSWER_TEMPERATURE, ANSWER_TOP_P
 from selfagent.learn import Calibrator
 from selfagent.learn.abstain import Abstainer
-from selfagent.models import PriceWindowClassifier
+from selfagent.models import PriceWindowClassifier, ReturnGenerator
 from selfagent.tokenizer.wordpiece import pretokenize
 
 LENGTH = 128
@@ -708,3 +708,76 @@ def test_a_window_the_head_was_not_trained_on_is_refused_not_scored():
     with pytest.raises(ValueError, match="retrain or rebuild"):
         head(ModelConfig(price_channels=5, price_window=32, dim=32, num_heads=2, ffn_dim=64,
                          price_layers=1)).probabilities(alternating_bars(60), 59)
+
+
+RETURNS_SHAPE = ModelConfig(vocab_size=returns.BINS, price_window=16, dim=16, num_heads=2, num_layers=1,
+                            ffn_dim=32, dropout=0.0)
+GARCH_FIT = {"alpha": 0.08, "beta": 0.9, "nu": 4.0}
+
+
+def return_artifact(tmp_path, gap, error=0.002, drop=()):
+    """A return-model file, written the way scripts/train_return_generator.py writes one."""
+    recorded = {"garch": GARCH_FIT, "cutoff": "2021-01-01", "test_from": "2023-01-01",
+                "test": {"vs_garch": gap, "vs_garch_error": error}}
+    for name in drop:
+        del recorded[name]
+    path = tmp_path / "returns.npz"
+    pretrained.save(path, ReturnGenerator(RETURNS_SHAPE), RETURNS_SHAPE, metadata=recorded)
+    return path
+
+
+def test_a_return_model_that_beat_garch_by_more_than_its_noise_draws_the_paths(tmp_path):
+    assert isinstance(models.scenarios.load(return_artifact(tmp_path, gap=-0.01)), models.scenarios.Generative)
+
+
+def test_a_return_model_that_did_not_clear_garch_leaves_garch_drawing_the_paths(tmp_path):
+    """Lower is better on the log score, so the sign is the easy thing to get backwards: a model 0.001
+    nats better than GARCH with a standard error of 0.002 has not beaten it, and one worse certainly has
+    not."""
+    for gap in (-0.001, 0.01):
+        assert isinstance(models.scenarios.load(return_artifact(tmp_path, gap=gap)),
+                          models.scenarios.GarchPaths)
+
+
+def test_a_return_artifact_missing_what_serving_needs_names_the_script_that_writes_it(tmp_path):
+    with pytest.raises(ValueError, match="train_return_generator.py"):
+        models.scenarios.load(return_artifact(tmp_path, gap=-0.01, drop=("garch",)))
+
+
+def _closes_file(directory, name, closes):
+    path = directory / f"{name}.csv"
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["date", "open", "high", "low", "close", "adj_close", "volume"])
+        for day, close in enumerate(closes):
+            writer.writerow([(FIRST_BAR + timedelta(days=day)).isoformat(), close, close, close, close,
+                             close, 1e6])
+
+
+@pytest.mark.parametrize("drawer", ["garch", "generative"])
+def test_paths_drawn_as_of_a_date_ignore_every_bar_after_it(tmp_path, drawer):
+    """Look-ahead, pinned for both drawers. Two files agree up to bar 299 and then one triples: paths drawn
+    as of that bar must be the same array, or the picture a user sees has read a day that had not happened."""
+    wiggle = 100.0 * np.exp(np.cumsum(np.random.default_rng(0).normal(0, 0.01, 400)))
+    later = wiggle.copy()
+    later[300:] *= 3.0
+    served = models.scenarios.load(return_artifact(tmp_path, gap=-0.01 if drawer == "generative" else 0.01))
+    drawn = []
+    for name, closes in (("same", wiggle), ("shocked", later)):
+        folder = tmp_path / name
+        folder.mkdir()
+        _closes_file(folder, "AAPL", closes)
+        market = finance.Market(folder, scenarios=served)
+        as_of = (FIRST_BAR + timedelta(days=299)).isoformat()
+        drawn.append(market.draw_paths("AAPL", 10, 20, np.random.default_rng(1), as_of))
+    assert drawn[0][0] == drawn[1][0] and drawn[0][1] == drawn[1][1]
+    np.testing.assert_array_equal(drawn[0][2], drawn[1][2])
+
+
+def test_the_fan_is_ordered_at_every_step():
+    """Quantiles computed per step in the wrong axis still come out as five lists of prices; ordered at
+    every step is what says each list is a quantile across paths and not a path."""
+    drawn = np.random.default_rng(2).normal(0, 0.02, (500, 15))
+    fan = models.scenarios.fan(100.0, drawn)
+    low, mid, high = (np.array(fan[q]) for q in ("0.05", "0.5", "0.95"))
+    assert len(mid) == 15 and (low < mid).all() and (mid < high).all()
