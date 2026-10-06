@@ -1,6 +1,6 @@
 // App shell cache so the app opens instantly from the home screen. Data is never cached:
 // prices, verdicts and plans always come fresh from the server.
-const SHELL = "stockintel-shell-v10";
+const SHELL = "stockintel-shell-v11";
 const FILES = ["/", "/static/app.css", "/static/app.js", "/static/icon.svg"];
 self.addEventListener("install", (e) => e.waitUntil(caches.open(SHELL).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener("activate", (e) => e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== SHELL).map((k) => caches.delete(k)))).then(() => self.clients.claim())));

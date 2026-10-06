@@ -27,12 +27,21 @@ const skel = (hgt = 16, w = "100%") => h("div", { class: "skeleton", style: `hei
 function toast(msg) { const t = h("div", { class: "toast" }, msg); document.body.append(t); setTimeout(() => t.remove(), 2600); }
 
 // ---------- auth + api ----------
+// a header carries plain ASCII only; Render shows a hidden secret as "••••" until it is revealed
+const KEY_RE = /^[\x21-\x7E]+$/;
+const KEY_HINT = "Your key is printed in the terminal by `stockintel app`, or is STOCKINTEL_API_KEY in your server's settings (reveal it before copying).";
+function saveKey(k) {
+  if (!KEY_RE.test(k)) { toast(k ? "That is not the key: reveal STOCKINTEL_API_KEY and copy it again (no dots or spaces)" : "Paste the key first"); return false; }
+  localStorage.setItem("si-key", k); return true;
+}
 (function captureKey() {
-  const m = location.hash.match(/key=([A-Za-z0-9]+)/);
-  if (m) { localStorage.setItem("si-key", m[1]); history.replaceState(null, "", location.pathname + "#/home"); }
+  const m = location.hash.match(/key=([^&]+)/);
+  if (m) { saveKey(decodeURIComponent(m[1])); history.replaceState(null, "", location.pathname + "#/home"); }
 })();
 async function api(path, opts = {}) {
-  const res = await fetch(path, { ...opts, headers: { "X-API-Key": localStorage.getItem("si-key") || "", "Content-Type": "application/json", ...(opts.headers || {}) } });
+  const key = localStorage.getItem("si-key") || "";
+  if (key && !KEY_RE.test(key)) { localStorage.removeItem("si-key"); askKey(); throw new Error("The saved key is not a valid key; please paste it again"); }
+  const res = await fetch(path, { ...opts, headers: { "X-API-Key": key, "Content-Type": "application/json", ...(opts.headers || {}) } });
   const body = await res.json().catch(() => ({}));
   if (res.status === 401) { askKey(); throw new Error("Please log in with your StockIntel key"); }
   if (!res.ok) throw new Error(body.detail || body.error || `HTTP ${res.status}`);
@@ -40,10 +49,10 @@ async function api(path, opts = {}) {
 }
 function askKey() {
   if ($(".modal-bg")) return;
-  const input = h("input", { placeholder: "Paste the key printed by `stockintel app`", type: "password" });
+  const input = h("input", { placeholder: "Paste your StockIntel key", type: "password" });
   const bg = h("div", { class: "modal-bg" }, h("div", { class: "modal form" },
-    h("h2", {}, "Log in"), h("p", { class: "muted" }, "Your key is printed in the terminal when you run `stockintel app`."), input,
-    h("button", { class: "btn primary", onclick: () => { localStorage.setItem("si-key", input.value.trim()); bg.remove(); route(); } }, "Continue")));
+    h("h2", {}, "Log in"), h("p", { class: "muted" }, KEY_HINT), input,
+    h("button", { class: "btn primary", onclick: () => { if (saveKey(input.value.trim())) { bg.remove(); route(); } } }, "Continue")));
   document.body.append(bg); input.focus();
 }
 
@@ -1063,7 +1072,7 @@ function isoArt() {
 
 async function pageHome(view) {
   const keyInput = h("input", { type: "password", placeholder: "Paste your StockIntel key", autocomplete: "current-password" });
-  const login = () => { const k = keyInput.value.trim(); if (!k) return toast("Paste the key first"); localStorage.setItem("si-key", k); route(); };
+  const login = () => { if (saveKey(keyInput.value.trim())) route(); };
   keyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
   const hasKey = !!localStorage.getItem("si-key");
   const floatA = h("div", { class: "float-card a", hidden: true }), floatB = h("div", { class: "float-card b", hidden: true });
@@ -1072,7 +1081,7 @@ async function pageHome(view) {
       h("h1", { class: "display" }, "Invest with evidence, built for ", h("em", {}, "Indian markets.")),
       h("p", {}, "Search any NSE stock and get a plain buy / wait / don't-buy call with the reasons on both sides. Build a portfolio in seconds, see patterns and AI forecast ranges on the chart, and ask questions in plain English. Every method shows its tested track record."),
       hasKey ? h("div", { class: "row", style: "margin-top:22px" }, h("a", { class: "btn primary", href: "#/builder" }, "Get started"), h("a", { class: "btn", href: "#/explore" }, "Explore the market"))
-        : h("div", { class: "login-box" }, h("b", {}, "Log in"), h("p", {}, "Your key is printed in the terminal by `stockintel app`, or is STOCKINTEL_API_KEY in your server's settings."),
+        : h("div", { class: "login-box" }, h("b", {}, "Log in"), h("p", {}, KEY_HINT),
           h("div", { class: "row" }, keyInput, h("button", { class: "btn primary", onclick: login }, "Continue")))),
     h("div", { class: "hero-visual" }, isoArt(), floatA, floatB)));
   const stats = h("div");
