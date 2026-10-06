@@ -423,13 +423,13 @@ class Hub:
     def ai_forecast(self, symbol: str, model: str = "chronos") -> Dict[str, Any]:
         """Chronos quantile fan, Kronos projected candles or ALFA's sampled-path fan, cached for
         the day, with the model's measured out-of-sample record attached."""
-        from backend.models.serving import alfa_fan as alfa_model
+        from backend.models.serving import alfa_fan as alfa_model, gru_line
         from backend.models.external import kronos_model, remote_models, tsfm
-        if model not in ("chronos", "kronos", "alfa"):
-            raise ValueError("model must be chronos, kronos or alfa")
+        if model not in ("chronos", "kronos", "alfa", "gru"):
+            raise ValueError("model must be chronos, kronos, alfa or gru")
         if model == "alfa" and not (alfa_model.available() or remote_models.space()):
             raise DataUnavailable("our return model is not reachable: its weights are missing from models/artifacts and STOCKINTEL_MODEL_SPACE is not set")
-        if model != "alfa" and not self.ml_enabled():
+        if model in ("chronos", "kronos") and not self.ml_enabled():
             raise DataUnavailable("open-source models are disabled on this server "
                                   "(STOCKINTEL_ML=0, or neither torch nor STOCKINTEL_MODEL_SPACE)")
         df = self.orch.service().history(symbol)
@@ -443,12 +443,26 @@ class Hub:
                 if model == "chronos":
                     cache[key] = {"dates": future(FORECAST_DAYS),
                                   **(tsfm.fan if local else remote_models.fan)(df["close"], FORECAST_DAYS)}
+                elif model == "gru":
+                    stock, market = df["close"].align(self.bench(), join="inner")
+                    market = market.ffill()
+                    keep = stock.notna() & market.notna()
+                    cache[key] = {"dates": future(FORECAST_DAYS), **gru_line.line(stock[keep].to_numpy(), market[keep].to_numpy())}
                 elif model == "alfa":
                     q = (alfa_model.fan(df["close"]) if alfa_model.available()
                          else remote_models.alfa_fan(df["close"], alfa_model.STEPS, alfa_model.PATHS))
                     cache[key] = {"dates": future(alfa_model.STEPS), **q}
                 else:
                     cache[key] = (kronos_model.next_candles if local else remote_models.next_candles)(df, pred_len=5, samples=8)
+        if model == "gru":
+            rec = cache[key]["record"]
+            day = next(d for d in rec["test"]["days"] if d["day"] == FORECAST_DAYS)
+            note = (f"Our GRU forecast (ALFA's own NumPy framework, trained by us). On {rec['test']['n']:,} forecasts from "
+                    f"{rec['test_from']} its {FORECAST_DAYS}-day error was {day['mae_pct']}% against {day['no_change_mae_pct']}% "
+                    f"for assuming no change, and its direction was right {day['direction_acc']:.1%} against "
+                    f"{day['base_rate_acc']:.1%} for the base rate. Grouped by date the direction edge runs "
+                    f"{day['direction_edge_lo'] * 100:+.1f} to {day['direction_edge_hi'] * 100:+.1f} points, so it is within noise.")
+            return {"symbol": symbol.upper(), "model": model, "as_of": key[2], **cache[key], "note": note}
         if model == "alfa":
             d = cache[key]["drawer"]
             m = d["measured"]
@@ -486,6 +500,36 @@ class Hub:
                        f"{verdicts['kronos']}."
                        if record else "evaluation not run yet.")) + call_note
         return {"symbol": symbol.upper(), "model": model, "as_of": key[2], **cache[key], "record": record, "note": note}
+
+    def writer(self):
+        """The language model that writes analyst notes: on the model Space when one is set, else local."""
+        from backend.models.external import language, remote_models
+        if "_writer" not in self.__dict__:
+            self._writer = remote_models.RemoteWriter() if remote_models.space() else language.OpenLM()
+        return self._writer
+
+    def analyst_note(self, symbol: str) -> Dict[str, Any]:
+        """Our models' numbers for one stock, written up by the language model and checked (advisory/analyst.py)."""
+        from backend.advisory import analyst
+        from backend.models.external.llm import LLMUnavailable
+        sym = symbol.upper()
+        t = self.technical(sym, bars=21)
+        v = self.verdict(sym)
+        f = analyst.facts(sym, t["close"][-1], t["as_of"], self.ai_forecast(sym, "alfa"), self.ai_forecast(sym, "gru"),
+                          t["cone"][-1], {"stop": t["stop"], "rank": v["momentum_rank"], "universe": v["universe_size"],
+                                          "verdict": v["verdict"]})
+        key = (sym, t["as_of"])
+        cache = self.__dict__.setdefault("_analyst_cache", {})
+        if key not in cache:
+            if not self.ml_enabled():
+                return {"facts": f, "text": analyst.computed_note(f), "written_by": None,
+                        "draft_rejected": ["the language model is switched off on this server (STOCKINTEL_ML=0 or no torch)"]}
+            with self.__dict__.setdefault("_writer_lock", threading.Lock()):
+                try:
+                    cache[key] = {"facts": f, **analyst.write(f, self.writer())}
+                except LLMUnavailable as exc:
+                    return {"facts": f, "text": analyst.computed_note(f), "written_by": None, "draft_rejected": [str(exc)]}
+        return cache[key]
 
     # --- portfolio builder ---------------------------------------------------------------
     def build_portfolio(self, capital: float, strategy: str = "momentum", risk_mode: str = "balanced",

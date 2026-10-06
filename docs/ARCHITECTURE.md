@@ -19,7 +19,7 @@ Source: `architecture/overview.html` (a layered block diagram reads better than 
 flowchart LR
   subgraph L["On your own computer: everything"]
     L1["stockintel app<br/>web + API + engines + torch models"]
-    L2["ALFA scripts/serve.py :8010<br/>chat agent"]
+    L2["backend.models.agent.run.serve :8010<br/>chat agent"]
     L1 -- "HTTP + WebSocket" --> L2
   end
   subgraph R["Free cloud setup"]
@@ -56,8 +56,13 @@ sequenceDiagram
   H-->>U: verdict with "why buy" and "why not"
   U->>A: chart layers
   A->>H: technical (patterns, candles, range) and AI fans
-  H->>F: Chronos / Kronos / ALFA (in process, or the Space)
-  F-->>U: fans and candles, each with its tested record
+  H->>F: ALFA fan, GRU line, Chronos / Kronos (in process, or the Space)
+  F-->>U: fan, dashed GRU line and candles, each with its tested record
+  U->>A: analyst note
+  A->>H: our numbers for TCS, judged in words by our code
+  H->>F: language model rewrites the computed note
+  F-->>H: draft
+  H-->>U: the draft if every check passes, else the computed note and the reason
 ```
 
 ## 4. Training and testing
@@ -69,6 +74,10 @@ flowchart LR
   P[("Price panel<br/>Nifty 500, 10 years, cached")]
   P --> TC["train-chronos<br/>train ≤ 2021 · choose on 2022–23<br/>retrain ≤ 2023 · test once on 2024–26"]
   P --> TK["train-kronos<br/>same splits, tokenizer frozen"]
+  P --> TG["train_path_gru (ours, NumPy)<br/>same splits, early stopping on 2022–23"]
+  TG --> GW["path_gru.npz<br/>weights + its test record"]
+  GW --> HF
+  W["compare_writers<br/>4 open language models, same 24 notes"] --> LMC["chosen writer<br/>by faithfulness checks"]
   P --> EV["validate-patterns · evaluate-signals<br/>build-performance · evaluate-models"]
   ALFA["ALFA project training<br/>return generator vs GARCH"] --> AW["returns.npz<br/>weights + its own test record"]
   TC --> CW["chronos-2-nse<br/>weights + stockintel_record.json"]
@@ -146,6 +155,7 @@ cut, and unjudged ones are stored but do not move it.
 | **Chronos-2-NSE** | AutoGluon Chronos-2-small (28M parameters), fine-tuned on NSE | **Us** | Server or Space | Range layer | Range −4.5% / −0.6% vs band; direction 48.9% / 52.0% vs 51.7% / 53.4% |
 | Kronos-small | Candlestick model + tokenizer | NeoQuasar (zero-shot) | Server or Space | Experimental candles | Worse than "no change" (5.2% vs 2.2% error) |
 | **Kronos-NSE** | Kronos-small predictor fine-tuned on NSE | **Us** | Server or Space | Experimental candles | Error 4.0% vs 3.3% for "no change" (untuned: 9.7%); direction 48.8% vs 53.2% |
+| **Path GRU** | GRU on ALFA's NumPy framework: 60 days in, 20-day path out | **Us** | Server (NumPy) | Dashed line beside the median dots | Error 1% below "no change"; direction edge within noise once grouped by date (rank IC 0.04, t 1.36) |
 | **ALFA return generator** | NumPy transformer, 875,776 parameters | **Us (ALFA)** | Server (local) or Space (CPU) | Gold "our model" fan | Beat GARCH(1,1)-t by 0.032 ± 0.003 nats per return over 80,576 returns; no direction edge |
 | GARCH(1,1)-t | Classic volatility model | ALFA, same run | Inside ALFA's loader | Draws the fan if the generator stops beating it | Baseline |
 | **ALFA chat agent** | NumPy transformer generator + retrieval index + price head + answer gate | **Us (ALFA)** | Its own server, about 5 GB RAM | "Also ask my self-learning agent" | Answers only above its fitted confidence cut |

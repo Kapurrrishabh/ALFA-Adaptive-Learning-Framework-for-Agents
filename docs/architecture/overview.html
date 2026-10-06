@@ -20,7 +20,7 @@
   .c6 .tag { background: #111827; } .c6 .box { border-color: #11182755; background: #f9fafb; }
   .legend { margin-top: 14px; color: #6b7280; font-size: 12.5px; }
 </style></head><body><div class="wrap">
-  <h1>StockIntel — how the parts fit</h1>
+  <h1>ALFA + StockIntel — how the parts fit</h1>
   <p class="sub">Each row only calls the rows below it. The same code runs on your computer (everything in one process, plus the ALFA agent) or in the free cloud setup (models moved to a Hugging Face Space).</p>
 
   <div class="layer c1"><div class="tag">You<small>browser, phone, terminal</small></div>
@@ -30,37 +30,38 @@
     </div></div>
   <div class="arrow">▼</div>
 
-  <div class="layer c2"><div class="tag">API<small>api.py · FastAPI</small></div>
+  <div class="layer c2"><div class="tag">API<small>backend/api · FastAPI</small></div>
     <div class="row" style="grid-template-columns: repeat(3, 1fr)">
       <div class="box"><b>Login key + rate limit</b><span>one private key per copy of the app</span></div>
       <div class="box"><b>JSON endpoints</b><span>/ui/* pages · /chat · /signals · /portfolio · /ui/stock/{t}/ai</span></div>
-      <div class="box"><b>Static web app</b><span>app.js · app.css · service worker · manifest</span></div>
+      <div class="box"><b>Static web app</b><span>frontend/: app.js · app.css · service worker · manifest</span></div>
     </div></div>
   <div class="arrow">▼</div>
 
   <div class="layer c3"><div class="tag">Application<small>what each page or question needs</small></div>
-    <div class="row" style="grid-template-columns: 1fr 1fr">
-      <div class="box"><b>hub.py</b><span>stock pages, charts, verdict, portfolio builder, ticker, AI forecast fans with their tested records</span></div>
-      <div class="box"><b>orchestrator.py</b><span>chat: question → intent → tools → answer (optional Claude narration, every number checked)</span></div>
+    <div class="row" style="grid-template-columns: 1fr 1fr 1fr">
+      <div class="box"><b>api/hub.py</b><span>stock pages, charts, verdict, portfolio builder, ticker, forecast layers with their tested records</span></div>
+      <div class="box"><b>api/orchestrator.py</b><span>chat: question → intent → tools → answer (optional narration, every number checked)</span></div>
+      <div class="box ours"><b>advisory/analyst.py</b><span>the analyst note: our code judges the numbers, a language model rewrites them, a checker passes or refuses the draft</span></div>
     </div></div>
   <div class="arrow">▼</div>
 
   <div class="layer c4"><div class="tag">Decisions<small>rules, statistics, models</small></div>
     <div class="row" style="grid-template-columns: 1.2fr 1fr 1fr 1fr">
-      <div class="box"><b>Analysis engines → fusion</b><span>technical · 15 candle rules · 19 chart patterns · fundamentals · news · risk · regime · forecast · analogues → research label with evidence for and against</span></div>
-      <div class="box"><b>Signal system</b><span>NSE Nifty200 Momentum 30 rank · trend + volatility overlay · 10% stops · tax notes · buy/sell plan</span></div>
-      <div class="box ours"><b>Forecast models</b><span>Chronos-2-NSE · Kronos-NSE (fine-tuned by us) · ALFA return generator · Chronos-Bolt · EWMA band</span></div>
-      <div class="box"><b>Track record</b><span>performance.py: every figure shown comes from measured results</span></div>
+      <div class="box"><b>advisory/ statistics → fusion</b><span>technical · 15 candle rules · 19 chart patterns · fundamentals · sentiment · risk · regime → research label with evidence for and against</span></div>
+      <div class="box"><b>advisory/signals</b><span>NSE Nifty200 Momentum 30 rank · trend + volatility overlay · 10% stops · tax notes · buy/sell plan</span></div>
+      <div class="box ours"><b>models/ (ours, NumPy)</b><span>return generator · path GRU · chat agent · price head, all on ALFA's from-scratch framework</span></div>
+      <div class="box"><b>models/external</b><span>Chronos-2 and Kronos fine-tuned on NSE · the analyst's language model · Claude (optional)</span></div>
     </div></div>
   <div class="arrow">▼</div>
 
   <div class="layer c5"><div class="tag">Adapters<small>talk to the outside</small></div>
     <div class="row" style="grid-template-columns: repeat(5, 1fr)">
-      <div class="box"><b>Data providers</b><span>yahoo (curl_cffi) · rss · NSE insider · quality gate</span></div>
-      <div class="box"><b>Model runners</b><span>in process (torch / NumPy) or remote_models.py → Space</span></div>
-      <div class="box"><b>selfagent_client.py</b><span>HTTP + WebSocket to the ALFA agent</span></div>
-      <div class="box"><b>storage.py</b><span>SQLite: portfolio, reports, plans, pattern records</span></div>
-      <div class="box"><b>hfstate.py</b><span>restore on start, save every 10 min and on shutdown</span></div>
+      <div class="box"><b>database/sources</b><span>yahoo (curl_cffi) · rss · NSE insider · quality gate · dataforge corpus</span></div>
+      <div class="box"><b>models/serving</b><span>fan, GRU line, registry; or remote_models.py → the model Space</span></div>
+      <div class="box"><b>models/agent/client.py</b><span>HTTP + WebSocket to the ALFA agent</span></div>
+      <div class="box"><b>database/storage.py</b><span>SQLite: portfolio, reports, plans, pattern records (user/portfolio holds the logic)</span></div>
+      <div class="box"><b>database/hfstate.py</b><span>restore on start, save every 10 min and on shutdown</span></div>
     </div></div>
   <div class="arrow">▼</div>
 

@@ -178,3 +178,57 @@ def test_narrator_only_accepts_figures_from_the_draft_or_evidence_claims():
                                   "should I sell RELIANCE", "Is TCS worth buying?"])
 def test_should_buy_questions_get_the_verdict_intent(text):
     assert classify(text, KNOWN, False, []).name == "should_buy"
+
+
+def _analyst_facts(rank=161, edge=(-0.008, 0.02), gru_mae=6.479):
+    from backend.advisory import analyst
+    days = 20
+    alfa = {"q10": [663.0] * days, "q50": [714.0] * days, "q90": [766.0] * days, "record": {"vs_garch": -0.0323}}
+    gru = {"close": [712.0] * days, "record": {"test": {"days": [{"day": 20, "mae_pct": gru_mae, "no_change_mae_pct": 6.54,
+                                                                    "direction_acc": 0.539, "base_rate_acc": 0.533,
+                                                                    "direction_edge_lo": edge[0], "direction_edge_hi": edge[1]}]}}}
+    return analyst.facts("HDFCBANK", 709.0, "2026-10-06", alfa, gru, {"lo80": 657.0, "hi80": 766.0},
+                         {"stop": 638.0, "rank": rank, "universe": 194, "verdict": "DON'T BUY"})
+
+
+def test_analyst_facts_carry_our_judgements_not_the_writers():
+    f = _analyst_facts()
+    assert "about the same as the 6.54%" in f["gru_error"] and "within noise" in f["gru_direction"]
+    assert "bottom fifth" in f["momentum"]
+    assert "lower than" in _analyst_facts(gru_mae=6.0)["gru_error"]          # 8% below no-change is not "the same"
+    assert "real but small edge" in _analyst_facts(edge=(0.01, 0.05))["gru_direction"]
+
+
+def test_analyst_check_passes_the_computed_note_and_refuses_bad_drafts():
+    from backend.advisory import analyst
+    f = _analyst_facts()
+    assert analyst.check(analyst.computed_note(f), f) == []
+    good = "Over 20 days the range is ₹663 to ₹766. The verdict is DON'T BUY."
+    assert any("adds terms" in r for r in analyst.check(good + " A Granger test agrees.", f))
+    assert analyst.check(good, f) == []
+    assert any("dollars" in r for r in analyst.check(good.replace("₹", "$"), f))
+    assert any("direction" in r for r in analyst.check(good + " The price will rise.", f))
+    assert any("praises" in r for r in analyst.check(good + " The GRU is reliable.", f))
+    assert any("leaves out ₹766" in r for r in analyst.check("The range starts at ₹663. DON'T BUY.", f))
+    assert any("figure 812" in r for r in analyst.check(good + " It may reach ₹812.", f))
+
+
+def test_analyst_shows_the_writers_note_only_when_it_passes():
+    from backend.advisory import analyst
+    from backend.models.external.language import Reply
+
+    class Writer:
+        def __init__(self, text):
+            self.text_out = text
+
+        def create(self, system, messages):
+            return Reply("test-writer", self.text_out)
+
+        @staticmethod
+        def text(resp):
+            return resp.content
+    f = _analyst_facts()
+    ok = analyst.write(f, Writer("Over 20 days the range is ₹663 to ₹766. The verdict is DON'T BUY."))
+    assert ok["written_by"] == "test-writer" and ok["draft_rejected"] == []
+    bad = analyst.write(f, Writer("It will rise to ₹900."))
+    assert bad["written_by"] is None and bad["text"] == analyst.computed_note(f) and bad["draft_rejected"]

@@ -918,3 +918,17 @@ def test_a_realised_return_reads_its_place_in_the_forecast_distribution():
     assert returns.cdf(probabilities, [0.0], 0.01)[0] == pytest.approx(0.5)
     assert returns.cdf(probabilities, [1.0], 0.01)[0] == pytest.approx(1.0)
     assert returns.cdf(probabilities, [-1.0], 0.01)[0] == pytest.approx(0.0)
+
+
+def test_path_gru_reads_a_window_and_its_targets_turn_back_into_prices():
+    from backend.models.core.backend import default_rng, xp
+    from backend.models.data import returns
+    from backend.models.networks import path_gru as G
+    closes = 100 * xp.exp(xp.cumsum(default_rng(0).normal(0, 0.01, 400)))
+    r = returns.log_returns(closes)
+    end = len(r) - G.HORIZON - 1
+    window, scale = G.window_at(r, r, end)
+    assert window.shape == (G.WINDOW, G.FEATURES)
+    target = G.targets_at(closes, end, scale)
+    assert xp.allclose(G.to_prices(closes[end + 1], target, scale), closes[end + 2: end + 2 + G.HORIZON])
+    assert G.PathGRU(8)(window[None].astype("float32")).data.shape == (1, G.HORIZON)

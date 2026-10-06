@@ -20,7 +20,7 @@ import pandas as pd
 
 from backend.models.external import kronos_model as K
 from backend.models.external.tsfm import RECORD_FILE
-from backend.models.external.tsfm_train import TEST_START, TRAIN_END, VAL_END, VAL_START, selective
+from backend.models.learning.protocol import TEST_START, TRAIN_END, VAL_END, VAL_START, selective
 
 log = logging.getLogger("stockintel.kronos_train")
 PRED_LEN = 5
@@ -118,7 +118,7 @@ def run(frames: Dict[str, pd.DataFrame], eval_frames: Dict[str, pd.DataFrame], o
         val_rows = K.forecast_rows(eval_frames, PRED_LEN, VAL_START, VAL_END, pred=pred)
         test_rows = K.forecast_rows(eval_frames, PRED_LEN, TEST_START, pred=pred)
         results["test"][name] = K.summarize(test_rows, name)
-        results["precision_calls"][name] = selective(val_rows, test_rows, key="pred", horizons=(PRED_LEN,))
+        results["precision_calls"][name] = selective(val_rows, test_rows, (PRED_LEN,), key="pred")
         log.info("%s test: %s", name, results["test"][name])
     final.save_pretrained(str(out_dir / "kronos-nse"))
     (out_dir / "kronos-nse" / RECORD_FILE).write_text(json.dumps({

@@ -48,6 +48,21 @@ def alfa_fan(close: pd.Series, steps: int, count: int) -> Dict[str, Any]:
     return _call("/return_paths", json.dumps([round(float(x), 4) for x in close.dropna()]), steps, count)
 
 
+class RemoteWriter:
+    """The Space's language model behind the LLMClient interface (`create`, `text`)."""
+
+    def create(self, system: str, messages, tools=None):
+        from backend.models.external.language import Reply
+        if tools:
+            raise DataUnavailable("the Space writer does not take tools")
+        out = _call("/write", system, json.dumps(messages))
+        return Reply(out["model"], out["text"])
+
+    @staticmethod
+    def text(resp) -> str:
+        return resp.content
+
+
 def next_candles(df: pd.DataFrame, pred_len: int = 5, samples: int = 8) -> Dict[str, list]:
     w = df.iloc[-LOOKBACK:]
     payload = {"dates": [str(d.date()) for d in w.index],

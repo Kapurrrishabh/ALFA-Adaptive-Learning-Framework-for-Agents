@@ -202,12 +202,16 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
         return ok(hub.indicators(ticker(t), bars))
 
     @app.get("/ui/stock/{t}/ai", dependencies=[Depends(auth)])
-    def ui_ai(t: str, model: Literal["chronos", "kronos", "alfa"] = "chronos"):
+    def ui_ai(t: str, model: Literal["chronos", "kronos", "alfa", "gru"] = "chronos"):
         return ok(hub.ai_forecast(ticker(t), model))
 
     @app.get("/ui/ticker", dependencies=[Depends(auth)])
     def ui_ticker():
         return ok(hub.ticker())
+
+    @app.get("/ui/stock/{t}/analyst", dependencies=[Depends(auth)])
+    def ui_analyst(t: str):
+        return ok(hub.analyst_note(ticker(t)))
 
     @app.get("/ui/sectors", dependencies=[Depends(auth)])
     def ui_sectors():
@@ -216,11 +220,11 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
 
     @app.get("/ui/features", dependencies=[Depends(auth)])
     def ui_features():
-        from backend.models.serving import alfa_fan as alfa_model
+        from backend.models.serving import alfa_fan as alfa_model, gru_line
         from backend.models.external import kronos_model, remote_models
         space = bool(remote_models.space())
         return {"ml": hub.ml_enabled(), "kronos": hub.ml_enabled() and (space or kronos_model.available()),
-                "alfa": space or alfa_model.available()}
+                "alfa": space or alfa_model.available(), "gru": gru_line.available()}
 
     @app.get("/manifest.webmanifest")
     def manifest():

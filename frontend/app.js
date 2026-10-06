@@ -165,10 +165,10 @@ function spark(values, w = 120, hgt = 36) {
 // ---------- candlestick chart with pattern overlays ----------
 function candleChart(container, t, layers, selected, onPick) {
   container.replaceChildren();
-  const n = t.dates.length, ghost = t.ghost;
+  const n = t.dates.length, ghost = t.ghost, gru = t.gru;
   // each forecast fan: [data, colour, name, label side]; the first shown labels below its band, a second above
   const fans = [[t.alfa, css("--gold"), "Our model"], [t.fan, css("--ai"), "AI"]].filter(([f]) => f).map((f, i) => [...f, i ? -1 : 1]);
-  const fut = Math.max(layers.cone ? t.cone.length : 0, ghost ? ghost.dates.length : 0, ...fans.map(([f]) => f.dates.length)), total = n + fut;
+  const fut = Math.max(layers.cone ? t.cone.length : 0, ghost ? ghost.dates.length : 0, gru ? gru.dates.length : 0, ...fans.map(([f]) => f.dates.length)), total = n + fut;
   const W = container.clientWidth || 760, H = 380, volH = 54, m = { l: 8, r: 64, t: 12, b: 24 };
   const pw = W - m.l - m.r, ph = H - m.t - m.b - volH - 8, step = pw / total;
   const vals = [...t.low, ...t.high];
@@ -178,6 +178,7 @@ function candleChart(container, t, layers, selected, onPick) {
   if (layers.patterns) for (const p of t.patterns) { if (p.target) vals.push(p.target); }
   for (const [f] of fans) vals.push(...f.q10, ...f.q90);
   if (ghost) vals.push(...ghost.low, ...ghost.high);
+  if (gru) vals.push(...gru.close);
   let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.05; lo -= pad; hi += pad;
   const dateIdx = new Map(t.dates.map((d, i) => [d, i])); t.cone.forEach((c, k) => dateIdx.set(c.date, n + k));
   const X = (i) => m.l + step * (i + 0.5), Y = (v) => m.t + ph - ((v - lo) / (hi - lo)) * ph;
@@ -236,6 +237,15 @@ function candleChart(container, t, layers, selected, onPick) {
       dot.addEventListener("mouseleave", () => hideTip()); svg.append(dot); });
     const last = fan.q50.length - 1;
     txt(xs[last], side > 0 ? Y(fan.q10[last]) + 14 : Y(fan.q90[last]) - 8, `${name} median ${inr(fan.q50[last], 0)}`, { fill: ai, "text-anchor": "middle", "font-weight": 700 });
+  }
+  if (gru) {
+    const col = css("--ink"), pts = [`${X(n - 1)},${Y(t.close[n - 1])}`, ...gru.close.map((v, k) => `${X(n + k)},${Y(v)}`)];
+    const path = s("path", { d: `M${pts.join(" L")}`, fill: "none", stroke: col, "stroke-width": 2, "stroke-dasharray": "7 5", opacity: 0.85, cursor: "help" });
+    path.addEventListener("mousemove", (ev) => showTip(ev, [h("b", {}, "Our GRU forecast"), `ends at ${inr(gru.close[gru.close.length - 1])} on ${gru.dates[gru.dates.length - 1]}`]));
+    path.addEventListener("mouseleave", () => hideTip());
+    svg.append(path);
+    const last = gru.close.length - 1;
+    txt(X(n + last), Y(gru.close[last]) - 9, `GRU ${inr(gru.close[last], 0)}`, { fill: col, "text-anchor": "end", "font-weight": 700 });
   }
   if (ghost) ghost.dates.forEach((d, k) => { const x = X(n + k), up = ghost.close[k] >= ghost.open[k], col = up ? css("--up") : css("--down");
     svg.append(s("line", { x1: x, x2: x, y1: Y(ghost.high[k]), y2: Y(ghost.low[k]), stroke: col, opacity: 0.6 }));
@@ -441,16 +451,17 @@ function technicalPanel(sym, opts = {}) {
   const toggle = (k) => { const cb = h("input", { type: "checkbox" }); cb.checked = layers[k];
     cb.addEventListener("change", () => { layers[k] = cb.checked; loadAi(); draw(); drawCards(); }); return h("label", {}, cb, names[k]); };
   const toggles = h("div", { class: "overlay-toggles" }, ...Object.keys(names).map(toggle));
-  features().then((f) => { if (f.alfa) { names.alfa = "Our return model (ALFA)"; layers.alfa = true; toggles.prepend(toggle("alfa")); }
+  features().then((f) => { if (f.gru) { names.gru = "Our GRU forecast (dashed)"; layers.gru = true; toggles.prepend(toggle("gru")); }
+    if (f.alfa) { names.alfa = "Our return model (ALFA)"; layers.alfa = true; toggles.prepend(toggle("alfa")); }
     if (f.ml) { names.ai = "AI forecast (Chronos)"; layers.ai = false; toggles.append(toggle("ai")); }
     if (f.kronos) { names.kronos = "AI candles (Kronos, experimental)"; toggles.append(toggle("kronos")); } loadAi(); }).catch((e) => toast(e.message));
-  const AI_LAYERS = [["alfa", "alfa"], ["ai", "chronos"], ["kronos", "kronos"]];
+  const AI_LAYERS = [["alfa", "alfa"], ["gru", "gru"], ["ai", "chronos"], ["kronos", "kronos"]];
   const loadAi = () => { for (const [k, model] of AI_LAYERS) if (layers[k] && !(model in ai)) {
     ai[model] = null;
     api(`/ui/stock/${encodeURIComponent(sym)}/ai?model=${model}`).then((r) => { ai[model] = r; draw(); drawCards(); })
       .catch((e) => { delete ai[model]; toast(`${model}: ${e.message}`); }); } };
   const seg = h("div", { class: "seg" }, ...[["1M", 21], ["3M", 63], ["6M", 126], ["1Y", 252], ["2Y", 500]].map(([lab, b]) => h("button", { class: b === bars ? "active" : "", onclick: (e) => { bars = b; for (const x of seg.children) x.classList.remove("active"); e.target.classList.add("active"); load(); } }, lab)));
-  const draw = () => { if (!data) return; candleChart(plot, { ...data, fan: layers.ai && ai.chronos, alfa: layers.alfa && ai.alfa, ghost: layers.kronos && ai.kronos }, layers, selected, (k) => { selected = selected === k ? null : k; draw(); drawCards(); }); };
+  const draw = () => { if (!data) return; candleChart(plot, { ...data, fan: layers.ai && ai.chronos, alfa: layers.alfa && ai.alfa, gru: layers.gru && ai.gru, ghost: layers.kronos && ai.kronos }, layers, selected, (k) => { selected = selected === k ? null : k; draw(); drawCards(); }); };
   const drawCards = () => {
     if (!data) return;
     cards.replaceChildren(...(data.patterns.length > 1 ? [h("div", { class: "muted", style: "grid-column:1/-1;font-size:12px" },
@@ -465,7 +476,7 @@ function technicalPanel(sym, opts = {}) {
     const counts = {}; for (const mk of data.markers) if (mk.direction !== 0) counts[mk.label] = (counts[mk.label] || 0) + 1;
     note.replaceChildren(data.cone_note, h("br"),
       Object.keys(counts).length ? `Candle signals in the last ${RECENT_MARKERS} sessions: ${Object.entries(counts).map(([k, v]) => `${k} ×${v}`).join(", ")}. Hover a marker to see that formation's tested record.` : "",
-      ...AI_LAYERS.filter(([k, model]) => layers[k] && ai[model]).flatMap(([, model]) => [h("br"), h("span", { style: `color:var(${model === "alfa" ? "--gold" : "--ai"})` }, ai[model].note)]));
+      ...AI_LAYERS.filter(([k, model]) => layers[k] && ai[model]).flatMap(([, model]) => [h("br"), h("span", { style: `color:var(${{ alfa: "--gold", gru: "--ink" }[model] || "--ai"})` }, ai[model].note)]));
   };
   const load = async () => { plot.replaceChildren(skel(380)); try { data = await api(`/ui/stock/${encodeURIComponent(sym)}/technical?bars=${bars}`);
     const recent = new Set(data.dates.slice(-RECENT_MARKERS)); data.markers = data.markers.filter((mk) => recent.has(mk.date));
@@ -724,7 +735,8 @@ async function pageStock(view, sym) {
   const verdictCard = h("div", { class: "card verdict" }, h("h3", {}, "Should I buy?"), h("p", { class: "muted" }, "Running every engine on this stock…"), skel(18), skel(18, "80%"), skel(18, "90%"));
   const tabsCard = h("div", { class: "card" }, skel(120));
   const analytics = analyticsSection(sym);
-  view.append(h("div", { class: "grid cols-2" }, h("div", { class: "grid" }, head, chartCard), h("div", { class: "grid", style: "align-content:start" }, verdictCard, askCard(sym))),
+  const analystCard = h("div", { class: "card analyst" }, h("div", { class: "panel-title" }, "Analyst note"), h("p", { class: "muted" }, "Our models are writing this up…"), skel(16), skel(16, "85%"));
+  view.append(h("div", { class: "grid cols-2" }, h("div", { class: "grid" }, head, chartCard, analystCard), h("div", { class: "grid", style: "align-content:start" }, verdictCard, askCard(sym))),
     h("div", { style: "margin-top:18px" }, analytics), h("div", { style: "margin-top:18px" }, tabsCard));
   let o; try { o = await api(`/ui/stock/${encodeURIComponent(sym)}`); } catch (e) { view.replaceChildren(errorBox(e)); return; }
   const chip = (k, v, c = "") => h("div", { class: "stat-chip" }, h("div", { class: "k" }, k), h("div", { class: `v num ${c}` }, v));
@@ -748,6 +760,11 @@ async function pageStock(view, sym) {
   const showPane = (k) => { for (const b of tabs.children) b.classList.toggle("active", b.textContent === k); pane.replaceChildren(skel(100)); Promise.resolve(panes[k]()).then((el) => pane.replaceChildren(el)).catch((e) => pane.replaceChildren(errorBox(e))); };
   tabs.append(...Object.keys(panes).map((k) => h("button", { onclick: () => showPane(k) }, k)));
   tabsCard.replaceChildren(tabs, pane); showPane("Overview");
+  api(`/ui/stock/${encodeURIComponent(sym)}/analyst`).then((a) => analystCard.replaceChildren(h("div", { class: "panel-title" }, "Analyst note"),
+    h("p", { class: "analyst-text" }, a.text),
+    h("div", { class: "muted", style: "font-size:12px" }, a.written_by ? `Written by ${a.written_by} from our models' numbers; every number was checked against them.`
+      : `Computed note: ${a.draft_rejected.join("; ")}.`)))
+    .catch((e) => analystCard.replaceChildren(h("div", { class: "panel-title" }, "Analyst note"), h("p", { class: "muted" }, e.message)));
   try { const v = await api(`/ui/stock/${encodeURIComponent(sym)}/verdict`); renderVerdict(verdictCard, v); analytics.setGauge(v); }
   catch (e) { verdictCard.replaceChildren(h("h3", {}, "Should I buy?"), h("p", { class: "muted" }, e.message)); }
 }

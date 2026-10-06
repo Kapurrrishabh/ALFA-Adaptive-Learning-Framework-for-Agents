@@ -52,7 +52,7 @@ A Groww-style web app for personal use:
   holdings, a sector donut, risk and flags.
 - **Signals:** a full buy/sell/trim plan for your money and holdings.
 - **Ask AI:** chat with memory ("Should I buy TCS?", "Why?", "Compare it with INFY"). If the
-  self-learning agent from the sibling project is running, tick "Also ask my self-learning agent"
+  ALFA self-learning agent is running, tick "Also ask my self-learning agent"
   for its answer as a second bubble (it stays quiet when it isn't sure).
 - **Learn:** plain-English lessons with search.
 - **Reports:** 18-section research reports you can print to PDF.
@@ -63,16 +63,16 @@ listens only on your machine unless you add `--lan`.
 
 ## Quick start
 
+Run from `backend/` (the repository root README has the layout):
+
 ```bash
-git clone https://github.com/Kapurrrishabh/financial-advisor.git
-cd financial-advisor
 python3 -m venv .venv                               # Python 3.11 or newer
 .venv/bin/pip install -e ".[dev]"
 
 .venv/bin/stockintel --demo analyze RELIANCE         # offline, SYNTHETIC data, no network
 .venv/bin/stockintel analyze RELIANCE                # live NSE data (Yahoo Finance + Google News)
 .venv/bin/stockintel chat                            # multi-turn research conversation
-.venv/bin/pytest                                     # 227 tests, ~5 s, fully offline
+.venv/bin/pytest                                     # both suites, ~10 s, fully offline
 ```
 
 Dashboard and REST API:
@@ -112,7 +112,7 @@ downtrend?", "Check my stops". Method and measured results: [docs/DESIGN.md §28
 | `alerts [SYMBOLS...]` | Scan for alerts, or list stored ones |
 | `monitor` | Score matured predictions (live Brier) and check return-distribution drift (PSI) |
 
-Global flags: `--db PATH` (default `~/.stockintel/stockintel.db`), `--demo` (synthetic data).
+Global flags: `--db PATH` (default `backend/database/data/stockintel.db`), `--demo` (synthetic data).
 
 Portfolio file format (holdings are always derived from transactions; enter current holdings
 as BUY transactions at your average cost):
@@ -160,21 +160,7 @@ All on real NSE data, reproducible with the commands shown. Details in
 
 ## Layout
 
-```
-stockintel/
-  data/          providers (yahoo, rss, local, synthetic), normalisation, quality gate
-  analysis/      technical, candlesticks, patterns, fundamentals, news, sentiment,
-                 quant, regime, forecast, analogues, validation, indicators, stats
-  fusion.py      evidence fusion + decision engine
-  service.py     fetch -> validate -> analyze -> fuse (single entry point)
-  nlu.py         query understanding     orchestrator.py  intents, tools, sessions, LLM modes
-  llm.py         Claude client, faithfulness verifier, narrator, tool agent
-  portfolio.py   screener.py  alerts.py  report.py  knowledge.py (+ knowledge_base/)
-  backtest/      engine (next-open fills, costs, stops), strategies, comparison
-  storage.py     SQLite  registry.py  monitoring.py  api.py  web/index.html  cli.py
-tests/           227 offline tests
-docs/DESIGN.md   design specification, decisions, research answers, measured results
-```
+See the [root README](../README.md) for the folder map.
 
 Decision-support only. Not investment advice. Verify figures against primary sources
 (NSE/BSE filings) before acting.
@@ -183,7 +169,6 @@ Decision-support only. Not investment advice. Verify figures against primary sou
 ## Run it on your own computer
 
 ```bash
-git clone https://github.com/Kapurrrishabh/financial-advisor.git && cd financial-advisor
 python3 -m venv .venv && .venv/bin/pip install -e .
 .venv/bin/stockintel app                    # opens the app in your browser, logged in
 # optional, once: fill the Performance page and pattern track records (~1 minute)
@@ -191,7 +176,8 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 ```
 
 Windows: use `.venv\Scripts\pip` and `.venv\Scripts\stockintel`. Your data (portfolio, reports,
-cache) stays in `~/.stockintel/` on your machine.
+cache) stays in `backend/database/data/` on your machine; the login key and the agent's credentials
+stay in `~/.stockintel/`, outside the project folder.
 
 ## Use it on your phone
 
@@ -214,19 +200,14 @@ git clone https://github.com/shiyu-coder/Kronos ~/.stockintel/vendor/kronos   # 
 ```
 With these installed, the chart shows the Chronos layer, and the Kronos toggle appears if the clone exists.
 
-Our own models: `stockintel train-chronos` and `stockintel train-kronos` fine-tune Chronos-2 and Kronos on NSE
-data (CPU, about an hour each) and save the weights and their test records in `~/.stockintel/models/`. To serve
-them, and ALFA's return generator, on this computer:
-```bash
-export STOCKINTEL_CHRONOS_MODEL=~/.stockintel/models/chronos-2-nse STOCKINTEL_KRONOS_MODEL=~/.stockintel/models/kronos-nse
-export STOCKINTEL_ALFA_PATH="<ALFA project folder>"              # holds backend/, selfagent/, artifacts/returns.npz
-.venv/bin/stockintel app
-```
-`STOCKINTEL_ML=0` turns both off. The server image leaves them out to stay small.
+`stockintel train-chronos` and `stockintel train-kronos` fine-tune Chronos-2 and Kronos on NSE data (CPU,
+about an hour each) and save the weights with their test records in `backend/models/artifacts/external/`;
+the app serves them whenever they are there. ALFA's return generator and the path GRU need no extras.
+`STOCKINTEL_ML=0` turns off the torch models and the analyst's language model.
 
-The self-learning agent (the sibling project) runs as its own process and needs about 5 GB of RAM:
+The self-learning chat agent runs as its own process and needs about 4.5 GB of RAM:
 ```bash
-cd "<sibling project folder>" && <python> scripts/serve.py --port 8010
+.venv/bin/python -m backend.models.agent.run.serve --port 8010
 ```
 StockIntel finds it at `http://127.0.0.1:8010`; set `SELFAGENT_URL` if it runs elsewhere.
 

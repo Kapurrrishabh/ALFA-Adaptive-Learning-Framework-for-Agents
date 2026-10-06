@@ -541,3 +541,27 @@ def test_fine_tuned_weights_bring_their_own_record_into_the_note(app_client, mon
     assert note.startswith("Chronos-2 fine-tuned on NSE prices by us.") and f"Tested on 5472 past {FORECAST_DAYS}-day forecasts" in note
     assert "its range was worse than plain volatility" in note
     assert "most confident 11% of 'up' calls were right 52% (95% range 43%–61%) vs 52% for always 'up'" in note
+
+
+def test_gru_line_note_quotes_its_test_record(app_client, monkeypatch):
+    import backend.models.serving.gru_line as gl
+    record = {"test_from": "2024-01-01", "test": {"n": 5954, "days": [
+        {"day": FORECAST_DAYS, "mae_pct": 6.479, "no_change_mae_pct": 6.54, "direction_acc": 0.5391, "base_rate_acc": 0.5334,
+         "direction_edge_lo": -0.0079, "direction_edge_hi": 0.0199}]}}
+    monkeypatch.setattr(gl, "line", lambda closes, market: {"close": [101.0] * FORECAST_DAYS, "record": record})
+    r = app_client.get("/ui/stock/TEST/ai?model=gru", headers={"X-API-Key": KEY}).json()
+    assert len(r["dates"]) == FORECAST_DAYS and r["close"] == [101.0] * FORECAST_DAYS
+    assert "error was 6.479% against 6.54% for assuming no change" in r["note"]
+    assert "-0.8 to +2.0 points, so it is within noise" in r["note"]
+
+
+def test_analyst_note_falls_back_to_the_computed_note_when_models_are_off(app_client, monkeypatch):
+    import backend.api.hub as hubmod
+    from tests.app.test_nlu_llm import _analyst_facts
+    monkeypatch.setenv("STOCKINTEL_ML", "0")
+    f = _analyst_facts()
+    monkeypatch.setattr(hubmod.Hub, "ai_forecast", lambda self, sym, model: {})
+    import backend.advisory.analyst as an
+    monkeypatch.setattr(an, "facts", lambda *a, **k: f)
+    r = app_client.get("/ui/stock/TEST/analyst", headers={"X-API-Key": KEY}).json()
+    assert r["written_by"] is None and r["text"] == an.computed_note(f) and "switched off" in r["draft_rejected"][0]
