@@ -1,0 +1,309 @@
+"""C7: the chat loop from B7 runs over the socket.
+
+The agent is scripted here rather than loaded. What these tests pin is the loop around it -- ask, answer,
+judge, store, refit, and report what moved -- plus the two things a served surface must not get wrong: a
+turn nobody has judged still gets stored, and no route hands one user another user's rows.
+"""
+
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi.testclient import TestClient
+
+from backend.models import serving as models
+from backend.models.agent.core import Turn
+from backend.database import BUY, SELL, Store
+from backend.api.agent_server import create_app
+from backend.models.learning import AGENT
+from backend.models.learning.abstain import Abstainer
+
+
+from backend.models.agent.run.chat import adapt  # noqa: E402
+
+HAND_PICKED = 0.9980
+EVIDENCE = "ticker AAPL ; close 337.00 ; rsi_14 65"
+ANSWER = "its 14 day rsi is 65 , which is neither overbought nor oversold ."
+
+
+class Scripted:
+    """Stands in for the agent: the routes must not care what produced the turn.
+
+    Confidence walks down over the session so a fitted cut has a spread to find, which is what makes the
+    refit visible at all -- with one confidence value there is no threshold to solve for.
+    """
+
+    def __init__(self, served=ANSWER, spoke=True, written=None):
+        self.served, self.spoke, self.written = served, spoke, written
+        self.market = SimpleNamespace(
+            advisor=SimpleNamespace(version="persistence@20d", describe=self._describe),
+            paths={"AAPL": Path("AAPL.csv")}, snapshot=self._snapshot, outlook=self._outlook,
+            scenarios=SimpleNamespace(describe=lambda: {"name": "garch"}), draw_paths=self._draw_paths)
+        self.gate = SimpleNamespace(cut=0.088)
+        self.abstainer, self.calibrator = Abstainer(HAND_PICKED), None
+        self.asked = []
+
+    @staticmethod
+    def _snapshot(ticker, as_of=None):
+        return EVIDENCE, {"close": "337.00", "rsi_14": "65"}, "2026-09-17"
+
+    @staticmethod
+    def _outlook(ticker, as_of=None):
+        return ["2026-09-16", "2026-09-17"], [330.0, 337.0], [0.2, 0.5, 0.3]
+
+    @staticmethod
+    def _draw_paths(ticker, steps, count, rng, as_of=None):
+        return "2026-09-17", 337.0, rng.normal(0.0, 0.01, (count, steps))
+
+    @staticmethod
+    def _describe():
+        return {"serving": "gru", "horizon": 5, "edges": [0.011, 0.019], "accuracy": 0.49}
+
+    def answer(self, question, as_of=None, subject=""):
+        self.asked.append((question, subject))
+        # An empty `written` is how the real agent reports a turn that stopped before the decoder: no
+        # words of its own and so no confidence either.
+        written = self.served if self.written is None else self.written
+        confidence = 0.999 - 0.01 * len(self.asked) if written else float("nan")
+        return Turn(question, question, "AAPL", "overbought", self.served, written, EVIDENCE,
+                    confidence, None, self.spoke, 0.49, [],
+                    "" if self.spoke else "low confidence", "2026-09-17")
+
+
+def _verdicts(*labels):
+    """A judge that hands back the labels given, in order, and then stops having an opinion."""
+    remaining = list(labels)
+    def judge(question, evidence, answer):
+        if not remaining:
+            return None, "no verdict yet", AGENT
+        is_right = remaining.pop(0)
+        return is_right, "judged in session", AGENT
+    return judge
+
+
+def _app(tmp_path, agent=None, judge=None):
+    agent = agent or Scripted()
+    store = Store(tmp_path / "served.sqlite")
+    app = create_app(agent, store, judge or _verdicts(),
+                     lambda feedback: adapt(feedback, 0.6, 2, AGENT),
+                     Path("artifacts/advisory_combined.npz"))
+    return TestClient(app), agent, store
+
+
+def _signed_in(client, email="one@example.test", password="a-password"):
+    client.post("/auth/register", json={"email": email, "password": password})
+    token = client.post("/auth/login", json={"email": email, "password": password}).json()["token"]
+    return token, {"Authorization": f"Bearer {token}"}
+
+
+def _ask(socket, question):
+    socket.send_json({"question": question})
+    return [socket.receive_json() for _ in range(3)]
+
+
+def test_the_chat_loop_runs_over_the_socket_and_the_cut_moves(tmp_path):
+    """B7's gate in miniature: every turn is answered, judged, stored, and refit from the log."""
+    client, agent, store = _app(tmp_path, judge=_verdicts(True, False, True, False))
+    token, headers = _signed_in(client)
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": token, "subject": "AAPL"})
+        ready = socket.receive_json()
+        assert (ready["stage"], ready["answer_cut"]) == ("ready", HAND_PICKED)
+        stored = [_ask(socket, f"is AAPL overbought ? {turn}")[2] for turn in range(4)]
+
+    assert [frame["stage"] for frame in stored] == ["stored"] * 4
+    assert [frame["judged"] for frame in stored] == [True, False, True, False]
+    # Two rows and both labels present is the warmup this app was given, so the cut is solved from
+    # turn 2 onwards and is no longer the hand-picked one.
+    assert [frame["learned"] for frame in stored] == [False, True, True, True]
+    assert stored[-1]["answer_cut"] != HAND_PICKED and agent.abstainer.cut == stored[-1]["answer_cut"]
+    assert len(store.recent(token, ready["conversation"], limit=10)) == 4
+    assert len(store.feedback.rows(labeller=AGENT)) == 4
+
+
+def test_the_conversations_instrument_is_carried_into_the_next_question(tmp_path):
+    """What makes "how is it doing" a question. The first turn names one, so the second is asked under it,
+    and a general question in between does not clear it -- the subject is only ever replaced."""
+    client, agent, store = _app(tmp_path, judge=_verdicts())
+    token, headers = _signed_in(client)
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": token})
+        socket.receive_json()
+        for question in ("is AAPL overbought ?", "what is a stop loss ?", "hows it doing ?"):
+            _ask(socket, question)
+
+    assert [subject for _, subject in agent.asked] == ["", "AAPL", "AAPL"]
+
+
+def test_an_unjudged_turn_is_answered_and_stored_and_leaves_the_cut_alone(tmp_path):
+    """A miss from the agent-as-teacher is unjudged, not guessed, and a guess here would be a label."""
+    client, agent, store = _app(tmp_path, judge=_verdicts())
+    token, headers = _signed_in(client)
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": token})
+        ready = socket.receive_json()
+        working, turn, stored = _ask(socket, "is AAPL overbought ?")
+
+    assert (working["stage"], turn["served"]) == ("working", ANSWER)
+    assert (stored["judged"], stored["why"]) == (None, "no verdict yet")
+    assert (stored["answer_cut"], stored["learned"]) == (HAND_PICKED, False)
+    (message,) = store.recent(token, ready["conversation"])
+    assert message.served == ANSWER and message.feedback_id is None
+    assert store.feedback.rows(judged_only=False) == []
+
+
+def test_a_turn_the_decoder_never_reached_is_stored_but_never_judged(tmp_path):
+    """It has no confidence, and a 0.0 in the log would be a number the model never reported -- fitted
+    into the cut as if it had."""
+    agent = Scripted(served="i could not understand you", spoke=False, written="")
+    client, _, store = _app(tmp_path, agent=agent, judge=_verdicts(True, True))
+    token, _ = _signed_in(client)
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": token})
+        ready = socket.receive_json()
+        stored = _ask(socket, "write me a poem about the sea .")[2]
+
+    assert (stored["judged"], stored["why"]) == (None, "nothing was generated to judge")
+    assert store.feedback.rows(judged_only=False) == []
+    (message,) = store.recent(token, ready["conversation"])
+    assert message.served == "i could not understand you" and message.confidence is None
+
+
+def test_a_guarded_answer_carries_what_the_model_wrote(tmp_path):
+    """The served refusal and the written answer are both in the frame, or the guard is invisible."""
+    agent = Scripted(served="i do not hold that figure .", spoke=False, written="aapl rose 9.9% .")
+    client, _, _ = _app(tmp_path, agent=agent)
+    token, _ = _signed_in(client)
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": token})
+        socket.receive_json()
+        _, turn, _ = _ask(socket, "how has AAPL been doing ?")
+
+    assert turn["wrote"] == "aapl rose 9.9% ." and turn["spoke"] is False
+    assert turn["because"] == "low confidence"
+
+
+def test_a_socket_without_a_session_token_is_refused(tmp_path):
+    client, _, _ = _app(tmp_path)
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"question": "is AAPL overbought ?"})
+        assert socket.receive_json()["stage"] == "refused"
+
+
+def test_a_socket_cannot_open_another_users_conversation(tmp_path):
+    client, _, _ = _app(tmp_path)
+    mine, headers = _signed_in(client, "mine@example.test")
+    theirs, _ = _signed_in(client, "theirs@example.test")
+    conversation = client.post("/conversations", json={"subject": "AAPL"}, headers=headers).json()["id"]
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": theirs, "conversation": conversation})
+        assert "does not belong" in socket.receive_json()["because"]
+
+
+def test_every_read_needs_a_bearer_token(tmp_path):
+    client, _, _ = _app(tmp_path)
+    assert client.get("/conversations").status_code == 401
+    assert client.get("/portfolio", headers={"Authorization": "made-up"}).status_code == 401
+
+
+def test_holdings_come_back_from_the_trades_and_an_over_sell_is_refused(tmp_path):
+    client, _, _ = _app(tmp_path)
+    _, headers = _signed_in(client)
+    trade = {"symbol": "AAPL", "side": BUY, "quantity": 5, "price": 300.0}
+    assert client.post("/trades", json=trade, headers=headers).status_code == 201
+
+    refused = client.post("/trades", json={**trade, "side": SELL, "quantity": 6}, headers=headers)
+    assert refused.status_code == 400 and "cannot sell 6.0 of AAPL" in refused.json()["detail"]
+    assert client.get("/portfolio", headers=headers).json() == [
+        {"symbol": "AAPL", "quantity": 5.0, "average_price": 300.0}]
+
+
+def test_the_model_route_names_what_is_answering(tmp_path):
+    """A client showing an answer can say which checkpoint and which advisor produced it."""
+    client, _, _ = _app(tmp_path)
+    assert client.get("/model").json() == {"generator": "advisory_combined.npz",
+                                           "outlook": "persistence@20d",
+                                           "routing_cut": 0.088, "answer_cut": HAND_PICKED}
+
+
+def test_an_instrument_serves_the_snapshot_and_an_unknown_one_is_a_404(tmp_path):
+    """The dashboard reads this, and it must show the figures the agent was given, not others."""
+    client, _, _ = _app(tmp_path)
+    _, headers = _signed_in(client)
+    assert client.get("/instruments", headers=headers).json() == ["AAPL"]
+    assert client.get("/instruments/aapl", headers=headers).json() == {
+        "symbol": "AAPL", "as_of": "2026-09-17", "facts": {"close": "337.00", "rsi_14": "65"},
+        "evidence": EVIDENCE}
+
+    missing = client.get("/instruments/NOSUCH", headers=headers)
+    assert missing.status_code == 404 and "no price file for NOSUCH" in missing.json()["detail"]
+
+
+def test_the_outlook_route_carries_the_bands_and_refuses_to_imply_a_direction(tmp_path):
+    """The forecast panel draws this. It may show what the head predicts -- a volatility class -- and the
+    measurement that says a direction call is worse than guessing, and it may not be handed a direction."""
+    client, _, _ = _app(tmp_path)
+    _, headers = _signed_in(client)
+    drawn = client.get("/instruments/aapl/outlook", headers=headers).json()
+
+    assert drawn["closes"] == [330.0, 337.0] and drawn["probabilities"] == [0.2, 0.5, 0.3]
+    assert [band["name"] for band in drawn["bands"]] == list(models.CLASSES)
+    assert drawn["direction"]["accuracy"] < drawn["direction"]["baseline"]
+    assert "direction" not in drawn["model"] and drawn["model"]["serving"] == "gru"
+
+    missing = client.get("/instruments/NOSUCH/outlook", headers=headers)
+    assert missing.status_code == 404
+
+
+def test_learned_counts_only_the_asking_users_own_turns(tmp_path):
+    """The feedback table has no user column, so the join is the only thing keeping these apart."""
+    client, _, _ = _app(tmp_path, judge=_verdicts(True, False, True))
+    mine_token, mine = _signed_in(client, "mine@example.test")
+    theirs_token, theirs = _signed_in(client, "theirs@example.test")
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": mine_token})
+        socket.receive_json()
+        _ask(socket, "is AAPL overbought ?")
+        _ask(socket, "and now ?")
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": theirs_token})
+        socket.receive_json()
+        _ask(socket, "is AAPL overbought ?")
+
+    ours = client.get("/learned", headers=mine).json()
+    assert (ours["asked"], ours["spoke"], ours["right"], ours["wrong"]) == (2, 2, 1, 1)
+    # Their one turn is in the same log the cut was fitted from, and still not in our counts.
+    assert client.get("/learned", headers=theirs).json()["asked"] == 1
+    assert ours["log_rows"] == 3 and ours["answer_cut"] != HAND_PICKED
+
+
+@pytest.mark.parametrize("email", ["one@example.test"])
+def test_an_email_can_only_register_once(tmp_path, email):
+    client, _, _ = _app(tmp_path)
+    assert client.post("/auth/register", json={"email": email, "password": "a"}).status_code == 201
+    again = client.post("/auth/register", json={"email": email, "password": "b"})
+    assert again.status_code == 400 and "already has an account" in again.json()["detail"]
+
+
+def test_the_scenarios_route_is_seeded_names_its_model_and_never_makes_a_call(tmp_path):
+    """The same request has to draw the same picture, or a user comparing two looks at one chart sees
+    noise and reads it as news. And the sentence saying these are ranges travels with every response."""
+    client, _, _ = _app(tmp_path)
+    _, headers = _signed_in(client)
+    first = client.get("/instruments/aapl/scenarios?steps=10&paths=100&seed=3", headers=headers).json()
+    again = client.get("/instruments/aapl/scenarios?steps=10&paths=100&seed=3", headers=headers).json()
+    other = client.get("/instruments/aapl/scenarios?steps=10&paths=100&seed=4", headers=headers).json()
+
+    assert first["fan"] == again["fan"] and first["fan"] != other["fan"]
+    assert len(first["fan"]["0.5"]) == 10 and len(first["examples"]) == 5
+    assert first["model"]["name"] == "garch" and "not which way" in first["direction"]
+    assert client.get("/instruments/aapl/scenarios?steps=999", headers=headers).status_code == 400
+    assert client.get("/instruments/NOSUCH/scenarios", headers=headers).status_code == 404

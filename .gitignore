@@ -1,21 +1,29 @@
-# Collected corpus and prices: 8.1 GB, and every file is reproducible with dataforge/collect.py.
-# The manifest records each source URL and licence, so provenance survives without the bytes.
-# Anchored: an unanchored `data/` also matches selfagent/data/, and silently left the whole dataset
-# package out of the repository.
-/data/
+# Collected corpus, prices, the app database and caches: every file is reproducible with
+# backend/database/dataforge/collect.py or rebuilt by the app. The manifest records each source URL
+# and licence, so provenance survives without the bytes.
+/backend/backend/database/data/
 
-# Tokenised datasets and model checkpoints: 920 MB, rebuilt by scripts/prepare_*.py and train_*.py.
-artifacts/*
+# Tokenised datasets and model checkpoints, rebuilt by models/training/prepare_*.py and train_*.py.
+/backend/backend/models/artifacts/*
 
 # The exception: no script can rebuild a judgement. These are the agent's verdicts, and without them
-# the learning curve is not reproducible from a clone. scripts/label_feedback.py --tell replays them.
-!artifacts/verdicts_given.jsonl
-!artifacts/served_verdicts.jsonl
-!artifacts/preference_given.jsonl
+# the learning curve is not reproducible from a clone. training/label_feedback.py --tell replays them.
+!/backend/backend/models/artifacts/verdicts_given.jsonl
+!/backend/backend/models/artifacts/served_verdicts.jsonl
+!/backend/backend/models/artifacts/preference_given.jsonl
 
+.venv/
 __pycache__/
 *.pyc
+*.db
+*.db-wal
+*.db-shm
 .pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+build.log
 .DS_Store
 reference/
 

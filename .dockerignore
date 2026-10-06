@@ -1,0 +1,11 @@
+**/.venv
+**/__pycache__
+**/*.pyc
+.git
+self_project
+project-2
+reference
+docs
+backend/tests
+backend/backend/models/artifacts
+backend/backend/database/data
