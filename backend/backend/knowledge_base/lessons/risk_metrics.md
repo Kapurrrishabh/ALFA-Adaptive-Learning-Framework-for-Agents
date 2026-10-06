@@ -15,6 +15,13 @@ large error over short periods.
 Like Sharpe, but divides by downside deviation (volatility of returns below a
 threshold), so upside volatility is not penalised.
 
+## Stop-loss
+A price set in advance at which you sell, to cap the loss on one position. It
+turns an open-ended loss into a known one, and takes the decision out of the
+moment. The cost is being sold out of a holding that then recovers, which gets
+more likely the tighter the level. A stop does not cap the loss if the price
+gaps straight past it, as it can on bad news or at the open.
+
 ## Maximum drawdown and Calmar ratio
 Maximum drawdown is the largest peak-to-trough fall in value over a period. The
 Calmar ratio is annualized return divided by the absolute maximum drawdown.

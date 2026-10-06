@@ -215,6 +215,19 @@ def _window_days(text: str) -> Optional[int]:
     return None
 
 
+# what the LM router may choose from: every intent that answers without needing a stock or an amount
+ROUTABLE = {
+    "market_regime": "the state of the Indian market as a whole, its trend, volatility and how much to hold",
+    "signals": "which stocks to buy now, the buy list, rebalancing",
+    "stops": "whether any holding has hit its stop-loss",
+    "alerts": "alerts that have triggered",
+    "portfolio_summary": "how the user's own portfolio is doing",
+    "portfolio_risk": "which holding carries most of the user's risk",
+    "portfolio_exposure": "whether the user's portfolio leans too much on one sector",
+    "knowledge": "what a finance word, ratio, indicator or method means",
+}
+
+
 def classify(text: str, known_symbols: Sequence[str], has_session_symbol: bool,
              research_phrases: Sequence[str] = ()) -> Intent:
     t = text.lower().strip()
@@ -229,12 +242,21 @@ def classify(text: str, known_symbols: Sequence[str], has_session_symbol: bool,
     def intent(name: str) -> Intent:
         return Intent(name=name, **base)
 
-    if re.search(r"\balerts?\b", t) and not symbols:
+    # "what is a stop-loss?" asks what the words mean; "check my stops" asks about the user's own holdings
+    asks_meaning = bool(re.match(r"(what is|what's|what are|what does|explain|define|meaning of|how does|how do|how is)", t)) \
+        and not re.search(r"\b(current|today|now|latest|my)\b", t)
+    if re.search(r"\balerts?\b", t) and not symbols and not asks_meaning:
         return intent("alerts")
-    if re.search(r"\bstops?\b|stop[- ]loss", t) and not symbols:
+    if re.search(r"\bstops?\b|stop[- ]loss", t) and not symbols and not asks_meaning:
         return intent("stops")
-    if not symbols and re.search(r"market (trend|regime|condition|timing)|should i be (invested|in cash)|"
-                                 r"is (the|this) (a )?(bull|bear)|downtrend|uptrend|reduce exposure|go to cash", t):
+    if re.search(r"^(hi|hey|hello|yo|thanks|thank you|thx|ok|okay|bye|good (morning|afternoon|evening))\b[\s!.?]*$", t):
+        return intent("greeting")
+    index_only = bool(symbols) and all(sym == "^NSEI" for sym, _ in symbols)   # "is the nifty falling" is a market question
+    if (not symbols or index_only) and re.search(r"market (trend|regime|condition|timing)|should i be (invested|in cash)|"
+                                 r"is (the|this) (a )?(bull|bear)|downtrend|uptrend|reduce exposure|go to cash|"
+                                 r"(market|nifty|sensex|index|indices)[^.?]*\b(down|up|fall|falling|fell|drop|dropping|"
+                                 r"crash|crashing|correct|correcting|correction|rise|rising|rose|rally|rallying|"
+                                 r"weak|volatile|red|green)\b", t):
         return intent("market_regime")
     if not symbols and re.search(r"what (should|to|can) i buy|which stocks? (should|to|can) i buy|buy list|"
                                  r"\bsignals?\b|\bpicks?\b|rebalanc|recommend|allocate|what to invest in|"

@@ -52,7 +52,17 @@ def test_horizon_risk_and_sector_parsing():
     ("What changed in this company this month?", True, "what_changed"),
     ("Generate a report on TCS", False, "report"),
     ("Find fundamentally strong companies with improving earnings and positive momentum", False, "research_query"),
-    ("hello", False, "help"),
+    ("hello", False, "greeting"),
+    ("hi", False, "greeting"),
+    ("thanks!", False, "greeting"),
+    ("why is the market going down?", False, "market_regime"),
+    ("is the nifty falling?", False, "market_regime"),
+    ("the market looks weak", False, "market_regime"),
+    ("tell me a joke", False, "help"),
+    ("what is a stop-loss?", False, "knowledge"),
+    ("check my stops", False, "stops"),
+    ("what are my stops?", False, "stops"),
+    ("what is an alert?", False, "knowledge"),
 ])
 def test_intent_classification(text, session, intent):
     phrases = ["fundamentally strong", "improving earnings", "positive momentum"]
@@ -238,3 +248,49 @@ def test_analyst_shows_the_writers_note_only_when_it_passes():
     assert ok["written_by"] == "test-writer" and ok["draft_rejected"] == []
     bad = analyst.write(f, Writer("It will rise to ₹900."))
     assert bad["written_by"] is None and bad["text"] == analyst.computed_note(f) and bad["draft_rejected"]
+
+
+class _Picker:
+    """A writer that answers with whatever label it was told to, like the Space's language model."""
+
+    def __init__(self, answer):
+        self.answer, self.prompts = answer, []
+
+    def create(self, system, messages):
+        from backend.models.external.language import Reply as LMReply
+        self.prompts.append(messages[0]["content"])
+        return LMReply("test-lm", self.answer)
+
+    @staticmethod
+    def text(resp):
+        return resp.content
+
+
+@pytest.mark.parametrize("answer,intent", [
+    ("market_regime", "market_regime"),
+    ("  Market_Regime.  ", "market_regime"),      # labels are read loosely, so spacing and case cannot break routing
+    ("NONE", "help"),
+    ("the market is falling because of global cues", "help"),   # prose is not a label, so it is discarded
+])
+def test_the_language_model_only_picks_one_of_our_handlers(answer, intent):
+    from backend.api.intent_lm import choose
+    from backend.api.nlu import ROUTABLE
+    picked = choose("what is happening out there?", ROUTABLE, _Picker(answer))
+    assert (picked or "help") == intent
+
+
+@pytest.mark.parametrize("question,title", [
+    ("what is a Sharpe ratio?", "Sharpe ratio"),
+    ("what is a stop-loss?", "Stop-loss"),          # a Learn-page chip, so it must have an entry
+    ("what is LTCG tax", "Taxes on listed equity (verify current rules)"),   # found through a synonym and a stem
+])
+def test_the_reference_answers_the_questions_the_app_offers(question, title):
+    from backend.knowledge_base.lessons import knowledge_base
+    assert knowledge_base().search(question)[0][0].title == title
+
+
+@pytest.mark.parametrize("question", ["is it a good day", "anything new", "what is going on out there?",
+                                      "who are you", "tell me a joke"])
+def test_the_reference_stays_silent_rather_than_serving_a_chance_word_match(question):
+    from backend.knowledge_base.lessons import knowledge_base
+    assert knowledge_base().search(question) == []

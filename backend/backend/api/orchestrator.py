@@ -188,9 +188,25 @@ class Orchestrator:
         if self.llm_mode == "agent":
             return self._agent_reply(s, message, intent)
         reply = self._deterministic(s, intent)
+        if reply.data.get("no_answer"):          # our patterns or the reference index had nothing; let the LM place it
+            routed = self._routed(message, intent)
+            if routed.name != intent.name:
+                reply = self._deterministic(s, routed)
         if self.llm_mode == "narrate" and reply.data.get("payload") is not None:
             reply = self._narrate(message, reply)
         return reply
+
+    def _routed(self, message: str, intent: Intent) -> Intent:
+        """Our patterns did not recognise the question; let the language model pick one of our handlers."""
+        from backend.api import intent_lm
+        from backend.api.nlu import ROUTABLE
+        from backend.models.external.llm import LLMUnavailable
+        try:
+            name = intent_lm.choose(message, ROUTABLE, self.hub.writer())
+        except (LLMUnavailable, DataUnavailable) as exc:
+            log.info("no language model to route %r: %s", message, exc)
+            return intent
+        return Intent(**{**intent.__dict__, "name": name}) if name else intent
 
     def _deterministic(self, s: Session, intent: Intent) -> Reply:
         handler = getattr(self, f"_h_{intent.name}")
@@ -399,7 +415,8 @@ class Orchestrator:
         hits = knowledge_base().search(i.raw)
         if not hits:
             return Reply("I don't have a reference entry for that. I can explain indicators, ratios, risk "
-                         "metrics, patterns, methodology and Indian market basics.", "knowledge")
+                         "metrics, patterns, methodology and Indian market basics.", "knowledge",
+                         {"no_answer": True})
         best = hits[0][0]
         body = re.sub(r"(?<!\n)\n(?!\n)", " ", best.text)   # unwrap hard-wrapped source lines
         text = f"{best.title}\n\n{body}\n\n(Static knowledge: {best.citation}. Contains no live market data.)"
@@ -597,6 +614,11 @@ class Orchestrator:
         text = "\n\n".join(f"[{a['severity'].upper()}] {a['message']}" for a in alerts[:10])
         return Reply(text, "alerts", {"payload": alerts}, ["alerts"])
 
+    def _h_greeting(self, s: Session, i: Intent) -> Reply:
+        return Reply("Hi! Ask me about any NSE stock (\u201cShould I buy ITC?\u201d), the market as a whole "
+                     "(\u201cWhy is the market going down?\u201d), your own portfolio, or what a term means. "
+                     "Every number I give comes from our tested models.", "greeting")
+
     def _h_help(self, s: Session, i: Intent) -> Reply:
         return Reply("I can help with: 'What should I buy with ₹1 lakh?', 'Rebalance my portfolio', "
                      "'Is the market in a downtrend?', 'Check my stops', 'Analyze RELIANCE', 'Why is the technical state positive?', "
@@ -604,7 +626,7 @@ class Orchestrator:
                      "stocks are worth researching?', 'How is my portfolio performing?', 'Which holding "
                      "contributes most to my risk?', 'If I add ₹20,000 to TCS and INFY how does risk change?', "
                      "'Find fundamentally strong companies with positive momentum', 'What is a Sharpe ratio?', "
-                     "'Why did INFY fall this week?', 'Generate a report on TCS'.", "help")
+                     "'Why did INFY fall this week?', 'Generate a report on TCS'.", "help", {"no_answer": True})
 
     # --- LLM modes --------------------------------------------------------------------
     def _narrate(self, question: str, reply: Reply) -> Reply:

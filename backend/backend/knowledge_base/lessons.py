@@ -19,8 +19,18 @@ from typing import List, Optional
 
 KB_DIR = Path(__file__).parent / "lessons"
 K1, B = 1.5, 0.75
+# everyday words carry no finance meaning, yet BM25 scores the rarer ones highly: before "out", "there",
+# "you" and "like" were listed, "what is going on out there?" was answered with the lesson on triangles
 STOP = set("a an the of to in on for and or is are be what how why does do it its this that "
-           "with as by at from me explain tell about mean means".split())
+           "with as by at from me explain tell about mean means "
+           "i you your we us our they them he she who whom whose there here this these those "
+           "going go goes went like want need know think say said tell told "
+           "everything something anything nothing everyone someone anyone "
+           "will would shall should can could may might must have has had was were been being am "
+           "not no yes very really just also too so but if then than when where which while "
+           "all any some more most much many few own same other another now today "
+           "out up down over under again still even only please thanks hi hello hey "
+           "good bad nice new old thing stuff happen happening happened".split())
 SYNONYMS = {"pe": ["p/e", "price", "earnings"], "p/e": ["pe"], "rsi": ["relative", "strength"],
             "sharpe": ["sharpe"], "de": ["debt/equity", "debt"], "roe": ["return", "equity"],
             "fcf": ["free", "cash", "flow"], "sl": ["stop", "loss"],
@@ -47,6 +57,13 @@ def _tokens(text: str) -> List[str]:
             continue
         out.append(t[:-1] if len(t) > 4 and t.endswith("s") and not t.endswith("ss") else t)
     return out
+
+
+def _shares_word(query: List[str], title: List[str]) -> bool:
+    """Whether a question and a heading name the same thing, allowing for the crude stemmer above:
+    "tax" and "taxe" (from "Taxes") count as the same word."""
+    return any(a == b or (len(min(a, b, key=len)) >= 3 and (a.startswith(b) or b.startswith(a)))
+               for a in query for b in title)
 
 
 class KnowledgeBase:
@@ -81,7 +98,11 @@ class KnowledgeBase:
                     s += self.idf[t] * f * (K1 + 1) / (f + K1 * (1 - B + B * dl / self.avgdl))
             scores.append(s)
         ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-        return [(self.chunks[i], round(scores[i], 2)) for i in ranked[:k] if scores[i] >= min_score]
+        hits = [(self.chunks[i], round(scores[i], 2)) for i in ranked[:k] if scores[i] >= min_score]
+        # a lesson is about what its heading names, so a question sharing no word with the heading is a
+        # coincidence of wording, not an answer: without this "is it a good day" returned a volume lesson
+        titled = [h for h in hits if _shares_word(expanded, _tokens(h[0].title))]
+        return titled if titled else []
 
 
 _KB: Optional[KnowledgeBase] = None

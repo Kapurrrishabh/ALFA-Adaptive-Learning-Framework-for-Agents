@@ -11,6 +11,7 @@ from backend.advisory.calculators.screener import screen
 from backend.advisory.service import AnalysisService
 
 from .conftest import NOW
+from .test_nlu_llm import _Picker
 
 KEY = "k" * 24
 
@@ -596,3 +597,31 @@ def test_analyst_note_falls_back_to_the_computed_note_when_models_are_off(app_cl
     monkeypatch.setattr(an, "facts", lambda *a, **k: f)
     r = app_client.get("/ui/stock/TEST/analyst", headers={"X-API-Key": KEY}).json()
     assert r["written_by"] is None and r["text"] == an.computed_note(f) and "switched off" in r["draft_rejected"][0]
+
+
+def test_an_unrecognised_question_is_routed_by_the_language_model(orch, monkeypatch):
+    writer = _Picker("market_regime")
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: writer)
+    reply = orch.handle("what is going on out there?", "route")
+    assert reply.intent == "market_regime" and "Nifty market state" in reply.text
+    assert "market_regime:" in writer.prompts[0]
+
+
+def test_a_question_the_language_model_cannot_place_says_so_instead_of_guessing(orch, monkeypatch):
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    reply = orch.handle("what is the weather in Mumbai?", "route2")
+    assert reply.data["no_answer"] and "don't have a reference entry" in reply.text
+
+
+def test_chat_works_without_a_language_model(orch, monkeypatch):
+    from backend.models.external.llm import LLMUnavailable
+    def no_writer(self):
+        raise LLMUnavailable("no torch and no Space")
+    monkeypatch.setattr(type(orch.hub), "writer", no_writer)
+    assert orch.handle("what is going on out there?", "route3").data["no_answer"]
+
+
+def test_a_vague_question_is_not_answered_with_an_unrelated_lesson(orch, monkeypatch):
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    for question in ("is it a good day", "anything new", "what is going on out there?"):
+        assert orch.handle(question, "vague").data["no_answer"], question
