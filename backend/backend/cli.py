@@ -534,6 +534,9 @@ def cmd_serve(args) -> int:
     import uvicorn
     from backend.database import hfstate
     from backend.api.app import create_app
+    from backend.models.serving import gru_line, weights
+    if weights.repo():                  # the GRU runs here; the slower return model runs on the model Space
+        weights.pull([gru_line.WEIGHTS])
     saver = None
     if hfstate.repo():                  # restore before the database is opened
         logging.getLogger("stockintel.state").setLevel(logging.INFO)

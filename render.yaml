@@ -11,5 +11,7 @@ services:
         sync: false
       - key: STOCKINTEL_MODEL_SPACE   # e.g. you/stockintel-models (the ZeroGPU Space in deploy/hf-models-space)
         sync: false
+      - key: ALFA_MODELS_REPO         # e.g. you/alfa-weights (the GRU's weights, fetched on start)
+        sync: false
       - key: HF_TOKEN                 # write token from huggingface.co/settings/tokens
         sync: false

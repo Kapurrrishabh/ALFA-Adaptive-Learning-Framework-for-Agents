@@ -521,6 +521,33 @@ def test_alfa_forecast_quotes_its_own_saved_record(app_client, monkeypatch):
     assert "beat GARCH(1,1)-t by 0.032 ± 0.003 nats per return over 80,576 returns" in r["note"] and r["note"].endswith("No direction.")
 
 
+def test_alfa_runs_on_the_model_space_when_one_is_set_even_with_local_weights(app_client, monkeypatch):
+    import json as _json
+    import backend.models.external.remote_models as rm
+    import backend.models.serving.alfa_fan as am
+    fan = {**{f"q{q}": [100.0] * am.STEPS for q in (10, 25, 50, 75, 90)},
+           "drawer": {"name": "generative", "test_from": "2023-01-02", "measured": {"vs_garch": -0.03, "vs_garch_error": 0.003, "scored": 9}},
+           "direction_note": "No direction."}
+    fake = _FakeSpace(_json.dumps(fan))
+    monkeypatch.setattr(am, "available", lambda: True)
+    monkeypatch.setattr(am, "fan", lambda *a: pytest.fail("ran on this server's CPU"))
+    monkeypatch.setenv("STOCKINTEL_MODEL_SPACE", "you/stockintel-models")
+    monkeypatch.setattr(rm, "_client", lambda: fake)
+    app_client.get("/ui/stock/TEST/ai?model=alfa", headers={"X-API-Key": KEY})
+    assert fake.calls[0][0] == "/return_paths"
+
+
+def test_published_weights_land_where_the_server_reads_them(monkeypatch, tmp_path):
+    from pathlib import Path
+    import huggingface_hub
+    from backend.models.serving import gru_line, weights
+    got = []
+    monkeypatch.setenv("ALFA_MODELS_REPO", "you/alfa-weights")
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda repo, name, local_dir: got.append((repo, Path(local_dir) / name)))
+    weights.pull([gru_line.WEIGHTS])
+    assert got == [("you/alfa-weights", gru_line.WEIGHTS)] and gru_line.WEIGHTS in weights.PUBLISHED
+
+
 def test_alfa_says_how_to_reach_it_when_it_cannot(app_client, monkeypatch, tmp_path):
     import backend.models.serving.alfa_fan as am
     monkeypatch.setattr(am, "WEIGHTS", tmp_path / "missing.npz")

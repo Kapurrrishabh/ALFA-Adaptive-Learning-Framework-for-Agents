@@ -37,7 +37,7 @@ class OpenLM:
         self._lock = threading.Lock()
         self._loaded = None
 
-    def _load(self):
+    def load(self):
         if self._loaded is None:
             try:
                 import torch
@@ -55,7 +55,7 @@ class OpenLM:
             raise LLMUnavailable(f"{self.model} is used as a writer only; tool use needs the Claude provider")
         import torch
         with self._lock:
-            tok, lm = self._load()
+            tok, lm = self.load()
             chat = [{"role": "system", "content": system}] + [{"role": m["role"], "content": m["content"]} for m in messages]
             # Qwen3 thinks aloud unless told not to; other templates ignore the flag
             prompt = tok.apply_chat_template(chat, tokenize=False, add_generation_prompt=True, enable_thinking=False)

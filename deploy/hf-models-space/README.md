@@ -1,5 +1,5 @@
 ---
-title: StockIntel Models
+title: ALFA Models
 emoji: 📈
 colorFrom: green
 colorTo: gray
@@ -13,7 +13,8 @@ models:
   - amazon/chronos-bolt-small
   - NeoQuasar/Kronos-small
   - NeoQuasar/Kronos-Tokenizer-base
+  - microsoft/Phi-4-mini-instruct
 ---
 
-Model API for [StockIntel](https://github.com/Kapurrrishabh/financial-advisor). Choose **ZeroGPU** hardware in
+Model API for [ALFA](https://github.com/Kapurrrishabh/ALFA-Adaptive-Learning-Framework-for-Agents). Choose **ZeroGPU** hardware in
 Settings. The app calls it with `STOCKINTEL_MODEL_SPACE=<you>/stockintel-models`.

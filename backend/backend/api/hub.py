@@ -448,7 +448,7 @@ class Hub:
                     cache[key] = {"dates": future(FORECAST_DAYS), **gru_line.line(bars.close.to_numpy(), bars.high.to_numpy(),
                                                                                 bars.low.to_numpy(), bars.market.to_numpy())}
                 elif model == "alfa":
-                    q = (alfa_model.fan(df["close"]) if alfa_model.available()
+                    q = (alfa_model.fan(df["close"]) if local
                          else remote_models.alfa_fan(df["close"], alfa_model.STEPS, alfa_model.PATHS))
                     cache[key] = {"dates": future(alfa_model.STEPS), **q}
                 else:

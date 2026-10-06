@@ -23,9 +23,10 @@ flowchart LR
     L1 -- "HTTP + WebSocket" --> L2
   end
   subgraph R["Free cloud setup"]
-    PH["Phone browser"] -- HTTPS --> RD["Render free web service<br/>StockIntel, no torch (~250 MB)"]
-    RD -- "gradio_client" --> SP["HF ZeroGPU Space: stockintel-models<br/>Chronos-2-NSE and Kronos-NSE on GPU<br/>ALFA return model on CPU"]
-    SP -- "loads weights" --> MR["HF private model repos<br/>stockintel-chronos2-nse · stockintel-kronos-nse<br/>alfa-return-generator"]
+    PH["Phone browser"] -- HTTPS --> RD["Render free web service<br/>StockIntel and the path GRU, no torch (222 MB peak)"]
+    RD -- "gradio_client" --> SP["HF ZeroGPU Space: stockintel-models<br/>Chronos-2-NSE, Kronos-NSE, analyst writer on GPU<br/>ALFA return model on CPU"]
+    SP -- "loads weights" --> MR["HF private model repos<br/>stockintel-chronos2-nse · stockintel-kronos-nse<br/>alfa-weights"]
+    RD -- "GRU weights on start" --> MR
     RD <-- "restore on start, save every 10 min" --> DS[("HF private dataset<br/>stockintel-state")]
     RD -. "only if reachable" .-> AG["ALFA chat agent<br/>your computer, or a paid HF PRO Space"]
   end
