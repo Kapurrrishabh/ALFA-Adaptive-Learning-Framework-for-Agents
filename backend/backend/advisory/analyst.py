@@ -38,7 +38,7 @@ SAME_AS_NO_CHANGE = 0.02
 def _momentum_words(rank, universe):
     if not rank:
         return "not ranked (outside the Nifty 200)"
-    fifth = ("top", "second", "middle", "fourth", "bottom")[min(4, int(5 * (rank - 1) / universe))]
+    fifth = ("top", "second", "middle", "second-lowest", "bottom")[min(4, int(5 * (rank - 1) / universe))]
     return f"momentum rank {rank} of {universe}, in the {fifth} fifth of the Nifty 200"
 
 
@@ -63,7 +63,10 @@ def facts(symbol: str, close: float, as_of: str, alfa: Dict[str, Any], gru: Dict
                          f"for the base rate, " + ("which is within noise" if noise else "a real but small edge"),
         "momentum": _momentum_words(verdict["rank"], verdict["universe"]),
         "verdict": verdict["verdict"], "stop_loss": f"₹{round(verdict['stop']):,}",
-        "_required": [f"₹{lo:,}", f"₹{hi:,}", verdict["verdict"], str(days)],
+        # the judgements a rewrite must keep word for word, so it cannot soften or upgrade them
+        "_required": [f"₹{lo:,}", f"₹{hi:,}", verdict["verdict"], str(days)]
+                     + ([("within noise", "within the noise")] if noise else [])
+                     + ([("about the same", "similar", "roughly the same")] if error_words == "about the same as" else []),
     }
 
 
@@ -86,7 +89,10 @@ def check(text: str, f: Dict[str, Any]) -> List[str]:
     added = {t.lower() for t in NEW_TERMS.findall(text)} - {t.lower() for t in NEW_TERMS.findall(computed_note(f))}
     if added:
         reasons.append(f"it adds terms the note does not use: {', '.join(sorted(added))}")
-    reasons += [f"it leaves out {r}" for r in f["_required"] if r not in text]
+    for need in f["_required"]:
+        options = need if isinstance(need, tuple) else (need,)
+        if not any(o in text.lower() if o.islower() else o in text for o in options):
+            reasons.append(f"it leaves out {options[0]}")
     return reasons
 
 

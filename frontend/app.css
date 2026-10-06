@@ -330,3 +330,4 @@ body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-se
   .bottom-nav a.active .ic { filter: drop-shadow(0 0 6px var(--brand)); } }
 .analyst { border-left: 3px solid var(--gold); }
 .analyst-text { font-size: 14.5px; line-height: 1.6; color: var(--ink); margin: 6px 0 10px; }
+.legend-dots { display: inline-block; width: 16px; height: 0; border-top: 3px dotted var(--gold); vertical-align: middle; }

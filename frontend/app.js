@@ -239,13 +239,11 @@ function candleChart(container, t, layers, selected, onPick) {
     txt(xs[last], side > 0 ? Y(fan.q10[last]) + 14 : Y(fan.q90[last]) - 8, `${name} median ${inr(fan.q50[last], 0)}`, { fill: ai, "text-anchor": "middle", "font-weight": 700 });
   }
   if (gru) {
-    const col = css("--ink"), pts = [`${X(n - 1)},${Y(t.close[n - 1])}`, ...gru.close.map((v, k) => `${X(n + k)},${Y(v)}`)];
+    const col = css("--series-1"), pts = [`${X(n - 1)},${Y(t.close[n - 1])}`, ...gru.close.map((v, k) => `${X(n + k)},${Y(v)}`)];
     const path = s("path", { d: `M${pts.join(" L")}`, fill: "none", stroke: col, "stroke-width": 2, "stroke-dasharray": "7 5", opacity: 0.85, cursor: "help" });
     path.addEventListener("mousemove", (ev) => showTip(ev, [h("b", {}, "Our GRU forecast"), `ends at ${inr(gru.close[gru.close.length - 1])} on ${gru.dates[gru.dates.length - 1]}`]));
     path.addEventListener("mouseleave", () => hideTip());
     svg.append(path);
-    const last = gru.close.length - 1;
-    txt(X(n + last), Y(gru.close[last]) - 9, `GRU ${inr(gru.close[last], 0)}`, { fill: col, "text-anchor": "end", "font-weight": 700 });
   }
   if (ghost) ghost.dates.forEach((d, k) => { const x = X(n + k), up = ghost.close[k] >= ghost.open[k], col = up ? css("--up") : css("--down");
     svg.append(s("line", { x1: x, x2: x, y1: Y(ghost.high[k]), y2: Y(ghost.low[k]), stroke: col, opacity: 0.6 }));
@@ -476,7 +474,7 @@ function technicalPanel(sym, opts = {}) {
     const counts = {}; for (const mk of data.markers) if (mk.direction !== 0) counts[mk.label] = (counts[mk.label] || 0) + 1;
     note.replaceChildren(data.cone_note, h("br"),
       Object.keys(counts).length ? `Candle signals in the last ${RECENT_MARKERS} sessions: ${Object.entries(counts).map(([k, v]) => `${k} ×${v}`).join(", ")}. Hover a marker to see that formation's tested record.` : "",
-      ...AI_LAYERS.filter(([k, model]) => layers[k] && ai[model]).flatMap(([, model]) => [h("br"), h("span", { style: `color:var(${{ alfa: "--gold", gru: "--ink" }[model] || "--ai"})` }, ai[model].note)]));
+      ...AI_LAYERS.filter(([k, model]) => layers[k] && ai[model]).flatMap(([, model]) => [h("br"), h("span", { style: `color:var(${{ alfa: "--gold", gru: "--series-1" }[model] || "--ai"})` }, ai[model].note)]));
   };
   const load = async () => { plot.replaceChildren(skel(380)); try { data = await api(`/ui/stock/${encodeURIComponent(sym)}/technical?bars=${bars}`);
     const recent = new Set(data.dates.slice(-RECENT_MARKERS)); data.markers = data.markers.filter((mk) => recent.has(mk.date));
@@ -485,7 +483,8 @@ function technicalPanel(sym, opts = {}) {
     draw(); drawCards(); } catch (e) { plot.replaceChildren(errorBox(e)); } };
   wrap.append(h("div", { class: "spread" }, h("div", { class: "row", style: "font-size:12px;color:var(--muted)" },
     h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1)" }), " 50-day"), h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-2)" }), " 200-day"),
-    h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--pattern)" }), " pattern"), h("span", { class: "up" }, "▲"), "bullish candle", h("span", { class: "down" }, "▼"), "bearish candle"), seg), toggles, plot, note, cards);
+    h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--pattern)" }), " pattern"),
+    h("span", {}, h("span", { class: "legend-dots" }), " our model's median"), h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1);border-top-style:dashed" }), " GRU forecast"), h("span", { class: "up" }, "▲"), "bullish candle", h("span", { class: "down" }, "▼"), "bearish candle"), seg), toggles, plot, note, cards);
   load();
   window.addEventListener("resize", draw);
   return wrap;

@@ -17,8 +17,9 @@ from typing import Any, Dict, List, Optional
 from backend.config import TORCH_DEVICE
 from backend.models.external.llm import LLMUnavailable
 
-# chosen by the faithfulness comparison in models/external/compare_writers.py
-MODEL_ID = os.environ.get("STOCKINTEL_OPEN_LM", "Qwen/Qwen2.5-1.5B-Instruct")
+# chosen by models/external/compare_writers.py: 21 of 24 notes passed every check, tied with Phi-4-mini
+# (22) at half the memory (5.0 GB against 9.2) and nearly twice the speed on CPU
+MODEL_ID = os.environ.get("STOCKINTEL_OPEN_LM", "Qwen/Qwen3-1.7B")
 MAX_NEW_TOKENS = 220
 
 

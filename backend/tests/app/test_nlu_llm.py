@@ -203,8 +203,11 @@ def test_analyst_check_passes_the_computed_note_and_refuses_bad_drafts():
     from backend.advisory import analyst
     f = _analyst_facts()
     assert analyst.check(analyst.computed_note(f), f) == []
-    good = "Over 20 days the range is ₹663 to ₹766. The verdict is DON'T BUY."
+    good = ("Over 20 days the range is ₹663 to ₹766. The GRU's error is similar to assuming no change, and its "
+            "direction is within noise. The verdict is DON'T BUY.")
     assert any("adds terms" in r for r in analyst.check(good + " A Granger test agrees.", f))
+    softened = good.replace("its direction is within noise", "its direction is slightly better than the base rate")
+    assert any("leaves out within noise" in r for r in analyst.check(softened, f))
     assert analyst.check(good, f) == []
     assert any("dollars" in r for r in analyst.check(good.replace("₹", "$"), f))
     assert any("direction" in r for r in analyst.check(good + " The price will rise.", f))
@@ -228,7 +231,8 @@ def test_analyst_shows_the_writers_note_only_when_it_passes():
         def text(resp):
             return resp.content
     f = _analyst_facts()
-    ok = analyst.write(f, Writer("Over 20 days the range is ₹663 to ₹766. The verdict is DON'T BUY."))
+    ok = analyst.write(f, Writer("Over 20 days the range is ₹663 to ₹766. The GRU's error is about the same as no change "
+                                 "and its direction is within noise. The verdict is DON'T BUY."))
     assert ok["written_by"] == "test-writer" and ok["draft_rejected"] == []
     bad = analyst.write(f, Writer("It will rise to ₹900."))
     assert bad["written_by"] is None and bad["text"] == analyst.computed_note(f) and bad["draft_rejected"]
