@@ -44,7 +44,7 @@ def _patterns(store: Store) -> List[Dict[str, Any]]:
 
 def _forecasts(service) -> Dict[str, Any]:
     out: Dict[str, Any] = {"horizons": [], "calibration": {}, "coverage": []}
-    for h in (1, 5, 20):
+    for h in sorted({1, 5, FORECAST_DAYS, 20}):
         ys, ps = [], []
         for sym in FORECAST_STOCKS:
             df = service.history(sym)
@@ -55,7 +55,7 @@ def _forecasts(service) -> Dict[str, Any]:
             y = forecast.labels(df["close"], h).reindex(p.index)
             ys.append(y.to_numpy())
             ps.append(p.to_numpy())
-            if h in (5, 20):
+            if h in (5, FORECAST_DAYS, 20):
                 out["coverage"].append({"symbol": sym, "horizon": h, "coverage": wf["interval_coverage"]})
         y, p = np.concatenate(ys), np.concatenate(ps)
         base = np.full(len(y), y.mean())
@@ -189,11 +189,16 @@ def evaluate_models(service) -> Dict[str, Any]:
 TIE_SKILL = 0.01
 
 
-def _vs_base(acc: float, base: float, n: int) -> str:
-    """Direction accuracy against the base rate, calling gaps under two standard errors noise."""
-    se = (base * (1 - base) / n) ** 0.5
-    return ("more often than" if acc - base > 2 * se else "less often than" if base - acc > 2 * se
-            else "about as often as")
+def _vs_base(record: Dict[str, Any]) -> str:
+    """Direction against the base rate, from the date-grouped 95% range of the gap when the record has
+    one; records written before it existed fall back to a naive binomial range and say so."""
+    if "direction_edge_lo" in record:
+        lo, hi = record["direction_edge_lo"], record["direction_edge_hi"]
+        return ("more often than" if lo > 0 else "less often than" if hi < 0 else "about as often as") + " the base rate"
+    acc = record.get("chronos_direction_acc", record.get("direction_acc"))
+    base, se = record["base_rate_acc"], (record["base_rate_acc"] * (1 - record["base_rate_acc"]) / record["n"]) ** 0.5
+    word = "more often than" if acc - base > 2 * se else "less often than" if base - acc > 2 * se else "about as often as"
+    return word + " the base rate (not grouped by date)"
 
 
 def model_verdicts(evals: Dict[str, Any], horizon: int = FORECAST_DAYS) -> Dict[str, str]:
@@ -204,12 +209,12 @@ def model_verdicts(evals: Dict[str, Any], horizon: int = FORECAST_DAYS) -> Dict[
         skill = h5["pinball_skill"]
         out["chronos"] = ("its range was " + ("better than" if skill > TIE_SKILL else "worse than" if skill < -TIE_SKILL else "about as good as")
                           + " plain volatility, and its direction was right "
-                          + _vs_base(h5["chronos_direction_acc"], h5["base_rate_acc"], h5["n"]) + " the base rate")
+                          + _vs_base(h5))
     k = evals.get("kronos")
     if k:
         out["kronos"] = ("its price error was " + ("larger" if k["mae_pct"] > k["no_change_mae_pct"] else "smaller")
                          + " than assuming no change, and its direction was right "
-                         + _vs_base(k["direction_acc"], k["base_rate_acc"], k["n"]) + " the base rate")
+                         + _vs_base(k))
     return out
 
 

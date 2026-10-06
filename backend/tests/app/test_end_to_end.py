@@ -269,7 +269,7 @@ def test_portfolio_single_transaction_add_and_delete(app_client, orch):
 def test_ui_technical_chart_carries_geometry_markers_cone_and_records(app_client):
     t = app_client.get("/ui/stock/TEST/technical?bars=120", headers={"X-API-Key": KEY}).json()
     assert len(t["dates"]) == 120 and len(t["open"]) == len(t["close"]) == 120
-    assert len(t["cone"]) == 20 and all(c["lo80"] <= c["lo50"] <= c["mid"] <= c["hi50"] <= c["hi80"] for c in t["cone"])
+    assert len(t["cone"]) == FORECAST_DAYS and all(c["lo80"] <= c["lo50"] <= c["mid"] <= c["hi50"] <= c["hi80"] for c in t["cone"])
     for mk in t["markers"]:
         assert mk["date"] in t["dates"] and "summary" in mk["record"]
     for p in t["patterns"]:
@@ -373,8 +373,8 @@ def _record(tmp_path):
     rec = {"bonferroni_z": 3.25,
            "patterns": [{"z": 1.0}, {"z": -3.5}, {"z": None}],
            "forecast": {"horizons": [{"horizon": 5, "accuracy": 0.52, "always_up_accuracy": 0.53}],
-                        "coverage": [{"symbol": "A", "horizon": 20, "coverage": 0.70}, {"symbol": "B", "horizon": 20, "coverage": 0.90},
-                                     {"symbol": "C", "horizon": 20, "coverage": 0.80}, {"symbol": "A", "horizon": 5, "coverage": 0.10}]},
+                        "coverage": [{"symbol": "A", "horizon": FORECAST_DAYS, "coverage": 0.70}, {"symbol": "B", "horizon": FORECAST_DAYS, "coverage": 0.90},
+                                     {"symbol": "C", "horizon": FORECAST_DAYS, "coverage": 0.80}, {"symbol": "A", "horizon": 5, "coverage": 0.10}]},
            "momentum": {"table": {"momentum_semiannual": {"max_dd_pct": -35.3}, "momentum_trend_vol_overlay": {"max_dd_pct": "-21.4"}},
                         "live_check": {"window": "2022-08-26 to 2026-09-25",
                                        "bars": [{"cagr": 12.2}, {"cagr": 10.3}],
@@ -412,10 +412,12 @@ def test_technical_range_claim_and_stop_come_from_data(app_client, tmp_path, mon
 def test_model_verdicts_call_small_accuracy_gaps_noise():
     from backend.advisory.calculators.performance import model_verdicts
     v = model_verdicts({"chronos": {"horizons": [{"horizon": FORECAST_DAYS, "n": 660, "pinball_skill": 0.0,
-                                                  "chronos_direction_acc": 0.574, "base_rate_acc": 0.565}]},
+                                                  "chronos_direction_acc": 0.574, "base_rate_acc": 0.565,
+                                                  "direction_edge_lo": -0.01, "direction_edge_hi": 0.03}]},
                         "kronos": {"n": 528, "mae_pct": 5.2, "no_change_mae_pct": 2.2, "direction_acc": 0.492, "base_rate_acc": 0.536}})
     assert v["chronos"] == "its range was about as good as plain volatility, and its direction was right about as often as the base rate"
-    assert v["kronos"].startswith("its price error was larger") and v["kronos"].endswith("less often than the base rate")
+    assert v["kronos"].startswith("its price error was larger")
+    assert v["kronos"].endswith("less often than the base rate (not grouped by date)")    # an old record says how it was judged
 
 
 class _FakeSpace:
@@ -545,14 +547,16 @@ def test_fine_tuned_weights_bring_their_own_record_into_the_note(app_client, mon
 
 def test_gru_line_note_quotes_its_test_record(app_client, monkeypatch):
     import backend.models.serving.gru_line as gl
-    record = {"test_from": "2024-01-01", "test": {"n": 5954, "days": [
+    record = {"test_from": "2024-01-01", "test": {"n": 5954, "nll_gain_lo": 0.019, "nll_gain_hi": 0.058, "days": [
         {"day": FORECAST_DAYS, "mae_pct": 6.479, "no_change_mae_pct": 6.54, "direction_acc": 0.5391, "base_rate_acc": 0.5334,
          "direction_edge_lo": -0.0079, "direction_edge_hi": 0.0199}]}}
-    monkeypatch.setattr(gl, "line", lambda closes, market: {"close": [101.0] * FORECAST_DAYS, "record": record})
+    paths = [[100.0 + k for k in range(FORECAST_DAYS)]] * 3
+    monkeypatch.setattr(gl, "line", lambda c, h, l, m: {"close": [101.0] * FORECAST_DAYS, "paths": paths, "record": record})
     r = app_client.get("/ui/stock/TEST/ai?model=gru", headers={"X-API-Key": KEY}).json()
     assert len(r["dates"]) == FORECAST_DAYS and r["close"] == [101.0] * FORECAST_DAYS
-    assert "error was 6.479% against 6.54% for assuming no change" in r["note"]
-    assert "-0.8 to +2.0 points, so it is within noise" in r["note"]
+    assert r["paths"] == paths and "3 possible paths" in r["note"]
+    assert "beat the volatility band (likelihood better by 0.019 to 0.058 per day" in r["note"]
+    assert "error was 6.479% against 6.54% for assuming no change" in r["note"] and r["note"].endswith("within noise.")
 
 
 def test_analyst_note_falls_back_to_the_computed_note_when_models_are_off(app_client, monkeypatch):

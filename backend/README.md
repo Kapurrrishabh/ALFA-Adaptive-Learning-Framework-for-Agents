@@ -40,7 +40,7 @@ A Groww-style web app for personal use:
     review date.
 - **Technical chart** (stock page → "Technical"): candlesticks with the detected pattern drawn on
   them (labelled swing points such as Top 1 / Neckline / Top 2, trendlines, breakout and textbook
-  target), ▲/▼ candle-signal markers, 50/200-day averages, support/resistance, and the next-20-day
+  target), ▲/▼ candle-signal markers, 50/200-day averages, support/resistance, and the next-10-day
   price range, plus an optional **AI forecast range** from the open-source Chronos model (median
   points and 50%/80% bands for the next 10 days). Every drawing carries its tested record ("tested 73 times across 32 stocks — no
   edge"), so a clean-looking shape is never presented as a proven signal.
@@ -151,7 +151,7 @@ All on real NSE data, reproducible with the commands shown. Details in
   neither logistic nor gradient boosting beats the base rate at 1, 5 or 20 days (Brier skill
   −0.016 to −0.218, AUC ≈ 0.50). The skill gate zeroes the forecast's weight and the registry
   refuses to promote such a model.
-- **Ranges**: the EWMA 80% range covered a median 79.4% (5-day) and 77.2% (20-day) of realized
+- **Ranges**: the EWMA 80% range covered a median 79.2% (5-day), 78.6% (10-day) and 77.3% (20-day) of realized
   outcomes out of sample.
 - **Open-source models** (`evaluate-models`, 12 large caps, walk-forward): Chronos-Bolt-small got
   5-day direction right 57.4% vs 56.5% for the base rate, and its 80% band held 79.9% vs 79.2% for

@@ -4,8 +4,8 @@ One full-stack project in two halves:
 
 - **ALFA (research):** a Transformer framework written from scratch in NumPy (autograd, layers,
   tokenizer, optimisers), and the models trained with it: a grounded chat agent that answers only when
-  its evidence supports it, a return generator that draws possible price paths, and a GRU that projects
-  the next 20 days. No deep-learning library is used for these; a test enforces it.
+  its evidence supports it, a return generator that draws possible price paths, and a GRU that forecasts
+  each of the next 10 days' moves. No deep-learning library is used for these; a test enforces it.
 - **StockIntel (the app):** a web app for NSE stocks: should-I-buy verdicts, the NSE momentum signal
   system, a portfolio builder, pattern charts, a chat assistant, and every model's tested record. Its
   forecast layers are our models; open-source ones (Chronos-2 and Kronos fine-tuned on NSE, and a

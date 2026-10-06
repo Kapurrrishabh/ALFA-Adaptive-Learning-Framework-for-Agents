@@ -46,7 +46,8 @@ def facts(symbol: str, close: float, as_of: str, alfa: Dict[str, Any], gru: Dict
           band: Dict[str, Any], verdict: Dict[str, Any]) -> Dict[str, Any]:
     """One sheet of judged facts; every number the note may use is written here, the way it may be written."""
     days = len(alfa["q50"])
-    gd = next(d for d in gru["record"]["test"]["days"] if d["day"] == days)
+    gt = gru["record"]["test"]
+    gd = next(d for d in gt["days"] if d["day"] == days)
     gap = gd["mae_pct"] / gd["no_change_mae_pct"] - 1
     error_words = ("about the same as" if abs(gap) <= SAME_AS_NO_CHANGE else "lower than" if gap < 0 else "higher than")
     noise = gd["direction_edge_lo"] <= 0 <= gd["direction_edge_hi"]
@@ -58,6 +59,8 @@ def facts(symbol: str, close: float, as_of: str, alfa: Dict[str, Any], gru: Dict
         "return_model_record": f"beat the standard GARCH model on next-day returns by {-alfa['record']['vs_garch']:.3f} "
                                f"nats per return; that edge is for one day ahead only",
         "gru_line": f"ends at ₹{round(gru['close'][-1]):,}",
+        "gru_moves": ("beat the volatility band at forecasting how big each day's move will be" if gt["nll_gain_lo"] > 0
+                      else "did not beat the volatility band at forecasting how big each day's move will be"),
         "gru_error": f"{gd['mae_pct']}% on 2024–26, {error_words} the {gd['no_change_mae_pct']}% of assuming no change",
         "gru_direction": f"right {gd['direction_acc'] * 100:.1f}% of the time against {gd['base_rate_acc'] * 100:.1f}% "
                          f"for the base rate, " + ("which is within noise" if noise else "a real but small edge"),
@@ -73,7 +76,8 @@ def facts(symbol: str, close: float, as_of: str, alfa: Dict[str, Any], gru: Dict
 def computed_note(f: Dict[str, Any]) -> str:
     return (f"Over the next {f['days_ahead']} trading days our return model puts {f['stock']} at {f['return_model_range']}; "
             f"the volatility band says {f['volatility_band']}. The GRU line {f['gru_line']}; its error was {f['gru_error']}, "
-            f"and its direction was {f['gru_direction']}. The return model {f['return_model_record']}. "
+            f"and its direction was {f['gru_direction']}. In testing the GRU {f['gru_moves']}, so its thin lines show "
+            f"how far prices could swing day to day, not which way. The return model {f['return_model_record']}. "
             f"Verdict: {f['verdict']}, with a stop-loss at {f['stop_loss']} ({f['momentum']}).")
 
 

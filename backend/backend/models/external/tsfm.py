@@ -21,6 +21,7 @@ import pandas as pd
 from backend.config import FAN_LEVELS, TORCH_DEVICE
 from backend.paths import ARTIFACTS
 from backend.database.sources.provider import DataUnavailable
+from backend.models.learning.protocol import direction_edge
 from backend.advisory.statistics.forecast import ewma_sigma
 from backend.advisory.statistics.stats import norm_ppf
 
@@ -115,6 +116,7 @@ def summarize(rows: List[dict], model: str) -> Dict[str, object]:
     df = pd.DataFrame(rows)
     for h, g in (df.groupby("horizon") if len(df) else []):
         up = g["y"] > 0
+        edge_lo, edge_hi = direction_edge(g["date"], g["median"] > 0, up, g["base_up"] > 0.5)
         out["horizons"].append({
             "horizon": int(h), "n": len(g), "stocks": int(g["symbol"].nunique()), "origins": int(g["date"].nunique()),
             "chronos_direction_acc": round(float(((g["median"] > 0) == up).mean()), 4),
@@ -124,7 +126,8 @@ def summarize(rows: List[dict], model: str) -> Dict[str, object]:
             "ewma_cover80": round(float(g["ewma_in80"].mean()), 4),
             "chronos_pinball": round(float(g["pinball"].mean()), 5),
             "ewma_pinball": round(float(g["ewma_pinball"].mean()), 5),
-            "pinball_skill": round(1 - float(g["pinball"].mean()) / float(g["ewma_pinball"].mean()), 4)})
+            "pinball_skill": round(1 - float(g["pinball"].mean()) / float(g["ewma_pinball"].mean()), 4),
+            "direction_edge_lo": edge_lo, "direction_edge_hi": edge_hi})
     return out
 
 

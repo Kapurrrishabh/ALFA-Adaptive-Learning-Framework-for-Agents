@@ -65,6 +65,24 @@ def finetune(series: List[np.ndarray], cfg: Config, out_dir: Path, base: str = B
                     output_dir=str(out_dir / cfg.name), report_to=[], logging_steps=100, save_strategy="no")
 
 
+def score_horizon(close: pd.DataFrame, symbols: Sequence[str], model_dir: Path, horizon: int) -> Dict[str, object]:
+    """Score an already-trained model at one more horizon, on the same test window, and add it to its
+    record. Nothing is retrained or re-chosen, so the test window still never chose anything."""
+    from chronos import BaseChronosPipeline
+    pipe = BaseChronosPipeline.from_pretrained(str(model_dir), device_map="cpu")
+    universe = eval_universe(close, symbols, VAL_START)
+    val_rows = tsfm.forecast_rows(universe, (horizon,), VAL_START, VAL_END, pipe=pipe)
+    test_rows = tsfm.forecast_rows(universe, (horizon,), TEST_START, pipe=pipe)
+    path = model_dir / tsfm.RECORD_FILE
+    record = json.loads(path.read_text())
+    record["test"]["horizons"] = [h for h in record["test"]["horizons"] if h["horizon"] != horizon] \
+        + tsfm.summarize(test_rows, record["model"])["horizons"]
+    record["precision_calls"] = [c for c in record["precision_calls"] if c["horizon"] != horizon] \
+        + selective(val_rows, test_rows, (horizon,))
+    path.write_text(json.dumps(record, indent=2, default=float))
+    return record
+
+
 def run(close: pd.DataFrame, symbols: Sequence[str], out_dir: Path) -> Dict[str, object]:
     """The whole protocol. Returns everything measured; the chosen model is saved under out_dir."""
     from chronos import BaseChronosPipeline

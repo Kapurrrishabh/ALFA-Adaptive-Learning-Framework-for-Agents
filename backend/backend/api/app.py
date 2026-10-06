@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from backend.advisory import report as R
 from backend.advisory.calculators.backtest import strategies as S
-from backend.config import resolve_symbol
+from backend.config import FORECAST_DAYS, resolve_symbol
 from backend.database.sources.provider import DataUnavailable
 from backend.database.sources.quality import DataQualityError
 from backend.api.jsonutil import sanitize
@@ -190,7 +190,7 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
         return ok(hub.verdict(ticker(t)))
 
     @app.get("/ui/stock/{t}/technical", dependencies=[Depends(auth)])
-    def ui_technical(t: str, bars: int = Query(default=180, ge=20, le=750), horizon: int = Query(default=20, ge=5, le=60)):
+    def ui_technical(t: str, bars: int = Query(default=180, ge=20, le=750), horizon: int = Query(default=FORECAST_DAYS, ge=5, le=60)):
         return ok(hub.technical(ticker(t), bars, horizon))
 
     @app.get("/ui/stock/{t}/intraday", dependencies=[Depends(auth)])

@@ -13,6 +13,17 @@ SCORE_STRIDE = 21
 CALL_RATE = 0.10           # share of validation forecasts that become "up" calls
 
 
+def direction_edge(dates, called_up, went_up, base_up, draws=2000, seed=0):
+    """Date-resampled 95% range of (direction accuracy minus base-rate accuracy). Stocks on one date
+    move together, so the date, not the forecast, is the unit that is resampled."""
+    frame = pd.DataFrame({"date": list(dates), "hit": xp.asarray(called_up) == xp.asarray(went_up),
+                          "base": xp.asarray(base_up) == xp.asarray(went_up)})
+    per = frame.groupby("date").agg(hit=("hit", "sum"), base=("base", "sum"), n=("hit", "count"))
+    pick = default_rng(seed).integers(0, len(per), (draws, len(per)))
+    edge = (per.hit.to_numpy()[pick].sum(1) - per.base.to_numpy()[pick].sum(1)) / per.n.to_numpy()[pick].sum(1)
+    return round(float(xp.percentile(edge, 2.5)), 4), round(float(xp.percentile(edge, 97.5)), 4)
+
+
 def selective(val_rows, test_rows, horizons, rate=CALL_RATE, draws=2000, seed=0, key="p_up"):
     """Precision of "up" calls on the test window, with the cut on `key` taken from validation.
     The 95% range resamples whole origin dates, because stocks on one date move together."""

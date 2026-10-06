@@ -178,7 +178,7 @@ function candleChart(container, t, layers, selected, onPick) {
   if (layers.patterns) for (const p of t.patterns) { if (p.target) vals.push(p.target); }
   for (const [f] of fans) vals.push(...f.q10, ...f.q90);
   if (ghost) vals.push(...ghost.low, ...ghost.high);
-  if (gru) vals.push(...gru.close);
+  if (gru) vals.push(...gru.close, ...(gru.paths || []).flat());
   let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.05; lo -= pad; hi += pad;
   const dateIdx = new Map(t.dates.map((d, i) => [d, i])); t.cone.forEach((c, k) => dateIdx.set(c.date, n + k));
   const X = (i) => m.l + step * (i + 0.5), Y = (v) => m.t + ph - ((v - lo) / (hi - lo)) * ph;
@@ -243,6 +243,8 @@ function candleChart(container, t, layers, selected, onPick) {
     const path = s("path", { d: `M${pts.join(" L")}`, fill: "none", stroke: col, "stroke-width": 2, "stroke-dasharray": "7 5", opacity: 0.85, cursor: "help" });
     path.addEventListener("mousemove", (ev) => showTip(ev, [h("b", {}, "Our GRU forecast"), `ends at ${inr(gru.close[gru.close.length - 1])} on ${gru.dates[gru.dates.length - 1]}`]));
     path.addEventListener("mouseleave", () => hideTip());
+    for (const p of gru.paths || []) svg.append(s("path", { d: `M${[pts[0], ...p.map((v, k) => `${X(n + k)},${Y(v)}`)].join(" L")}`,
+      fill: "none", stroke: col, "stroke-width": 1.25, opacity: 0.7, "pointer-events": "none" }));
     svg.append(path);
   }
   if (ghost) ghost.dates.forEach((d, k) => { const x = X(n + k), up = ghost.close[k] >= ghost.open[k], col = up ? css("--up") : css("--down");
@@ -394,7 +396,7 @@ function miniPanel(container, dates, series, { bands = null, bars = false, fmt =
 function analyticsSection(sym) {
   const gaugeCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "Signal strength"), skel(80));
   const votesCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "How the engines vote"), skel(120));
-  const ladderCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "Next 20 trading days — plausible range"), skel(120));
+  const ladderCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "Plausible range ahead"), skel(120));
   const rsiCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "RSI (14) — momentum oscillator"), h("div", { class: "rsi" }));
   const macdCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "MACD histogram — trend acceleration"), h("div", { class: "macd" }));
   const ddCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "Drawdown — % below the previous peak"), h("div", { class: "dd" }));
@@ -484,7 +486,8 @@ function technicalPanel(sym, opts = {}) {
   wrap.append(h("div", { class: "spread" }, h("div", { class: "row", style: "font-size:12px;color:var(--muted)" },
     h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1)" }), " 50-day"), h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-2)" }), " 200-day"),
     h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--pattern)" }), " pattern"),
-    h("span", {}, h("span", { class: "legend-dots" }), " our model's median"), h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1);border-top-style:dashed" }), " GRU forecast"), h("span", { class: "up" }, "▲"), "bullish candle", h("span", { class: "down" }, "▼"), "bearish candle"), seg), toggles, plot, note, cards);
+    h("span", {}, h("span", { class: "legend-dots" }), " our model's median"), h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1);border-top-style:dashed" }), " GRU median"),
+    h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1);opacity:.5;border-top-width:1px" }), " GRU possible paths"), h("span", { class: "up" }, "▲"), "bullish candle", h("span", { class: "down" }, "▼"), "bearish candle"), seg), toggles, plot, note, cards);
   load();
   window.addEventListener("resize", draw);
   return wrap;

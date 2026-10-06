@@ -492,6 +492,11 @@ def cmd_train_chronos(args) -> int:
     from backend.database.sources.panel import CACHE_DIR, index_constituents, universe_panel
     logging.getLogger("stockintel.tsfm_train").setLevel(logging.INFO)
     out_dir = ARTIFACTS / "external"
+    if args.score_horizon:
+        rec = tsfm_train.score_horizon(universe_panel("nifty500", "10y").close, list(index_constituents("nifty200")["symbol"]),
+                                       out_dir / "chronos-2-nse", args.score_horizon)
+        print(json.dumps([h for h in rec["test"]["horizons"] if h["horizon"] == args.score_horizon], indent=2))
+        return 0
     results = tsfm_train.run(universe_panel("nifty500", "10y").close, list(index_constituents("nifty200")["symbol"]), out_dir)
     path = CACHE_DIR / "chronos_training.json"
     path.write_text(json.dumps(sanitize(results), indent=2))
@@ -675,6 +680,7 @@ def build_parser() -> argparse.ArgumentParser:
     sv.set_defaults(fn=cmd_serve)
 
     tc = sub.add_parser("train-chronos", help="fine-tune Chronos-2 on NSE prices and test it (CPU, about an hour)")
+    tc.add_argument("--score-horizon", type=int, help="only score the trained model at this many days ahead")
     tc.set_defaults(fn=cmd_train_chronos)
 
     tk = sub.add_parser("train-kronos", help="fine-tune the Kronos predictor on NSE candles and test it (CPU)")

@@ -444,10 +444,9 @@ class Hub:
                     cache[key] = {"dates": future(FORECAST_DAYS),
                                   **(tsfm.fan if local else remote_models.fan)(df["close"], FORECAST_DAYS)}
                 elif model == "gru":
-                    stock, market = df["close"].align(self.bench(), join="inner")
-                    market = market.ffill()
-                    keep = stock.notna() & market.notna()
-                    cache[key] = {"dates": future(FORECAST_DAYS), **gru_line.line(stock[keep].to_numpy(), market[keep].to_numpy())}
+                    bars = df[["close", "high", "low"]].join(self.bench().rename("market"), how="inner").ffill().dropna()
+                    cache[key] = {"dates": future(FORECAST_DAYS), **gru_line.line(bars.close.to_numpy(), bars.high.to_numpy(),
+                                                                                bars.low.to_numpy(), bars.market.to_numpy())}
                 elif model == "alfa":
                     q = (alfa_model.fan(df["close"]) if alfa_model.available()
                          else remote_models.alfa_fan(df["close"], alfa_model.STEPS, alfa_model.PATHS))
@@ -457,11 +456,14 @@ class Hub:
         if model == "gru":
             rec = cache[key]["record"]
             day = next(d for d in rec["test"]["days"] if d["day"] == FORECAST_DAYS)
-            note = (f"Our GRU forecast (ALFA's own NumPy framework, trained by us). On {rec['test']['n']:,} forecasts from "
-                    f"{rec['test_from']} its {FORECAST_DAYS}-day error was {day['mae_pct']}% against {day['no_change_mae_pct']}% "
-                    f"for assuming no change, and its direction was right {day['direction_acc']:.1%} against "
-                    f"{day['base_rate_acc']:.1%} for the base rate. Grouped by date the direction edge runs "
-                    f"{day['direction_edge_lo'] * 100:+.1f} to {day['direction_edge_hi'] * 100:+.1f} points, so it is within noise.")
+            t = rec["test"]
+            note = (f"Our GRU (ALFA's own NumPy framework, trained by us). Dashed: its median path. Thin lines: "
+                    f"{len(cache[key]['paths'])} possible paths, each day's swing drawn at the size it forecast for that day. "
+                    f"On {t['n']:,} forecasts from {rec['test_from']} its forecast of daily move sizes beat the volatility band "
+                    f"(likelihood better by {t['nll_gain_lo']} to {t['nll_gain_hi']} per day, grouped by date). Its "
+                    f"{FORECAST_DAYS}-day error was {day['mae_pct']}% against {day['no_change_mae_pct']}% for assuming no change, "
+                    f"and its direction was right {day['direction_acc']:.1%} against {day['base_rate_acc']:.1%} for the base rate: "
+                    + ("within noise." if day["direction_edge_lo"] <= 0 <= day["direction_edge_hi"] else "a small edge."))
             return {"symbol": symbol.upper(), "model": model, "as_of": key[2], **cache[key], "note": note}
         if model == "alfa":
             d = cache[key]["drawer"]
@@ -490,7 +492,9 @@ class Hub:
             note = (("Chronos-2 fine-tuned on NSE prices by us. " if served else "Chronos-Bolt (open-source AI model) forecast range. ")
                     + (f"Tested on {h5['n']} past {h5['horizon']}-day forecasts: direction right {h5['chronos_direction_acc']:.0%} vs "
                        f"{h5['base_rate_acc']:.0%} for the base rate, 80% band held {h5['chronos_cover80']:.0%} of outcomes "
-                       f"(plain volatility {h5['ewma_cover80']:.0%}) — {verdicts['chronos']}."
+                       f"(plain volatility {h5['ewma_cover80']:.0%}) — {verdicts['chronos']}"
+                       + (" (tentative: one of several horizons and models tested, so re-check it on new data)."
+                          if h5.get("direction_edge_lo", 0) > 0 else ".")
                        if h5 else "evaluation not run yet (`stockintel evaluate-models`).")) + call_note
         else:
             note = (("Kronos fine-tuned on NSE candles by us" if served else "Kronos (open-source candlestick AI)")

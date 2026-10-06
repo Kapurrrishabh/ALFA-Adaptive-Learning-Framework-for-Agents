@@ -13,7 +13,7 @@ from typing import Dict, Optional
 TORCH_DEVICE = os.environ.get("STOCKINTEL_TORCH_DEVICE", "cpu")    # "cuda" inside the ZeroGPU model Space
 # Trading days ahead that the volatility band and every forecast fan cover, so one chart's
 # bands can be read against each other. Also one of the horizons the models are scored at.
-FORECAST_DAYS = 20
+FORECAST_DAYS = 10
 FAN_LEVELS = (0.1, 0.25, 0.5, 0.75, 0.9)          # the quantiles every chart fan draws
 
 

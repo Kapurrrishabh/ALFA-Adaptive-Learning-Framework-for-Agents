@@ -926,9 +926,14 @@ def test_path_gru_reads_a_window_and_its_targets_turn_back_into_prices():
     from backend.models.networks import path_gru as G
     closes = 100 * xp.exp(xp.cumsum(default_rng(0).normal(0, 0.01, 400)))
     r = returns.log_returns(closes)
+    ranges = xp.full(len(r), 0.01)
     end = len(r) - G.HORIZON - 1
-    window, scale = G.window_at(r, r, end)
+    window, scale = G.window_at(r, r, ranges, end)
     assert window.shape == (G.WINDOW, G.FEATURES)
-    target = G.targets_at(closes, end, scale)
-    assert xp.allclose(G.to_prices(closes[end + 1], target, scale), closes[end + 2: end + 2 + G.HORIZON])
-    assert G.PathGRU(8)(window[None].astype("float32")).data.shape == (1, G.HORIZON)
+    target = G.targets_at(r, end, scale)
+    # the realised daily returns, compounded, give back the realised closes
+    assert xp.allclose(G.median_prices(closes[end + 1], target, scale), closes[end + 2: end + 2 + G.HORIZON])
+    mean, log_sd = G.PathGRU(8)(window[None].astype("float32"))
+    assert mean.data.shape == log_sd.data.shape == (1, G.HORIZON)
+    paths = G.sample_paths(100.0, xp.zeros(G.HORIZON), xp.full(G.HORIZON, -50.0), 1.0, 3)
+    assert paths.shape == (3, G.HORIZON) and xp.allclose(paths, 100.0)      # no spread: every path is the median
