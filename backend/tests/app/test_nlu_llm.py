@@ -213,6 +213,7 @@ def test_analyst_check_passes_the_computed_note_and_refuses_bad_drafts():
     assert any("dollars" in r for r in analyst.check(good.replace("₹", "$"), f))
     assert any("direction" in r for r in analyst.check(good + " The price will rise.", f))
     assert any("praises" in r for r in analyst.check(good + " The GRU is reliable.", f))
+    assert any("one-day limit" in r for r in analyst.check(good + " The GRU beat the band on daily swings, but only for one day ahead.", f))
     assert any("leaves out ₹766" in r for r in analyst.check("The range starts at ₹663. DON'T BUY.", f))
     assert any("figure 812" in r for r in analyst.check(good + " It may reach ₹812.", f))
 

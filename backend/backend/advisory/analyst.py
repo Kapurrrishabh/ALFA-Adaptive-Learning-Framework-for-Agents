@@ -30,6 +30,8 @@ NEW_TERMS = re.compile(r"\b(granger|sharpe|sortino|rsi|macd|bollinger|fibonacci|
 # praise the records do not support
 OVERCLAIM = re.compile(r"\b(reliab\w*|trust\w*|accurate|better than random|strong evidence|"
                        r"performing well|confident(ly)?)\b", re.I)
+# the one-day limit belongs to the return model; the GRU was scored on every day it forecasts
+ONE_DAY = re.compile(r"\b(one|next)[- ]day\b", re.I)
 # provisional: within 2% of no-change's own error we call it "about the same"; there is no confidence
 # range on that gap yet, so a closer call would claim more than the record shows
 SAME_AS_NO_CHANGE = 0.02
@@ -74,10 +76,10 @@ def facts(symbol: str, close: float, as_of: str, alfa: Dict[str, Any], gru: Dict
 
 
 def computed_note(f: Dict[str, Any]) -> str:
-    return (f"Over the next {f['days_ahead']} trading days our return model puts {f['stock']} at {f['return_model_range']}; "
-            f"the volatility band says {f['volatility_band']}. The GRU line {f['gru_line']}; its error was {f['gru_error']}, "
-            f"and its direction was {f['gru_direction']}. In testing the GRU {f['gru_moves']}, so its thin lines show "
-            f"how far prices could swing day to day, not which way. The return model {f['return_model_record']}. "
+    return (f"Over the next {f['days_ahead']} trading days our return model puts {f['stock']} at {f['return_model_range']}. "
+            f"That model {f['return_model_record']}. The volatility band says {f['volatility_band']}. The GRU line "
+            f"{f['gru_line']}; its error was {f['gru_error']}, and its direction was {f['gru_direction']}. In testing the "
+            f"GRU {f['gru_moves']}, so its thin lines show how far prices could swing day to day, not which way. "
             f"Verdict: {f['verdict']}, with a stop-loss at {f['stop_loss']} ({f['momentum']}).")
 
 
@@ -88,6 +90,8 @@ def check(text: str, f: Dict[str, Any]) -> List[str]:
         reasons.append(f"it claims a direction: “{DIRECTION.search(text).group(0)}”")
     if OVERCLAIM.search(text):
         reasons.append(f"it praises a model beyond its record: “{OVERCLAIM.search(text).group(0)}”")
+    if any("GRU" in s and "return model" not in s and ONE_DAY.search(s) for s in re.split(r"(?<=\.)\s+", text)):
+        reasons.append("it gives the return model's one-day limit to the GRU")
     if "$" in text:
         reasons.append("it writes dollars, not rupees")
     added = {t.lower() for t in NEW_TERMS.findall(text)} - {t.lower() for t in NEW_TERMS.findall(computed_note(f))}
