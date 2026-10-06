@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StockIntel — invest with evidence</title>
+<meta name="theme-color" content="#06080b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="StockIntel">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Instrument+Serif&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="logo" href="#/home"><span class="logo-mark">S</span><span class="logo-word">StockIntel</span></a>
+    <nav class="nav" id="nav">
+      <a href="#/explore" data-r="explore">Explore</a>
+      <a href="#/builder" data-r="builder">Builder</a>
+      <a href="#/portfolio" data-r="portfolio">Portfolio</a>
+      <a href="#/signals" data-r="signals">Signals</a>
+      <a href="#/chat" data-r="chat">Ask AI</a>
+      <a href="#/learn" data-r="learn">Learn</a>
+      <a href="#/reports" data-r="reports">Reports</a>
+      <a href="#/performance" data-r="performance">Performance</a>
+    </nav>
+    <div class="search">
+      <span class="icon">⌕</span>
+      <input id="q" placeholder="Search stocks — e.g. Reliance, TCS, HDFC Bank" autocomplete="off" aria-label="Search stocks">
+      <div class="suggest" id="suggest" role="listbox"></div>
+    </div>
+    <button class="icon-btn" id="theme" title="Toggle theme" aria-label="Toggle theme">◐</button>
+  </div>
+</header>
+<div class="ticker" id="ticker" aria-label="Market ticker"></div>
+<main class="page" id="view"></main>
+<nav class="bottom-nav" id="bnav" aria-label="Main">
+  <a href="#/home" data-r="home"><span class="ic" data-icon="home"></span>Home</a>
+  <a href="#/explore" data-r="explore"><span class="ic" data-icon="compass"></span>Explore</a>
+  <a href="#/builder" data-r="builder"><span class="ic" data-icon="layers"></span>Builder</a>
+  <a href="#/chat" data-r="chat"><span class="ic" data-icon="sparkle"></span>Ask AI</a>
+  <a href="#/portfolio" data-r="portfolio"><span class="ic" data-icon="pie"></span>Portfolio</a>
+</nav>
+<script src="/static/app.js"></script>
+<script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});</script>
+</body>
+</html>

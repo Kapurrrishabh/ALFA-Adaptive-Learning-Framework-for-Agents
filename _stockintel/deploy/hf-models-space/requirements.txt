@@ -1,0 +1,7 @@
+# torch must be a version ZeroGPU supports (huggingface.co/docs/hub/spaces-zerogpu)
+torch==2.13.0
+chronos-forecasting>=2.0
+einops>=0.7
+safetensors
+tqdm
+stockintel @ git+https://github.com/Kapurrrishabh/financial-advisor.git

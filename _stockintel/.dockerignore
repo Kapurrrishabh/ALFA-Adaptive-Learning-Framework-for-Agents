@@ -1,0 +1,7 @@
+.venv
+tests
+docs
+*.db
+*.txt
+.git
+__pycache__
