@@ -419,9 +419,9 @@ class Orchestrator:
                          {"no_answer": True})
         best = hits[0][0]
         body = re.sub(r"(?<!\n)\n(?!\n)", " ", best.text)   # unwrap hard-wrapped source lines
-        text = f"{best.title}\n\n{body}\n\n(Static knowledge: {best.citation}. Contains no live market data.)"
+        text = f"### {best.title}\n\n{body}\n\n**Source** · StockIntel lessons ({best.citation}) · Static knowledge, no live market data."
         if len(hits) > 1:
-            text += "\nRelated: " + ", ".join(c.title for c, _ in hits[1:])
+            text += "\n\n**Related** · " + " · ".join(c.title for c, _ in hits[1:])
         return Reply(text, "knowledge", {"payload": {"passages": [{"title": c.title, "text": c.text,
                      "citation": c.citation} for c, _ in hits]}}, ["explain_concept"])
 

@@ -208,7 +208,7 @@ the app serves them whenever they are there. ALFA's return generator and the pat
 The self-learning chat agent runs as its own process and peaked at 10.3 GB of RAM while loading:
 ```bash
 .venv/bin/python -m backend.database.live.news --every 30                     # keeps the newswire archive fresh
-.venv/bin/python -m backend.models.agent.run.serve --port 8010 --live --phrase
+.venv/bin/python -m backend.models.agent.run.serve --port 8010 --live --phrase --dense --router pretrained
 ```
 StockIntel finds it at `http://127.0.0.1:8010`; set `SELFAGENT_URL` if it runs elsewhere.
 - `--live` adds recent knowledge: SEC filings, Wikipedia, and dated Indian market headlines (Economic Times,
@@ -219,6 +219,13 @@ StockIntel finds it at `http://127.0.0.1:8010`; set `SELFAGENT_URL` if it runs e
   and still decides whether to speak; the rewording is served only when it keeps every figure and adds no
   figure, cause, direction call or praise. Otherwise ALFA's words are served, and the chat says why.
   Encyclopedia and forum passages are quoted rather than reworded, because the model misattributed them.
+  For a recent question it summarises the dated news and filings only; the price move is our own sentence.
+- `--router pretrained` places questions with a pretrained sentence encoder (bge-small): 96.8% routed right
+  against 93.0% for ALFA's own, and 93.3% answered at 99.4% precision against 86.5% at 98.8%, still refusing
+  all 12 off-topic questions (`python -m backend.models.external.route_encoders`).
+- `--dense` finds reference passages by meaning and reranks them with a cross-encoder: on 252 labelled
+  questions the endorsed answer came first 20.6% of the time against 12.3% for BM25
+  (`python -m backend.models.external.rerank_eval`). Concept questions are answered from the lessons first.
 
 ## Put all of it on an Oracle Cloud free VM (including the self-learning agent)
 

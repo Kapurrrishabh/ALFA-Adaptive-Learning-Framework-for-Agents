@@ -19,7 +19,7 @@ services:
 
   agent:
     <<: *alfa
-    command: ["sh", "-c", "python -m backend.models.serving.weights agent && exec python -m backend.models.agent.run.serve --host 0.0.0.0 --port 8010 --live --phrase"]
+    command: ["sh", "-c", "python -m backend.models.serving.weights agent && exec python -m backend.models.agent.run.serve --host 0.0.0.0 --port 8010 --live --phrase --dense --router pretrained"]
 
   news:
     <<: *alfa

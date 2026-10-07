@@ -45,7 +45,7 @@ def test_rendered_analysis_states_timestamps_and_labels_model_outputs(service):
     text = R.render_analysis(service.analyze("TEST"))
     assert "Analysis timestamp" in text and "Price data as of 2026-09-25" in text
     assert "MODEL OUTPUT" in text and "[FACT]" in text
-    assert "12. FINAL EVIDENCE-BASED SUMMARY" in text
+    assert "### 12. Final evidence-based summary" in text
 
 
 def test_full_report_has_all_18_sections(service):
@@ -66,9 +66,9 @@ def test_missing_fundamentals_are_unavailable_not_invented(local_provider, servi
 def test_multi_turn_conversation_keeps_context(orch):
     assert orch.handle("Analyze TEST", "s").intent == "analyze"
     r = orch.handle("Why is the technical state like that?", "s")
-    assert r.intent == "domain" and "technical evidence" in r.text
+    assert r.intent == "domain" and "· Technicals" in r.text
     r = orch.handle("What about fundamentals?", "s")
-    assert "fundamental evidence" in r.text and "Revenue changed" in r.text
+    assert "· Fundamentals" in r.text and "Revenue changed" in r.text
     r = orch.handle("Compare it with PEER", "s")
     assert r.intent == "compare" and "TEST" in r.text and "PEER" in r.text
     r = orch.handle("Why?", "s")
@@ -588,6 +588,29 @@ def test_fetching_the_agent_keeps_the_feedback_this_deployment_has_learned(monke
     assert (artifacts / "served.sqlite").read_text() == "learned since" and (data / "prices" / "INFY.NS.csv").exists()
 
 
+def test_the_app_reads_company_news_from_the_newswire_not_google(monkeypatch, tmp_path):
+    """Google News's robots.txt does not allow the search the app used to make; the newswire archive is read
+    with no network call, by the company's name, not its first word ("Tata" would be every Tata company)."""
+    import json as _json
+    from backend.advisory.service import company_terms, newswire_items
+    from backend.database.live import news
+    archive = tmp_path / "wire.jsonl"
+    rows = [{"link": "https://n.test/1", "day": "2026-10-06", "source": "Mint", "title": "Tata Steel gets aid", "summary": ""},
+            {"link": "https://n.test/2", "day": "2026-10-06", "source": "Mint", "title": "Tata Motors launches a car", "summary": ""}]
+    archive.write_text("".join(_json.dumps(r) + "\n" for r in rows))
+    monkeypatch.setattr(news, "ARCHIVE", archive)
+    monkeypatch.setattr(news.read, "__defaults__", (archive,))
+    items = newswire_items("TATASTEEL.NS", company_terms("TATASTEEL.NS", "Tata Steel Limited"))
+    assert [i.headline for i in items] == ["Tata Steel gets aid"] and items[0].url == "https://n.test/1"
+
+
+def test_the_news_view_lists_linked_headlines_not_evidence_lines(orch):
+    from backend.advisory import report as R
+    a = orch.analysis(orch.session("news"), "TEST")
+    shown = R.render_domain(a, "news_sentiment")
+    assert shown.startswith("### ") and "· News & sentiment" in shown and "source=" not in shown
+
+
 def test_alfa_says_how_to_reach_it_when_it_cannot(app_client, monkeypatch, tmp_path):
     import backend.models.serving.alfa_fan as am
     monkeypatch.setattr(am, "WEIGHTS", tmp_path / "missing.npz")
@@ -612,16 +635,29 @@ def test_fine_tuned_weights_bring_their_own_record_into_the_note(app_client, mon
     assert "most confident 11% of 'up' calls were right 52% (95% range 43%–61%) vs 52% for always 'up'" in note
 
 
+def test_the_gru_shows_the_simulated_paths_ending_at_the_10th_50th_and_90th_percentile():
+    """Three random draws were three unlabelled lines meaning the same thing; each shown path is picked by its own
+    measure, so the low one ends below 9 in 10 of the simulations and the high one above 9 in 10."""
+    import numpy as np
+    from backend.models.serving.gru_line import labelled_paths
+    ends = np.linspace(80.0, 120.0, 101)
+    simulated = np.stack([np.linspace(100.0, end, FORECAST_DAYS) for end in np.random.default_rng(0).permutation(ends)])
+    shown = labelled_paths(simulated)
+    assert [p["name"] for p in shown] == ["low", "middle", "high"] and [p["percentile"] for p in shown] == [10, 50, 90]
+    assert [p["close"][-1] for p in shown] == [84.0, 100.0, 116.0]
+
+
 def test_gru_line_note_quotes_its_test_record(app_client, monkeypatch):
     import backend.models.serving.gru_line as gl
     record = {"test_from": "2024-01-01", "test": {"n": 5954, "nll_gain_lo": 0.019, "nll_gain_hi": 0.058, "days": [
         {"day": FORECAST_DAYS, "mae_pct": 6.479, "no_change_mae_pct": 6.54, "direction_acc": 0.5391, "base_rate_acc": 0.5334,
          "direction_edge_lo": -0.0079, "direction_edge_hi": 0.0199}]}}
-    paths = [[100.0 + k for k in range(FORECAST_DAYS)]] * 3
+    paths = [{"name": n, "percentile": q, "meaning": "", "close": [100.0 + q] * FORECAST_DAYS}
+             for n, q in (("low", 10), ("middle", 50), ("high", 90))]
     monkeypatch.setattr(gl, "line", lambda c, h, l, m: {"close": [101.0] * FORECAST_DAYS, "paths": paths, "record": record})
     r = app_client.get("/ui/stock/TEST/ai?model=gru", headers={"X-API-Key": KEY}).json()
     assert len(r["dates"]) == FORECAST_DAYS and r["close"] == [101.0] * FORECAST_DAYS
-    assert r["paths"] == paths and "3 possible paths" in r["note"]
+    assert r["paths"] == paths and "three of 1,000 simulated paths, picked by where they end" in r["note"]
     assert "beat the volatility band (likelihood better by 0.019 to 0.058 per day" in r["note"]
     assert "error was 6.479% against 6.54% for assuming no change" in r["note"] and r["note"].endswith("within noise.")
 

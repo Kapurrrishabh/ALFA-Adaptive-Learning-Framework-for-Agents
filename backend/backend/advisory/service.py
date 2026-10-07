@@ -24,8 +24,7 @@ from backend.advisory.sentiment import news
 from backend.config import MARKETS, resolve_symbol
 from backend.database.sources.provider import DataUnavailable, NewsItem, Provider
 from backend.database.sources.quality import DataQualityError, check_ohlcv
-from backend.database.sources import rss
-from backend.advisory.fusion.evidence import DomainResult, unavailable, utcnow_iso
+from backend.advisory.fusion.evidence import DomainResult, Provenance, unavailable, utcnow_iso
 from backend.advisory.fusion.fusion import Decision, fuse
 
 log = logging.getLogger("stockintel.service")
@@ -67,6 +66,24 @@ def company_terms(symbol: str, name: str) -> List[str]:
     if len(first) > 3:
         terms.append(first)
     return [t for t in terms if t]
+
+
+def newswire_items(symbol: str, terms: Sequence[str], limit: int = 30) -> List[NewsItem]:
+    """Headlines naming the company from the newswire archive (database/live/news.py), read with no
+    network call. It replaced a Google News search, which that site's robots.txt does not allow."""
+    from backend.database.live import news as newswire
+    from backend.advisory.sentiment.feeds.feed import tag
+    names = {symbol: tuple(t.lower() for t in terms[1:2])}      # the company's name, not its first word
+    found = []
+    for row in newswire.read():
+        text = f"{row['title']}. {row['summary']}"
+        if tag(text, names) or re.search(rf"(?<![A-Za-z0-9]){re.escape(terms[0])}(?![A-Za-z0-9])", text):
+            found.append(NewsItem(headline=row["title"], summary=row["summary"][:500], published_at=row["day"],
+                                  source=row["source"], url=row["link"], symbol=symbol,
+                                  provenance=Provenance(source=f"newswire:{row['source']}", as_of=row["day"])))
+            if len(found) == limit:
+                break
+    return found
 
 
 class AnalysisService:
@@ -132,12 +149,7 @@ class AnalysisService:
         except DataUnavailable as exc:
             errors.append(str(exc))
         if self.use_rss_news and name:
-            terms = company_terms(sym, name)
-            query = f"\"{terms[1]}\" share" if len(terms) > 1 else f"{terms[0]} share"
-            try:
-                items.extend(rss.google_news(query, sym))
-            except DataUnavailable as exc:
-                errors.append(str(exc))
+            items.extend(newswire_items(sym, company_terms(sym, name)))
         if not items:
             raise DataUnavailable("; ".join(errors) or "no news sources returned articles")
         return items

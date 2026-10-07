@@ -96,6 +96,11 @@ class Agent:
             return (self._looked_up(question, as_of)
                     or self._quiet(question, self.domain.NO_SUBJECT, "no subject"))
 
+        if self.reference is not None and self.reference.asks_lately(question):
+            looked = self._looked_up(question, as_of, ticker=ticker)
+            if looked is not None:
+                return looked
+
         route = self.router.route(self.domain.without_subject(question, ticker))
         if not bool(self.gate.answers([route.margin])[0]):
             return (self._looked_up(question, as_of, ticker=ticker, margin=route.margin)
@@ -155,7 +160,8 @@ class Agent:
             return None
         try:
             looked = self.reference.look_up(question, as_of,
-                                            self.market.subject(ticker) if ticker else None)
+                                            self.market.subject(ticker) if ticker else None,
+                                            self.market.snapshot(ticker, as_of) if ticker else None)
         except SearchFailed as error:
             # A refusal rather than nothing, and a different refusal from the trained one: the documents
             # would have been asked and were not, so saying "i am not sure what you are asking" would

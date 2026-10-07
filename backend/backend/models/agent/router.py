@@ -65,7 +65,11 @@ def combined(texts, model, tokenizer, length, weight=COVERAGE_WEIGHT):
     own terms turns it into the fraction of the question that was recognised, which is bounded, is
     comparable across questions, and is exactly what an out-of-domain question lacks.
     """
-    cosine = semantic(texts, model, tokenizer, length)
+    return with_coverage(texts, semantic(texts, model, tokenizer, length), weight)
+
+
+def with_coverage(texts, cosine, weight=COVERAGE_WEIGHT):
+    """`cosine` plus the term-coverage half of `combined`, for any encoder's cosine over `texts`."""
     index = BM25(texts, pretokenize)
     # An unseen term is as rare as a term can be, so it is charged the highest weight the index holds.
     unseen = max(index.inverse_document_frequency.values())

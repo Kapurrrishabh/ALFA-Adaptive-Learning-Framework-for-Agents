@@ -457,7 +457,8 @@ class Hub:
             day = next(d for d in rec["test"]["days"] if d["day"] == FORECAST_DAYS)
             t = rec["test"]
             note = (f"Our GRU (ALFA's own NumPy framework, trained by us). Dashed: its median path. Thin lines: "
-                    f"{len(cache[key]['paths'])} possible paths, each day's swing drawn at the size it forecast for that day. "
+                    f"three of {gru_line.SIMULATED:,} simulated paths, picked by where they end (the 10th, 50th and 90th "
+                    f"percentile), each day's swing drawn at the size it forecast for that day. "
                     f"On {t['n']:,} forecasts from {rec['test_from']} its forecast of daily move sizes beat the volatility band "
                     f"(likelihood better by {t['nll_gain_lo']} to {t['nll_gain_hi']} per day, grouped by date). Its "
                     f"{FORECAST_DAYS}-day error was {day['mae_pct']}% against {day['no_change_mae_pct']}% for assuming no change, "

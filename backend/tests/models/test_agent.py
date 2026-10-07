@@ -869,24 +869,48 @@ def test_a_question_about_lately_is_answered_from_the_newswire_alone(market, rou
     plain = "Reliance Industries commissioned a new refinery unit (Mint, 6 Oct 2026)."
     turn = agent(market, router, gate_cut=1e9, reference=news_reference(FakeWriter(plain))).answer(
         "any news on RELIANCE.NS ?")
-    assert turn.spoke and turn.served == plain and turn.phrased_by == "test-lm"
-    assert NEWS.document in turn.evidence
+    assert turn.spoke and turn.served.endswith(plain) and turn.phrased_by == "test-lm"
+    assert turn.served.startswith("RELIANCE.NS closed at ₹") and NEWS.document in turn.evidence
 
 
-def test_a_lately_question_with_no_news_says_so_rather_than_reading_the_encyclopedia(market, router):
+def test_a_lately_question_with_no_news_gives_the_price_move_and_says_nothing_explains_it(market, router):
     """"Why is infosys falling" read from Wikipedia became "infosys is falling because it is a technology
-    company"; with no headline about it the honest answer is that there is none."""
+    company". With no headline about it, the price files still say how far it moved, and nothing says why."""
     turn = agent(market, router, gate_cut=1e9, reference=news_reference(ExplodingWriter(), news=())).answer(
         "why is RELIANCE.NS falling ?")
+    assert turn.spoke and turn.served.startswith("RELIANCE.NS closed at ₹") and "found no news" in turn.served
+    assert "over 5 days" in turn.served and "prices " in turn.evidence
+
+
+def test_a_lately_question_with_neither_prices_nor_news_says_so(market, router):
+    turn = agent(market, router, reference=news_reference(ExplodingWriter(), news=())).answer(
+        "what is the stock market doing today ?")
     assert not turn.spoke and turn.served == finance.NOT_IN_SOURCES
 
 
-def test_a_writer_that_finds_no_answer_in_the_news_refuses_instead_of_quoting(market, router):
+def test_the_language_model_reads_the_news_and_our_own_sentence_gives_the_prices(market, router):
+    """Given the prices too, it wrote "down 0.5% from the previous close of ₹704.80" for HDFC Bank: a 5-day
+    change pinned to a quote saying the shares were up. So it never sees them, and a figure from them is refused."""
+    from backend.models.agent import phrase
+    moved = market.snapshot("RELIANCE.NS")[1]["return_5d"]
+    writer = FakeWriter("Reliance Industries commissioned a refinery unit (Mint, 6 Oct 2026).")
+    turn = agent(market, router, gate_cut=1e9, reference=news_reference(writer)).answer("any news on RELIANCE.NS ?")
+    assert moved not in writer.asked[0] and "PRICES" not in writer.asked[0]
+    assert turn.served == f"{phrase.price_move(finance.Market.subject(market, 'RELIANCE.NS'), market.snapshot('RELIANCE.NS'))} " \
+                          "Reliance Industries commissioned a refinery unit (Mint, 6 Oct 2026)."
+    quoting = news_reference(FakeWriter(f"RELIANCE.NS is {moved} over 5 days after the refinery unit (Mint, 6 Oct 2026)."))
+    turn = agent(market, router, gate_cut=1e9, reference=quoting).answer("any news on RELIANCE.NS ?")
+    assert turn.phrased_by == "" and f"figure {moved}" in turn.unphrased_because
+    assert turn.served == phrase.recent_plain(finance.Market.subject(market, "RELIANCE.NS"),
+                                              market.snapshot("RELIANCE.NS"), [NEWS])
+
+
+def test_a_writer_that_finds_no_answer_serves_the_plain_answer_not_its_half_refusal(market, router):
     """Half an answer and half a refusal ("...founded in 1981. The passage does not provide a reason. None.")
-    is a refusal: only that half was true."""
+    is a refusal: only that half was true. The prices and the newest report are what is left to say."""
     writer = FakeWriter("It was founded in 1981. The passages do not provide a reason. None.")
     turn = agent(market, router, gate_cut=1e9, reference=news_reference(writer)).answer("why is RELIANCE.NS falling ?")
-    assert not turn.spoke and turn.served == finance.NOT_IN_SOURCES
+    assert turn.spoke and "founded" not in turn.served and NEWS.text in turn.served
 
 
 def test_forum_and_encyclopedia_passages_are_quoted_not_reworded(market, router):
@@ -912,3 +936,41 @@ def test_an_exchange_listed_name_resolves_to_its_ticker_as_whole_words(tmp_path)
     assert named.resolve("how is hdfc bank doing") == "HDFCBANK.NS"
     assert named.resolve("an infosystem question") is None and "TCS.NS" not in named.listed
     assert named.subject("INFY.NS").mentions("Infosys shares slip")
+
+
+def test_a_concept_question_naming_no_company_is_answered_from_the_lessons_first(market, router):
+    """The corpus is mostly US forums: "how does a SIP work" read from it was Wikipedia's sales incentive plan."""
+    built = reference("never written", model=ExplodingModel())
+    built.lessons = lambda question: [("SIP (systematic investment plan)", "A SIP invests a fixed amount every month.")]
+    turn = agent(market, router, reference=built).answer("how does a SIP work ?")
+    assert turn.spoke and turn.served == "A SIP invests a fixed amount every month." and turn.intent == "reference lesson"
+    built.lessons = lambda question: []
+    assert agent(market, router, reference=built).answer("what is a stop loss order ?").served == PASSAGE
+
+
+def test_a_question_that_says_lately_reads_the_dated_sources_before_the_advisory_path(market, router):
+    """"how is AAPL doing lately" was refused at ALFA's confidence cut while the price files held its answer."""
+    turn = agent(market, router, model=ExplodingModel(),
+                 reference=news_reference(FakeWriter("Reliance commissioned a refinery unit (Mint, 6 Oct 2026)."))).answer(
+        "how has RELIANCE.NS been doing lately ?")
+    assert turn.spoke and turn.intent == "reference recent"
+
+
+def test_a_rewrite_that_misspells_the_ticker_serves_alfas_words(market, router):
+    turn = phrased_agent(market, router, DRAFT, FakeWriter("AAAPL.NS is up 13.8% over 20 days, closing at 165.00.")).answer(ASKED)
+    assert turn.served == DRAFT and "names AAAPL.NS" in turn.unphrased_because
+
+
+def test_what_a_reader_sees_is_titled_figured_and_sourced(market, router):
+    from backend.models.agent.present import present
+    turn = agent(market, router, written="its 14 day rsi is 100 , which is overbought .").answer("is AAPL overbought ?")
+    shown = present(turn, {}, {})
+    assert shown.startswith("### AAPL · Momentum and RSI") and "Its 14 day RSI is 100, which is overbought." in shown
+    assert "**Key figures** · Last close $165.00" in shown and "RSI (14) 100" in shown
+    recent = agent(market, router, gate_cut=1e9, reference=news_reference(
+        FakeWriter("Reliance Industries commissioned a refinery unit (Mint, 6 Oct 2026)."))).answer("any news on RELIANCE.NS ?")
+    shown = present(recent, {"RELIANCE.NS": "Reliance Industries"}, {})
+    assert shown.startswith("### Reliance Industries (RELIANCE.NS) · What happened lately")
+    assert "**Sources**\n- [n.test, 6 Oct 2026](https://n.test/reliance)" in shown
+    quiet = agent(market, router, written="it is fine .", confidence=0.1).answer("is AAPL overbought ?")
+    assert present(quiet, {}, {}) == quiet.served

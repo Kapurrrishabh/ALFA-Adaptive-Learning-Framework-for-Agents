@@ -14,15 +14,20 @@ pending pairs out for judging, and the next run replays them.
 from backend.paths import ARTIFACTS, DATA
 
 import argparse
+import json
 import sys
 from pathlib import Path
 import uvicorn  # noqa: E402
 
-from backend.models.agent.run.ask import build, listed_names, reference_from, writer_from  # noqa: E402
+from backend.models.agent.run.ask import ROUTERS, build, listed_names, reference_from, writer_from  # noqa: E402
 from backend.database import Store  # noqa: E402
 from backend.api.agent_server import create_app  # noqa: E402
 from backend.models.agent.run.chat import adapt  # noqa: E402
 from backend.models.learning.teacher import AgentTeacher  # noqa: E402
+from backend.models.agent.present import present  # noqa: E402
+
+# {document key: source URL} for the reference index, built once from the data manifest (present.source_map)
+SOURCES = "reference_sources.json"
 
 
 def app_from(args):
@@ -34,15 +39,18 @@ def app_from(args):
     agent, _, _, served = build(artifacts, args.checkpoint, args.prices, args.gate, args.store,
                                 args.wanted, args.warmup, args.price_head,
                                 reference_from(artifacts, args.reference_index,
-                                               args.reference_checkpoint, args.paraphrase, args.live, writer),
-                                args.symbols, args.scenarios, writer=writer, listed=listed_names())
+                                               args.reference_checkpoint, args.paraphrase, args.live, writer,
+                                               args.dense),
+                                args.symbols, args.scenarios, writer=writer, listed=listed_names(),
+                                router=args.router)
     teacher = AgentTeacher(args.verdicts)
     store = Store(args.store)
+    names, sources = listed_names(), json.loads((artifacts / SOURCES).read_text())
     app = create_app(agent, store,
                      lambda question, evidence, answer:
                          teacher.judge(question, evidence, answer) + (teacher.name,),
                      lambda feedback: adapt(feedback, args.wanted, args.warmup, teacher.name),
-                     served)
+                     served, lambda turn: present(turn, names, sources))
     return app, store, teacher
 
 
@@ -52,7 +60,9 @@ def main():
     parser.add_argument("--checkpoint", default="",
                         help="a candidate to serve instead of the promoted one")
     parser.add_argument("--prices", default=str(DATA / "prices"))
-    parser.add_argument("--gate", default=str(ARTIFACTS / "route_gate.json"))
+    parser.add_argument("--router", choices=sorted(ROUTERS), default="alfa",
+                        help="ALFA's encoder, or the pretrained sentence encoder that routes more questions")
+    parser.add_argument("--gate", default="", help="a routing cut other than the one fitted for --router")
     parser.add_argument("--price-head", default=str(ARTIFACTS / "price_head.npz"))
     parser.add_argument("--scenarios", default=str(ARTIFACTS / "returns.npz"),
                         help="the return generator; empty serves no sampled price paths")
@@ -69,6 +79,8 @@ def main():
                         help="SEC's symbol table: an instrument's company name and filing number")
     parser.add_argument("--phrase", action="store_true",
                         help="reword each answer with the language model (the model Space's when one is set)")
+    parser.add_argument("--dense", action="store_true",
+                        help="find reference passages by meaning and rerank them with a cross-encoder")
     parser.add_argument("--store", default=str(ARTIFACTS / "served.sqlite"),
                         help="accounts, conversations and the feedback this deployment learns from")
     parser.add_argument("--verdicts", default=str(ARTIFACTS / "served_verdicts.jsonl"))

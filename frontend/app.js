@@ -24,6 +24,32 @@ const cls = (v) => v > 0 ? "up" : v < 0 ? "down" : "";
 const compactInr = (v) => v == null ? "—" : "₹" + Intl.NumberFormat("en-IN", { notation: "compact", maximumFractionDigits: 2 }).format(v);
 const initials = (sym) => (sym || "?").replace(/[^A-Z0-9]/gi, "").slice(0, 2).toUpperCase();
 const skel = (hgt = 16, w = "100%") => h("div", { class: "skeleton", style: `height:${hgt}px;width:${w}` });
+// The small markdown the answers use (### title, - bullets, **bold**, [label](https://…)), built as
+// nodes like everything else, so an answer can never inject markup; links go only to http(s).
+function inline(text) {
+  const out = [];
+  for (const part of String(text).split(/(\*\*[^*]+\*\*|\[[^\]]+\]\(https?:\/\/[^)\s]+\))/)) {
+    const bold = part.match(/^\*\*([^*]+)\*\*$/), link = part.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
+    out.push(bold ? h("strong", {}, bold[1]) : link ? h("a", { href: link[2], target: "_blank", rel: "noopener noreferrer" }, link[1]) : part);
+  }
+  return out;
+}
+function md(text) {
+  const box = h("div", { class: "md" }); let list = null, para = [];
+  const flush = () => { if (para.length) box.append(h("p", {}, ...inline(para.join(" ")))); para = []; };
+  for (const line of String(text).split("\n")) {
+    const t = line.trim();
+    if (t.startsWith("- ")) { flush(); if (!list) { list = h("ul"); box.append(list); } list.append(h("li", {}, ...inline(t.slice(2)))); continue; }
+    list = null;
+    if (!t) { flush(); continue; }
+    if (t.startsWith("### ")) { flush(); box.append(h("h4", {}, ...inline(t.slice(4)))); continue; }
+    para.push(t);
+  }
+  flush();
+  return box;
+}
+// one colour per GRU path, read at draw time so the theme switch recolours them
+const GRU_PATH_COLORS = { low: () => css("--down"), middle: () => css("--series-1"), high: () => css("--up") };
 function toast(msg) { const t = h("div", { class: "toast" }, msg); document.body.append(t); setTimeout(() => t.remove(), 2600); }
 
 // ---------- auth + api ----------
@@ -187,7 +213,7 @@ function candleChart(container, t, layers, selected, onPick) {
   if (layers.patterns) for (const p of t.patterns) { if (p.target) vals.push(p.target); }
   for (const [f] of fans) vals.push(...f.q10, ...f.q90);
   if (ghost) vals.push(...ghost.low, ...ghost.high);
-  if (gru) vals.push(...gru.close, ...(gru.paths || []).flat());
+  if (gru) vals.push(...gru.close, ...(gru.paths || []).flatMap((p) => p.close));
   let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.05; lo -= pad; hi += pad;
   const dateIdx = new Map(t.dates.map((d, i) => [d, i])); t.cone.forEach((c, k) => dateIdx.set(c.date, n + k));
   const X = (i) => m.l + step * (i + 0.5), Y = (v) => m.t + ph - ((v - lo) / (hi - lo)) * ph;
@@ -252,8 +278,15 @@ function candleChart(container, t, layers, selected, onPick) {
     const path = s("path", { d: `M${pts.join(" L")}`, fill: "none", stroke: col, "stroke-width": 2, "stroke-dasharray": "7 5", opacity: 0.85, cursor: "help" });
     path.addEventListener("mousemove", (ev) => showTip(ev, [h("b", {}, "Our GRU forecast"), `ends at ${inr(gru.close[gru.close.length - 1])} on ${gru.dates[gru.dates.length - 1]}`]));
     path.addEventListener("mouseleave", () => hideTip());
-    for (const p of gru.paths || []) svg.append(s("path", { d: `M${[pts[0], ...p.map((v, k) => `${X(n + k)},${Y(v)}`)].join(" L")}`,
-      fill: "none", stroke: col, "stroke-width": 1.25, opacity: 0.7, "pointer-events": "none" }));
+    for (const p of gru.paths || []) {
+      const d = `M${[pts[0], ...p.close.map((v, k) => `${X(n + k)},${Y(v)}`)].join(" L")}`;
+      svg.append(s("path", { d, fill: "none", stroke: GRU_PATH_COLORS[p.name](), "stroke-width": 1.4, opacity: 0.8, "pointer-events": "none" }));
+      // a wide transparent twin takes the hover, so a thin line is still easy to point at
+      const hit = s("path", { d, fill: "none", stroke: "transparent", "stroke-width": 10, cursor: "help" });
+      hit.addEventListener("mousemove", (ev) => showTip(ev, [h("b", {}, `GRU ${p.name} path (${p.percentile}th percentile)`), p.meaning,
+        `ends at ${inr(p.close[p.close.length - 1])}`]));
+      hit.addEventListener("mouseleave", () => hideTip()); svg.append(hit);
+    }
     svg.append(path);
   }
   if (ghost) ghost.dates.forEach((d, k) => { const x = X(n + k), up = ghost.close[k] >= ghost.open[k], col = up ? css("--up") : css("--down");
@@ -496,7 +529,7 @@ function technicalPanel(sym, opts = {}) {
     h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1)" }), " 50-day"), h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-2)" }), " 200-day"),
     h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--pattern)" }), " pattern"),
     h("span", {}, h("span", { class: "legend-dots" }), " our model's median"), h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1);border-top-style:dashed" }), " GRU median"),
-    h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1);opacity:.5;border-top-width:1px" }), " GRU possible paths"), h("span", { class: "up" }, "▲"), "bullish candle", h("span", { class: "down" }, "▼"), "bearish candle"), seg), toggles, plot, note, cards);
+    ...["high", "middle", "low"].map((name) => h("span", {}, h("span", { class: "legend-line", style: `border-color:${GRU_PATH_COLORS[name]()};border-top-width:1px` }), ` GRU ${name} path`)), h("span", { class: "up" }, "▲"), "bullish candle", h("span", { class: "down" }, "▼"), "bearish candle"), seg), toggles, plot, note, cards);
   load();
   window.addEventListener("resize", draw);
   return wrap;
@@ -854,7 +887,7 @@ function askCard(sym) {
     const msg = new RegExp(`\\b${sym.replace(/[^A-Z0-9]/g, "")}\\b`, "i").test(q) ? q : `${q} (${sym})`;
     log.append(h("div", { class: "bubble me", style: "max-width:100%" }, q));
     const bot = h("div", { class: "bubble bot", style: "max-width:100%" }, "Thinking…"); log.append(bot);
-    try { const r = await api("/chat", { method: "POST", body: JSON.stringify({ message: msg, session_id: "stock-" + sym.replace(/[^A-Za-z0-9]/g, "") }) }); bot.textContent = r.text; }
+    try { const r = await api("/chat", { method: "POST", body: JSON.stringify({ message: msg, session_id: "stock-" + sym.replace(/[^A-Za-z0-9]/g, "") }) }); bot.replaceChildren(md(r.text)); }
     catch (e) { bot.textContent = e.message; }
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
@@ -965,7 +998,7 @@ async function pageChat(view, params) {
   const log = h("div", { class: "log" }); const input = h("input", { placeholder: "Ask anything: 'Should I buy TCS?', 'What is RSI?', 'Compare INFY and HCLTECH'" });
   const sid = sessionStorage.getItem("si-chat") || ("web-" + Math.random().toString(36).slice(2, 10)); sessionStorage.setItem("si-chat", sid);
   const history = JSON.parse(sessionStorage.getItem("si-chat-log") || "[]");
-  const bubble = (who, text, meta) => { const b = h("div", { class: `bubble ${who}` }, text, meta ? h("span", { class: "meta" }, meta) : null); log.append(b); log.scrollTop = log.scrollHeight; return b; };
+  const bubble = (who, text, meta) => { const b = h("div", { class: `bubble ${who}` }, who.startsWith("bot") ? md(text) : text, meta ? h("span", { class: "meta" }, meta) : null); log.append(b); log.scrollTop = log.scrollHeight; return b; };
   for (const m of history) bubble(m.who, m.text, m.meta);
   const useAgent = h("input", { type: "checkbox" }); useAgent.checked = localStorage.getItem("si-agent") === "1";
   useAgent.addEventListener("change", () => localStorage.setItem("si-agent", useAgent.checked ? "1" : "0"));
@@ -976,13 +1009,13 @@ async function pageChat(view, params) {
     bubble("me", q); history.push({ who: "me", text: q });
     const b = bubble("bot", "Thinking…");
     try { const r = await api("/chat", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) });
-      b.replaceChildren(r.text, h("span", { class: "meta" }, `${r.intent}${r.tools_used.length ? " · " + r.tools_used.join(", ") : ""}`)); history.push({ who: "bot", text: r.text, meta: r.intent }); }
+      b.replaceChildren(md(r.text), h("span", { class: "meta" }, `${r.intent}${r.tools_used.length ? " · " + r.tools_used.join(", ") : ""}`)); history.push({ who: "bot", text: r.text, meta: r.intent }); }
     catch (e) { b.textContent = e.message; }
     if (useAgent.checked && !agentRow.hidden) { const a = bubble("bot agent", "Asking the self-learning agent…");
       try { const t = await api("/ui/agent/ask", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) });
-        const meta = `self-learning agent · data as of ${t.as_of} · ` + (t.spoke ? `confidence ${num(t.confidence)}` : `held back: ${t.because}`)
+        const meta = `self-learning agent${t.as_of ? ` · data as of ${t.as_of}` : ""} · ` + (t.spoke ? (t.confidence == null ? "from its sources" : `confidence ${num(t.confidence)}`) : `held back: ${t.because}`)
           + (t.phrased_by ? ` · worded by ${t.phrased_by.split("/").pop()}` : t.unphrased_because ? ` · in its own words (${t.unphrased_because})` : "");
-        a.replaceChildren(t.served, h("span", { class: "meta" }, meta)); history.push({ who: "bot agent", text: t.served, meta }); }
+        a.replaceChildren(md(t.shown || t.served), h("span", { class: "meta" }, meta)); history.push({ who: "bot agent", text: t.shown || t.served, meta }); }
       catch (e) { a.textContent = `Self-learning agent: ${e.message}`; } }
     sessionStorage.setItem("si-chat-log", JSON.stringify(history.slice(-40))); log.scrollTop = log.scrollHeight;
   };

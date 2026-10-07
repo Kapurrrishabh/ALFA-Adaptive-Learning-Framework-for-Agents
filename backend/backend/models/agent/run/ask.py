@@ -65,6 +65,19 @@ def live_from(tokenizer):
     return Live([Filings(session), Encyclopedia(session), NewsWire()], tokenizer)
 
 
+def filings_from(tokenizer):
+    """SEC EDGAR alone, for a recent question about a company that files there."""
+    from backend.database.live import Filings, Live, PoliteSession
+    return Live([Filings(PoliteSession(timeout=LIVE_TIMEOUT, attempts=LIVE_ATTEMPTS))], tokenizer)
+
+
+def lessons_from():
+    """The curated lessons as question -> [(title, text)], with their hard line wraps undone."""
+    from backend.knowledge_base.lessons import knowledge_base
+    held = knowledge_base()
+    return lambda question: [(lesson.title, " ".join(lesson.text.split())) for lesson, _ in held.search(question, k=1)]
+
+
 def news_from(tokenizer):
     """The newswire alone, read from the archive on disk; no network call at question time."""
     from backend.database.live import Live, NewsWire
@@ -85,7 +98,16 @@ def listed_names():
     return {f"{symbol}.NS": name for symbol, name in company_names("nifty500").items()}
 
 
-def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=False, writer=None):
+def ranker_from(chunks):
+    """Search by meaning over the passage vectors, reordered by a cross-encoder (models/external/sentence.py)."""
+    from backend.models.core.backend import xp
+    from backend.models.external import sentence
+    from backend.models.external.embed_index import vectors_for
+    vectors = xp.asarray(vectors_for(chunks), dtype=xp.float32)
+    return sentence.reranked(Hybrid(chunks, pretokenize, vectors, lambda text: sentence.embed([text])[0], centre=False))
+
+
+def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=False, writer=None, dense=False):
     """The retrieval answer path, or None when no index was named.
 
     Its checkpoint is named by the caller and not taken from the registry, unlike the advisory one. The
@@ -113,25 +135,41 @@ def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=Fal
     return Reference(Hybrid(chunks, pretokenize), tokenizer, model, config, QUESTION_TOKENS, PASSAGES,
                      ANSWER_TEMPERATURE, ANSWER_TOP_P, np.random.default_rng(config.seed),
                      paraphrase=paraphrase, live=live_from(tokenizer) if live else None, writer=writer,
-                     news=news_from(tokenizer) if live else None)
+                     news=news_from(tokenizer) if live else None,
+                     filings=filings_from(tokenizer) if live else None,
+                     rank=ranker_from(chunks) if dense else None, lessons=lessons_from())
+
+
+# Which encoder routes, and the gate fitted for it: models/training/route.py fitted ALFA's at 97% precision,
+# models/external/route_encoders.py the pretrained one at 99%. A gate read with another scorer's margins would
+# refuse at a cut nothing measured, so the two are chosen together.
+ROUTERS = {"alfa": "route_gate.json", "pretrained": "route_gate_bge.json"}
+
+
+def router_from(choice, known, model, tokenizer, length):
+    texts = [text for _, _, text in known]
+    if choice == "pretrained":
+        from backend.models.external import sentence
+        return Router(known, sentence.similarity(texts))
+    return Router(known, combined(texts, model, tokenizer, length))
 
 
 def build(artifacts, checkpoint, prices, gate, log, wanted, warmup, price_head, reference=None,
-          symbols=None, scenarios="", writer=None, listed=None):
+          symbols=None, scenarios="", writer=None, listed=None, router="alfa"):
     """The served agent, with every threshold loaded from what solved for it."""
     # Which checkpoint answers is the registry's to say. A default string here would serve a model on the
     # strength of its file name, and C6's gate exists because one of these files generates much worse.
     served = Path(checkpoint) if checkpoint else registry.serving(registry.GENERATOR)
     tokenizer, model, config = load_model(artifacts, served.stem, "")
     known = finance.examples()
-    router = Router(known, combined(
-        [text for _, _, text in known], model, tokenizer, config.max_text_length))
+    routed = router_from(router, known, model, tokenizer, config.max_text_length)
+    gate = gate or str(artifacts / ROUTERS[router])
     with FeedbackLog(log) as feedback:
         abstainer, calibrator, learned = adapt(feedback, wanted, warmup)
     advisor = models.load(Path(price_head)) if price_head else None
     market = finance.Market(Path(prices), advisor, symbols,
                             models.scenarios.load(Path(scenarios)) if scenarios else None, listed)
-    return Agent(finance, market, router, Abstainer.load(gate), tokenizer,
+    return Agent(finance, market, routed, Abstainer.load(gate), tokenizer,
                  model, config, abstainer, calibrator, np.random.default_rng(config.seed),
                  reference=reference, writer=writer), abstainer, learned, served
 
@@ -162,8 +200,10 @@ def main():
     parser.add_argument("--checkpoint", default="",
                         help="a candidate to try instead of the one promoted to serve")
     parser.add_argument("--prices", default=str(DATA / "prices"))
-    parser.add_argument("--gate", default=str(ARTIFACTS / "route_gate.json"),
-                        help="the routing cut route.py solved for")
+    parser.add_argument("--router", choices=sorted(ROUTERS), default="alfa",
+                        help="ALFA's encoder, or a pretrained sentence encoder that measured 99.4% precision "
+                             "at 93.3% coverage against 98.8% at 86.5%")
+    parser.add_argument("--gate", default="", help="a routing cut other than the one fitted for --router")
     parser.add_argument("--log", default=str(ARTIFACTS / "chat.sqlite"),
                         help="the feedback log the answer cut and the calibrator are refitted from")
     parser.add_argument("--price-head", default=str(ARTIFACTS / "price_head.npz"),
@@ -187,6 +227,9 @@ def main():
     parser.add_argument("--phrase", action="store_true",
                         help="reword each answer with the language model (the model Space's when one is set); "
                              "its words are served only when they pass the figure and claim checks")
+    parser.add_argument("--dense", action="store_true",
+                        help="find reference passages by meaning and rerank them with a cross-encoder; the "
+                             "endorsed answer came first 20.6%% of the time against 12.3%% for BM25")
     parser.add_argument("--as-of", default=None, help="the last date a snapshot may read")
     parser.add_argument("--wanted", type=float, default=0.6, help="the stated chance of being right")
     parser.add_argument("--warmup", type=int, default=10,
@@ -199,8 +242,8 @@ def main():
         artifacts, args.checkpoint, args.prices, args.gate, args.log, args.wanted, args.warmup,
         args.price_head,
         reference_from(artifacts, args.reference_index, args.reference_checkpoint, args.paraphrase,
-                       args.live, writer),
-        args.symbols, writer=writer, listed=listed_names())
+                       args.live, writer, args.dense),
+        args.symbols, writer=writer, listed=listed_names(), router=args.router)
     # `expected` rather than `wanted`: the 60% bar is not reachable on this checkpoint, so the fit returns
     # the most precise cut its coverage floor allows and reports the shortfall. Printing the bar alone
     # would claim a precision nothing measured.

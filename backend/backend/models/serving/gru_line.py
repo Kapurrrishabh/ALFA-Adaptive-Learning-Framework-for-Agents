@@ -10,7 +10,12 @@ from backend.models.networks import path_gru as G
 from backend.paths import ARTIFACTS
 
 WEIGHTS = ARTIFACTS / "path_gru.npz"
-EXAMPLE_PATHS = 3
+# Three of SIMULATED paths, each picked by a different measure: the one ending nearest the 10th, the 50th and the
+# 90th percentile of where all of them end. Random draws would be three unlabelled lines that mean the same thing.
+SIMULATED = 1000
+SHOWN = ((0.1, "low", "1 in 10 simulated paths ends lower"),
+         (0.5, "middle", "half end lower, half higher"),
+         (0.9, "high", "1 in 10 simulated paths ends higher"))
 _LOADED = None
 
 
@@ -38,6 +43,17 @@ def line(closes, highs, lows, market):
     ranges = xp.log(xp.asarray(highs, dtype=float) / xp.asarray(lows, dtype=float))[1:]
     window, scale = G.window_at(r, rm, ranges, len(r) - 1)
     mean, log_sd = (t.data[0] for t in model(window[None].astype("float32")))
-    paths = G.sample_paths(c[-1], mean, log_sd, scale, EXAMPLE_PATHS)
     return {"close": [round(float(v), 2) for v in G.median_prices(c[-1], mean, scale)],
-            "paths": [[round(float(v), 2) for v in p] for p in paths], "record": record}
+            "paths": labelled_paths(G.sample_paths(c[-1], mean, log_sd, scale, SIMULATED)), "record": record}
+
+
+def labelled_paths(simulated):
+    """The simulated paths ending nearest each SHOWN percentile, with what each one stands for."""
+    ends = simulated[:, -1]
+    picked = []
+    for q, name, meaning in SHOWN:
+        target = float(xp.quantile(ends, q))
+        path = simulated[int(xp.argmin(xp.abs(ends - target)))]
+        picked.append({"name": name, "percentile": int(q * 100), "meaning": meaning,
+                       "close": [round(float(v), 2) for v in path]})
+    return picked

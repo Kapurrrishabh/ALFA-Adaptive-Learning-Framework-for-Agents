@@ -44,13 +44,16 @@ REFERENCE = "reference"
 PARAPHRASED = "paraphrased"
 QUOTED = "quoted"
 PHRASED = "phrased"
+# what happened lately, read from the price snapshot, filings and headlines together
+RECENT_HOW = "recent"
+LESSON_HOW = "lesson"
 # the sources were read and do not answer it: a refusal, because quoting the top passage would serve text
 # a reader of it just said is beside the point
 UNANSWERED = "unanswered"
 
 # Words that say the answer is about what happened lately, so the live sources -- the newswire among them --
 # are read before a corpus that holds no news at all.
-RECENT = re.compile(r"\b(today|yesterday|this (week|month|quarter)|latest|recent(ly)?|news|now|currently|"
+RECENT = re.compile(r"\b(today|yesterday|this (week|month|quarter)|latest|lately|recent(ly)?|news|now|currently|"
                     r"announc\w*|results?)\b", re.I)
 # A question about a price move or what a company is up to asks what happened lately, and the newswire is
 # read before anything else: "any news on tata steel" ranked over Wikipedia and the newswire together was
@@ -82,14 +85,24 @@ class Reference:
     """
 
     def __init__(self, index, tokenizer, model, config, question_tokens, passages,
-                 temperature, top_p, rng=None, paraphrase=False, live=None, writer=None, news=None):
+                 temperature, top_p, rng=None, paraphrase=False, live=None, writer=None, news=None,
+                 filings=None, rank=None, lessons=None):
         self.paraphrase = paraphrase
-        # The language model that answers from newswire passages only. Short dated headlines it restates
-        # well; long encyclopedia and forum text it misattributed ("HDFCBANK.NS is a subsidiary of HDFC Bank"),
-        # as ALFA's own generator did, so those are still quoted. A failed check also quotes.
+        # The language model that answers recent questions from prices, filings and headlines. Long
+        # encyclopedia and forum text it misattributed ("HDFCBANK.NS is a subsidiary of HDFC Bank"), as
+        # ALFA's own generator did, so those are still quoted. A failed check serves the plain answer.
         self.writer = writer
-        # The newswire on its own, asked first when a question is about what happened lately (`LATELY`).
+        # The newswire and SEC's filings on their own, read with the price snapshot for a question about
+        # what happened lately (`LATELY`): headlines alone said Titan fell, not by how much or from where.
         self.news = news
+        self.filings = filings
+        # Optional: (query, top_k, as_of) -> chunk indices, best first. Given, it replaces BM25 for the
+        # stored passages; BM25 put the endorsed answer first 12.3% of the time (models/external/sentence.py).
+        self.rank = rank
+        # Optional: question -> [(title, text)] from the curated lessons (knowledge_base/lessons). Asked first for a
+        # question that names no company: the corpus is mostly US forums, and "how does a SIP work" read from it
+        # was answered with Wikipedia's sales incentive plan.
+        self.lessons = lessons
         self.index = index
         # Optional, and left out the path makes no network call, which is how the offline gate is still met
         # by this code. Which of it and the index is asked first is `_arms`, and depends on the subject.
@@ -103,7 +116,7 @@ class Reference:
         self.top_p = top_p
         self.rng = rng
 
-    def look_up(self, question, as_of=None, subject=None):
+    def look_up(self, question, as_of=None, subject=None, prices=None):
         """A `Looked` for one question, or None when nothing we can read was about it.
 
         None rather than a refusal, so the caller keeps owning what silence sounds like.
@@ -112,17 +125,54 @@ class Reference:
         search and it is what the passages are checked against -- the reader is still given the question as
         typed. Without it "how has it been doing" searches for the word "it", which is how a question about
         one company was answered out of a passage about another.
+
+        `prices` is the subject's snapshot as (evidence, the figures it states, its date), from
+        `finance.Market.snapshot`, given by the caller that holds the price files.
         """
         query = f"{question} {' '.join(subject.names)}" if subject else question
-        lately = self.news is not None and LATELY.search(question) is not None
+        if subject is None and self.lessons is not None and not LATELY.search(question):
+            taught = self.lessons(question)
+            if taught:
+                title, text = taught[0]
+                return Looked(text, f"document lesson:{title} ; published undated ; passage_1 {text}", LESSON_HOW,
+                              [], float("nan"), text, "")
+        if self.news is not None and LATELY.search(question):
+            return self._recent(question, query, as_of, subject, prices)
         for arm in self._arms(subject, question):
             chunks = arm(query, as_of, subject)
             if chunks:
-                return self._read(question, chunks, subject, reworded=arm == self._newswire)
-        if lately:
-            # Read and found nothing recent: saying so beats an encyclopedia's answer to "why is it falling".
-            return Looked("", "", UNANSWERED, [], float("nan"), "", "", "", "no recent news names it")
+                return self._read(question, chunks, subject)
         return None
+
+    def asks_lately(self, question):
+        """Whether a question says it is about now ("lately", "today", "news"), so prices, filings and headlines
+        answer it before the advisory path: "how is AAPL doing lately" was refused at ALFA's confidence cut,
+        while the price files and the newswire held its answer."""
+        return self.news is not None and RECENT.search(question) is not None
+
+    def _recent(self, question, query, as_of, subject, prices):
+        """What happened lately, from everything dated: the price snapshot, SEC filings and headlines.
+
+        An encyclopedia is not asked: read for "why is infosys falling" it gave "falling because it is a
+        technology company". With nothing dated about it at all, the turn says so.
+        """
+        found = (self._searched(query, as_of, subject, self.filings) or []) if self.filings and subject and subject.cik \
+            else []
+        found += self._newswire(query, as_of, subject) or []
+        if not found and prices is None:
+            return Looked("", "", UNANSWERED, [], float("nan"), "", "", "", "no recent news names it")
+        evidence = _as_dated_evidence(found, prices)
+        day = prices[2] if prices else found[0].day
+        money = phrase.currency(subject.ticker) if subject else None
+        # prices alone need no rewording: the plain answer already says all they do, and that nothing says why
+        written = phrase.recent(question, subject, prices, found, self.writer, money) if self.writer and found else None
+        if written is not None and written.text:
+            return Looked(written.text, evidence, RECENT_HOW, [], float("nan"), "", day, written.by, "")
+        if written is not None and written.because == phrase.NOT_ANSWERED and not prices:
+            return Looked("", evidence, UNANSWERED, [], float("nan"), "", day, "", written.because)
+        plain = phrase.recent_plain(subject, prices, found)
+        return Looked(plain, evidence, RECENT_HOW, [], float("nan"), plain, day, "",
+                      written.because if written is not None else "")
 
     def _arms(self, subject, question):
         """The arms in the order they are asked, decided by whether the subject has an identity to ask by.
@@ -146,14 +196,12 @@ class Reference:
         """
         if self.live is None:
             return (self._stored,)
-        if self.news is not None and LATELY.search(question):
-            return (self._newswire,)
         return (self._searched, self._stored) if subject is not None or RECENT.search(question) \
             else (self._stored, self._searched)
 
     def _stored(self, query, as_of, subject):
         """The index's own passages, when they are about the query. None is "ask somewhere else"."""
-        found = self.index.search(query, self.passages, as_of)
+        found = (self.rank or self.index.search)(query, self.passages, as_of)
         return self._about([self.index.cite(where) for where in found], subject)
 
     def _newswire(self, query, as_of, subject):
@@ -218,7 +266,7 @@ class Reference:
             return chunks or None
         return [chunk for chunk in chunks if subject.mentions(chunk.text)] or None
 
-    def _read(self, question, chunks, subject=None, reworded=False):
+    def _read(self, question, chunks, subject=None):
         """What to serve from passages already judged to be about the question.
 
         One reader for both origins on purpose: a live answer that went through different code would be a
@@ -227,15 +275,6 @@ class Reference:
         """
         evidence = _as_evidence(chunks)
         quote = chunks[0].text
-        if self.writer is not None and reworded:
-            phrased = phrase.from_passages(question, chunks, self.writer,
-                                           phrase.currency(subject.ticker) if subject else None)
-            if phrased.text:
-                return Looked(phrased.text, evidence, PHRASED, [], float("nan"), quote, chunks[0].day,
-                              phrased.by, "")
-            if phrased.because == phrase.NOT_ANSWERED:
-                return Looked("", evidence, UNANSWERED, [], float("nan"), quote, chunks[0].day, "", phrased.because)
-            return Looked(quote, evidence, QUOTED, [], float("nan"), quote, chunks[0].day, "", phrased.because)
         if not self.paraphrase:
             # No decoder pass at all, which is most of the cost of a turn. `answer` is the quote rather than
             # empty so that `answer != served` keeps meaning "a guard changed this", and `how` is what says
@@ -271,3 +310,11 @@ def _as_evidence(chunks):
     # turns back into a space: repeating the bare name would collide in a panel keyed by it.
     lines += [f"passage_{index} {chunk.text}" for index, chunk in enumerate(chunks, 1)]
     return " ; ".join(lines)
+
+
+def _as_dated_evidence(chunks, prices):
+    """Every passage with its own document and date, after the prices, so each source can be cited."""
+    lines = [f"prices {prices[0]} ;; "] if prices else []
+    lines += [f"document {chunk.document} ; published {chunk.day or 'undated'} ; passage_{index} {chunk.text}"
+              for index, chunk in enumerate(chunks, 1)]
+    return "".join(lines[:1]) + " ; ".join(lines[1:]) if prices else " ; ".join(lines)

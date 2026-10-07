@@ -24,7 +24,9 @@ PUBLISHED = (alfa_fan.WEIGHTS, gru_line.WEIGHTS)
 # the feedback its answer cut is refitted from. Then its price files, SEC's symbol table and the exchange's
 # constituent list its Indian company names come from.
 AGENT_ARTIFACTS = ("registry.json", "tokenizer.json", "advisory_combined.npz", "generator.npz", "route_gate.json",
-                   "price_head.npz", "returns.npz", "reference_index.npz", "served.sqlite", "served_verdicts.jsonl")
+                   "price_head.npz", "returns.npz", "reference_index.npz", "reference_sources.json",
+                   "reference_vectors_bge.npy",
+                   "route_gate_bge.json", "served.sqlite", "served_verdicts.jsonl")
 AGENT_DATA = ("prices", "raw/sec_edgar/company_tickers.json", "cache/nifty500.csv")
 
 

@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from backend.advisory.service import StockAnalysis
 
-BAR = "━" * 34
 CURRENCY = {"INR": "₹", "USD": "$"}
 UNAVAILABLE = "Data unavailable"
 
@@ -21,7 +20,7 @@ def _money(v: Optional[float], ccy: str = "INR") -> str:
 
 
 def _section(n: int, title: str) -> str:
-    return f"\n{BAR}\n{n}. {title.upper()}\n{BAR}\n"
+    return f"\n### {n}. {title}\n"
 
 
 def _evidence_lines(a: StockAnalysis, domain: str, limit: int = 8) -> List[str]:
@@ -32,9 +31,12 @@ def _evidence_lines(a: StockAnalysis, domain: str, limit: int = 8) -> List[str]:
         return [f"{UNAVAILABLE}: {r.error}"]
     lines = []
     for e in r.evidence[:limit]:
-        mark = "+" if e.direction > 0 else "-" if e.direction < 0 else "·"
-        lines.append(f"  {mark} [{e.kind()}] {e.claim}")
-    return lines or ["  · No notable observations."]
+        lines.append(f"- {_mark(e.direction)} [{e.kind()}] {e.claim}")
+    return lines or ["- No notable observations."]
+
+
+def _mark(direction: int) -> str:
+    return "▲" if direction > 0 else "▼" if direction < 0 else "·"
 
 
 def _metric(m: Dict[str, Any], key: str, suffix: str = "") -> str:
@@ -54,26 +56,26 @@ def _metric(m: Dict[str, Any], key: str, suffix: str = "") -> str:
 def render_analysis(a: StockAnalysis, full: bool = False) -> str:
     d = a.decision
     ccy = a.currency
-    out = [f"{a.name} ({a.provider_symbol})",
-           f"Analysis timestamp: {a.analysis_timestamp} | Price data as of {a.quality['last_date']} "
-           f"| Last close {_money(a.price, ccy)} | Source: {a.quality['source']}"]
+    out = [f"### {a.name} ({a.provider_symbol})",
+           f"Last close **{_money(a.price, ccy)}** · Price data as of {a.quality['last_date']} · "
+           f"source {a.quality['source']} · Analysis timestamp {a.analysis_timestamp}"]
     if a.quality.get("source") == "synthetic":
         out.append("⚠ SYNTHETIC DEMO DATA — not real market prices.")
 
     out.append(_section(1, "Executive summary"))
-    out.append(f"Current state: {d.overall_state}")
-    out.append(f"Decision-support classification: {d.decision_support_label} "
+    out.append(f"Current state: **{d.overall_state}**")
+    out.append(f"Decision-support classification: **{d.decision_support_label}** "
                f"(horizon {d.time_horizon})")
-    out.append(f"Fused score {d.score:+.2f} on −1..+1 | Confidence {d.confidence:.2f} | "
-               f"Uncertainty {d.uncertainty:.2f}")
+    out.append(f"Fused score {d.score:+.2f} on −1..+1 · confidence {d.confidence:.2f} · "
+               f"uncertainty {d.uncertainty:.2f}")
     for g in d.gates_applied:
         out.append(f"Gate: {g}")
     if d.conflict:
         out.append("\nEvidence conflict detected.")
-    out.append("\nKey positive evidence:" if d.score >= 0 else "\nKey negative evidence:")
-    out += [f"  • {e['claim']}" for e in d.supporting_evidence[:4]] or ["  • none"]
-    out.append("Key opposing evidence:")
-    out += [f"  • {e['claim']}" for e in d.contradicting_evidence[:4]] or ["  • none"]
+    out.append("\n**Key positive evidence**" if d.score >= 0 else "\n**Key negative evidence**")
+    out += [f"- {e['claim']}" for e in d.supporting_evidence[:4]] or ["- none"]
+    out.append("\n**Key opposing evidence**")
+    out += [f"- {e['claim']}" for e in d.contradicting_evidence[:4]] or ["- none"]
     out.append("Primary uncertainty: " + (d.key_uncertainties[0] if d.key_uncertainties else "none flagged"))
 
     tech = a.results["technical"]
@@ -202,23 +204,32 @@ def _summary_sentence(a: StockAnalysis) -> str:
             + (", with the domains in conflict." if d.conflict else "."))
 
 
+DOMAIN_TITLES = {"technical": "Technicals", "candlestick": "Candlesticks", "pattern": "Chart patterns",
+                 "fundamental": "Fundamentals", "news_sentiment": "News & sentiment", "risk": "Risk",
+                 "regime": "Market regime", "forecast": "Forecast", "historical": "Similar past setups"}
+
+
 def render_domain(a: StockAnalysis, domain: str) -> str:
     r = a.results.get(domain)
     if r is None:
         return f"No domain named {domain!r}. Available: {', '.join(a.results)}"
-    head = [f"{a.name} — {domain.replace('_', ' ')} evidence (as of {r.as_of})",
-            f"State: {r.state} | score {r.score if r.score is None else round(r.score, 3)} | "
-            f"confidence {r.confidence}"]
+    score = "no score" if r.score is None else f"score {r.score:+.2f}"
+    head = [f"### {a.name} · {DOMAIN_TITLES.get(domain, domain.replace('_', ' '))}",
+            f"Overall **{r.state}** · {score} · confidence {r.confidence} · as of {str(r.as_of)[:10]}", ""]
     if not r.available:
         return "\n".join(head + [f"{UNAVAILABLE}: {r.error}"])
-    for e in r.evidence:
-        mark = "+" if e.direction > 0 else "-" if e.direction < 0 else "·"
-        head.append(f"{mark} [{e.kind()}] {e.claim}\n    source={e.provenance.source} as_of={e.provenance.as_of}"
-                    + (f" period={e.provenance.period}" if e.provenance.period else "")
-                    + f" strength={e.strength}")
+    events = r.details.get("events") if domain == "news_sentiment" else None
+    if events:
+        # the headlines themselves, linked, rather than the evidence lines that summarise them
+        ranked = sorted(events, key=lambda e: e.get("weight", 0), reverse=True)[:6]
+        head += [f"- {_mark(e['sentiment'])} " + (f"[{e['headline']}]({e['url']})" if e.get("url", "").startswith("http")
+                                                  else e["headline"]) + f" — {e['source']}, {str(e.get('timestamp', ''))[:10]}"
+                 for e in ranked]
+    else:
+        head += [f"- {_mark(e.direction)} [{e.kind()}] {e.claim}" for e in r.evidence]
     weight_note = ("This domain carried zero weight in the decision (confidence 0)."
                    if r.confidence == 0 else "")
-    return "\n".join(head + ([weight_note] if weight_note else []))
+    return "\n".join(head + (["", weight_note] if weight_note else []))
 
 
 def render_report(a: StockAnalysis) -> str:

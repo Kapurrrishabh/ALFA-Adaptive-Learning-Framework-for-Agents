@@ -51,9 +51,10 @@ class NewTrade(BaseModel):
     price: float
 
 
-def create_app(agent, store, judge, refit, served):
+def create_app(agent, store, judge, refit, served, show=lambda turn: turn.served):
     """The app. `judge(question, evidence, answer)` returns (is_right or None, why, labeller); `refit`
-    takes the feedback log and returns (abstainer, calibrator, learned)."""
+    takes the feedback log and returns (abstainer, calibrator, learned). `show(turn)` is the markdown a
+    reader sees (models/agent/present.py); the plain `served` text is what is stored and judged."""
     app = FastAPI(title="ALFA", description=__doc__)
     app.add_middleware(CORSMiddleware, allow_origins=list(DEVELOPMENT_ORIGINS),
                        allow_methods=["*"], allow_headers=["*"])
@@ -228,7 +229,7 @@ def create_app(agent, store, judge, refit, served):
             # Only ever replaced, never cleared: a general question in the middle of a conversation about
             # one instrument does not mean the next one has changed the subject.
             subject = turn.ticker or subject
-            await socket.send_json({"stage": "turn", **_as_frame(turn)})
+            await socket.send_json({"stage": "turn", **_as_frame(turn), "shown": show(turn)})
             await socket.send_json({"stage": "stored", **_store_turn(store, token, conversation, turn,
                                                                     judge, refit, agent)})
 

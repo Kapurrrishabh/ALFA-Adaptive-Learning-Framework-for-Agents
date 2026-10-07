@@ -35,7 +35,8 @@ SYNONYMS = {"pe": ["p/e", "price", "earnings"], "p/e": ["pe"], "rsi": ["relative
             "sharpe": ["sharpe"], "de": ["debt/equity", "debt"], "roe": ["return", "equity"],
             "fcf": ["free", "cash", "flow"], "sl": ["stop", "loss"],
             "h&s": ["head", "shoulders"], "ltcg": ["long-term", "capital", "gains", "tax"],
-            "stcg": ["short-term", "capital", "gains", "tax"]}
+            "stcg": ["short-term", "capital", "gains", "tax"], "sip": ["systematic", "investment", "plan"],
+            "nav": ["net", "asset", "value"], "etf": ["exchange-traded"], "elss": ["equity", "linked", "savings"]}
 
 
 @dataclass

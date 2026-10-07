@@ -29,6 +29,8 @@ price will rise or fall. If the passages do not answer the question, reply with 
 nothing else."""
 
 _THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}\b)")
+# a ticker, or a name in capitals: "RELIEANCE.NS" was written for RELIANCE.NS and passed every other check
+_NAMES = re.compile(r"\b[A-Z0-9&-]{2,}\.(?:NS|BO)\b|\b[A-Z]{5,}\b")
 # A reply that says the passages do not answer, wherever it says it: "...founded in 1981. The passage does
 # not provide a specific reason. None." was half an answer and half a refusal, and only the refusal was true.
 _DECLINES = re.compile(r"\bnone\.?\s*$|\b(does|do|did) not (provide|say|mention|explain|give|contain|answer)|"
@@ -47,7 +49,7 @@ def rewrite(question, draft, evidence, writer, money):
         return reply
     text, by = reply
     kept = set(figures(_plain(draft)))
-    reasons = _checked(text, f"{evidence} {draft}", money)
+    reasons = _checked(text, f"{evidence} {draft}", money, question)
     dropped = sorted(kept - set(figures(_plain(text))))
     if dropped:
         reasons.append(f"it leaves out {', '.join(dropped)}")
@@ -63,8 +65,46 @@ def from_passages(question, chunks, writer, money=None):
     text, by = reply
     if _DECLINES.search(text):
         return Phrased("", "", NOT_ANSWERED)
-    reasons = _checked(text, passages, money)
+    reasons = _checked(text, passages, money, question)
     return Phrased("", "", "; ".join(reasons)) if reasons else Phrased(text, by, "")
+
+
+def price_sentence(ticker, prices, money):
+    """The snapshot as one line a reader and the language model can both quote from."""
+    from backend.models.agent.present import FIGURES, readable_day
+    _, shown, day = prices
+    parts = [f"{label.lower()} {money if priced else ''}{shown[name]}" for name, label, priced in FIGURES if name in shown]
+    return f"{ticker} as of {readable_day(day)}: " + ", ".join(parts)
+
+
+def recent(question, subject, prices, chunks, writer, money):
+    """What happened lately: our sentence on the price move, then the language model's account of the passages.
+
+    The model is not shown the prices. Given both, it wrote "down 0.5% from the previous close of ₹704.80"
+    for HDFC Bank: the 5-day change pinned to a quote that said the shares were up, every figure in the
+    sources and the claim wrong. So it reads the dated passages only, and the prices are our own words.
+    """
+    told = from_passages(question, chunks, writer, money)
+    lead = price_move(subject, prices)
+    return told._replace(text=f"{lead} {told.text}".strip()) if told.text else told
+
+
+def price_move(subject, prices):
+    """One sentence on where the price stands, from the snapshot; empty without one."""
+    from backend.models.agent.present import readable_day
+    if not prices:
+        return ""
+    _, shown, day = prices
+    return (f"{subject.ticker} closed at {currency(subject.ticker)}{shown['close']} on {readable_day(day)}: "
+            f"{shown['return_5d']} over 5 days and {shown['return_20d']} over 20 days.")
+
+
+def recent_plain(subject, prices, chunks):
+    """The same answer without a language model: the price sentence, then the newest report or the lack of one."""
+    said = [price_move(subject, prices)] if prices else []
+    said.append(f"The latest report: {chunks[0].text}" if chunks
+                else "I found no news or filing about it in the archive, so I cannot say why.")
+    return " ".join(said)
 
 
 def _ask(writer, system, content):
@@ -78,8 +118,11 @@ def _ask(writer, system, content):
     return writer.text(reply).strip(), reply.model
 
 
-def _checked(text, source, money):
+def _checked(text, source, money, asked=""):
     reasons = ["it breaks into lines, as a list or verse does"] if "\n" in text.strip() else []
+    known = f"{source} {asked}".lower()
+    reasons += [f"it names {name}, which the source does not" for name in sorted(set(_NAMES.findall(text)))
+                if name.lower() not in known]
     reasons += [f"figure {figure} is not in the evidence"
                for figure in unsupported_figures(_plain(text), _plain(source))]
     reasons += added_claims(text, source)
