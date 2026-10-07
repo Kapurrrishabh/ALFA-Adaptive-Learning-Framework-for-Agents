@@ -980,7 +980,8 @@ async function pageChat(view, params) {
     catch (e) { b.textContent = e.message; }
     if (useAgent.checked && !agentRow.hidden) { const a = bubble("bot agent", "Asking the self-learning agent…");
       try { const t = await api("/ui/agent/ask", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) });
-        const meta = `self-learning agent · data as of ${t.as_of} · ` + (t.spoke ? `confidence ${num(t.confidence)}` : `held back: ${t.because}`);
+        const meta = `self-learning agent · data as of ${t.as_of} · ` + (t.spoke ? `confidence ${num(t.confidence)}` : `held back: ${t.because}`)
+          + (t.phrased_by ? ` · worded by ${t.phrased_by.split("/").pop()}` : t.unphrased_because ? ` · in its own words (${t.unphrased_because})` : "");
         a.replaceChildren(t.served, h("span", { class: "meta" }, meta)); history.push({ who: "bot agent", text: t.served, meta }); }
       catch (e) { a.textContent = `Self-learning agent: ${e.message}`; } }
     sessionStorage.setItem("si-chat-log", JSON.stringify(history.slice(-40))); log.scrollTop = log.scrollHeight;
