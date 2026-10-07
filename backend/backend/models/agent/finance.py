@@ -37,6 +37,10 @@ NO_SUBJECT = "i need to know which instrument you are asking about."
 UNKNOWN_QUESTION = "i am not sure what you are asking. i can talk about price, momentum, volatility, " \
                    "drawdown and week-ahead risk for one instrument."
 
+OFF_TOPIC = "i can only help with money, markets, companies and the economy."
+
+NOT_IN_SOURCES = "i read the recent news and my documents on that, and none of it answers the question."
+
 UNREACHABLE = "i would have to read something outside my own documents to answer that, and i could not " \
               "reach it just now. ask again in a minute."
 
@@ -76,13 +80,18 @@ class Market:
     evidence simply does not carry the figure and the core refuses the one intent that quotes it.
     """
 
-    def __init__(self, price_dir, advisor=None, symbols=None, scenarios=None):
+    def __init__(self, price_dir, advisor=None, symbols=None, scenarios=None, listed=None):
         self.paths = {path.stem.upper(): path for path in sorted(price_dir.glob("*.csv"))}
         if not self.paths:
             raise ValueError(f"no price files under {price_dir}; the agent would have no evidence to read")
         # "RELIANCE" should find RELIANCE.NS, but only when no plain RELIANCE.csv exists to prefer.
         self.aliases = {name.split(".")[0]: name for name in self.paths if "." in name}
         self.registrants = feed.registrants(symbols, self.paths) if symbols else {}
+        # SEC's table holds no Indian listing, so their names come from the exchange's own constituent list
+        # ({"INFY.NS": "infosys"}): the name a question and a headline use, which the symbol often is not
+        self.listed = {ticker: name.lower() for ticker, name in (listed or {}).items() if ticker in self.paths}
+        for ticker, name in self.listed.items():
+            self.registrants.setdefault(ticker, (None, (name,)))
         self.advisor = advisor
         self.scenarios = scenarios
 
@@ -100,14 +109,19 @@ class Market:
         return Subject(ticker, tuple(sorted(registered)), cik)
 
     def resolve(self, text):
-        """The ticker a question names, or None. Matched against what is on disk, never guessed."""
+        """The ticker a question names, or None. Matched against what is on disk, never guessed.
+
+        By symbol first, then by an exchange-listed company name as whole words, the longest name winning
+        so "hdfc bank" is not read as some shorter name inside it.
+        """
         for word in _WORD.findall(text):
             symbol = word.upper().strip(".")
             if symbol in self.paths:
                 return symbol
             if symbol in self.aliases:
                 return self.aliases[symbol]
-        return None
+        named = feed.tag(text, {ticker: (name,) for ticker, name in self.listed.items()})
+        return max(named, key=lambda ticker: len(self.listed[ticker])) if named else None
 
     def snapshot(self, ticker, as_of=None):
         """(evidence text, the figures it states, the date it was taken at) for one instrument.
@@ -197,3 +211,23 @@ def ask(intent, phrasing, ticker):
 def needs(intent):
     """The evidence figures this intent's answer quotes, so a missing one is a refusal not an invention."""
     return advisory.NEEDS[intent]
+
+
+# Words that put a question about money or markets. The reference path reads 519,135 general passages and the
+# open web, so without a gate "write me a poem about the sea" was answered out of The Lusiads; the language
+# model asked to decline such questions either wrote facts about the sea or, told more firmly, declined
+# questions about Titan's results too.
+_MONEY = re.compile(
+    r"\b(markets?|stocks?|shares?|equit(y|ies)|funds?|mutual|sips?|navs?|nifty|sensex|index|indices|invest\w*|"
+    r"prices?|trad(e|es|ed|ing|ers?)|banks?|banking|loans?|rates?|repo|rbi|sebi|inflation|gdp|econom\w*|tax\w*|"
+    r"ipos?|dividends?|bonds?|yields?|gold|silver|rupee|dollars?|currenc\w*|crypto\w*|bitcoin|profits?|loss(es)?|"
+    r"revenue|earnings|results?|quarter\w*|compan(y|ies)|business\w*|portfolio|risk\w*|volatil\w*|returns?|money|"
+    r"salary|savings?|insurance|pension|ppf|epf|deposits?|credit|debt|interest|mortgage|emi|budget|financ\w*|"
+    r"capital (gains?|markets?)|balance sheets?|real estate|property|propert(y|ies)|valuation|ratios?|brokers?|demat|futures|options|derivatives?|commodit\w*|crude|oil|sectors?|"
+    r"rall(y|ies)|crash\w*|bull\w*|bear\w*|stop[- ]loss|orders?|hedg\w*|etfs?|analysts?|ratings?|buyback|"
+    r"merger|acquisitions?|listing|momentum|drawdown|wealth|income|expense\w*|cash|spend\w*|economy)\b", re.I)
+
+
+def about_money(text):
+    """Whether a question is about money, markets, companies or the economy, by its words alone."""
+    return _MONEY.search(text) is not None

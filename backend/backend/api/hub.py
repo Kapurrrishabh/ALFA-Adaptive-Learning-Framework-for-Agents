@@ -427,7 +427,7 @@ class Hub:
         from backend.models.external import kronos_model, remote_models, tsfm
         if model not in ("chronos", "kronos", "alfa", "gru"):
             raise ValueError("model must be chronos, kronos, alfa or gru")
-        if model == "alfa" and not (alfa_model.available() or remote_models.space()):
+        if model == "alfa" and not (alfa_model.available() or remote_models.on_space("alfa")):
             raise DataUnavailable("our return model is not reachable: its weights are missing from models/artifacts and STOCKINTEL_MODEL_SPACE is not set")
         if model in ("chronos", "kronos") and not self.ml_enabled():
             raise DataUnavailable("open-source models are disabled on this server "
@@ -436,23 +436,22 @@ class Hub:
         key = (symbol.upper(), model, str(df.index[-1].date()))
         cache = self.__dict__.setdefault("_ai_cache", {})
         if key not in cache:
-            local = not remote_models.space()
             future = lambda n: [str(d.date()) for d in pd.bdate_range(df.index[-1], periods=n + 1)[1:]]
             # its own lock: a model call (or a queued Space) must not block the panel
             with self.__dict__.setdefault("_ai_lock", threading.Lock()):
                 if model == "chronos":
                     cache[key] = {"dates": future(FORECAST_DAYS),
-                                  **(tsfm.fan if local else remote_models.fan)(df["close"], FORECAST_DAYS)}
+                                  **(remote_models.fan if remote_models.on_space("chronos") else tsfm.fan)(df["close"], FORECAST_DAYS)}
                 elif model == "gru":
                     bars = df[["close", "high", "low"]].join(self.bench().rename("market"), how="inner").ffill().dropna()
                     cache[key] = {"dates": future(FORECAST_DAYS), **gru_line.line(bars.close.to_numpy(), bars.high.to_numpy(),
                                                                                 bars.low.to_numpy(), bars.market.to_numpy())}
                 elif model == "alfa":
-                    q = (alfa_model.fan(df["close"]) if local
-                         else remote_models.alfa_fan(df["close"], alfa_model.STEPS, alfa_model.PATHS))
+                    q = (remote_models.alfa_fan(df["close"], alfa_model.STEPS, alfa_model.PATHS) if remote_models.on_space("alfa")
+                         else alfa_model.fan(df["close"]))
                     cache[key] = {"dates": future(alfa_model.STEPS), **q}
                 else:
-                    cache[key] = (kronos_model.next_candles if local else remote_models.next_candles)(df, pred_len=5, samples=8)
+                    cache[key] = (remote_models.next_candles if remote_models.on_space("kronos") else kronos_model.next_candles)(df, pred_len=5, samples=8)
         if model == "gru":
             rec = cache[key]["record"]
             day = next(d for d in rec["test"]["days"] if d["day"] == FORECAST_DAYS)
@@ -507,9 +506,9 @@ class Hub:
 
     def writer(self):
         """The language model that writes analyst notes: on the model Space when one is set, else local."""
-        from backend.models.external import language, remote_models
+        from backend.models.external import remote_models
         if "_writer" not in self.__dict__:
-            self._writer = remote_models.RemoteWriter() if remote_models.space() else language.OpenLM()
+            self._writer = remote_models.writer()
         return self._writer
 
     def analyst_note(self, symbol: str) -> Dict[str, Any]:

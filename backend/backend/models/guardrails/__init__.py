@@ -1,3 +1,3 @@
-from backend.models.guardrails.guardrails import figures, screen, unsupported_figures
+from backend.models.guardrails.guardrails import added_claims, figures, screen, unsupported_figures
 
-__all__ = ["figures", "unsupported_figures", "screen"]
+__all__ = ["added_claims", "figures", "unsupported_figures", "screen"]

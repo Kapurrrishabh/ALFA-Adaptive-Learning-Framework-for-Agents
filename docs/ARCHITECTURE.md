@@ -22,6 +22,13 @@ flowchart LR
     L2["backend.models.agent.run.serve :8010<br/>chat agent"]
     L1 -- "HTTP + WebSocket" --> L2
   end
+  subgraph O["Oracle Cloud free VM: everything but the language model"]
+    O1["Caddy HTTPS"] --> O2["app: StockIntel, GRU, ALFA fan,<br/>Chronos-2-NSE, Kronos-NSE on CPU"]
+    O2 -- "HTTP + WebSocket" --> O3["agent: ALFA, --live --phrase"]
+    O4["news refresher every 30 min<br/>price refresh daily"] --> O3
+  end
+  O2 -. "writer only" .-> SP
+  O3 -. "writer only" .-> SP
   subgraph R["Free cloud setup"]
     PH["Phone browser"] -- HTTPS --> RD["Render free web service<br/>StockIntel and the path GRU, no torch (222 MB peak)"]
     RD -- "gradio_client" --> SP["HF ZeroGPU Space: stockintel-models<br/>Chronos-2-NSE, Kronos-NSE, analyst writer on GPU<br/>ALFA return model on CPU"]

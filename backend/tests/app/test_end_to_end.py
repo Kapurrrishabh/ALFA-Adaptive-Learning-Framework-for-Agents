@@ -446,6 +446,26 @@ def test_ai_forecast_uses_the_model_space_when_one_is_set(app_client, monkeypatc
     assert api_name == "/chronos_fan" and horizon == FORECAST_DAYS and 0 < len(_json.loads(closes)) <= CONTEXT
 
 
+def test_a_host_that_runs_chronos_itself_does_not_send_it_to_the_space(app_client, monkeypatch):
+    """An Oracle VM names only the writer: its CPU runs the forecasts, and the GPU quota is kept for writing."""
+    import backend.models.external.remote_models as rm
+    import backend.models.external.tsfm as ts
+    monkeypatch.setenv("STOCKINTEL_MODEL_SPACE", "you/stockintel-models")
+    monkeypatch.setenv("STOCKINTEL_SPACE_MODELS", "writer")
+    monkeypatch.setattr(rm, "_client", lambda: pytest.fail("chronos was sent to the Space"))
+    monkeypatch.setattr(ts, "fan", lambda close, horizon: {f"q{q}": [100.0] * horizon for q in (10, 25, 50, 75, 90)})
+    r = app_client.get("/ui/stock/TEST/ai?model=chronos", headers={"X-API-Key": KEY})
+    assert r.status_code == 200 and len(r.json()["q50"]) == FORECAST_DAYS
+
+
+def test_a_misspelt_space_model_fails_loudly_instead_of_running_everything_locally(monkeypatch):
+    import backend.models.external.remote_models as rm
+    monkeypatch.setenv("STOCKINTEL_MODEL_SPACE", "you/stockintel-models")
+    monkeypatch.setenv("STOCKINTEL_SPACE_MODELS", "writer,chronoss")
+    with pytest.raises(ValueError, match="chronoss"):
+        rm.on_space("writer")
+
+
 def test_a_failing_model_space_is_a_clean_404_naming_the_space(app_client, monkeypatch):
     import backend.models.external.remote_models as rm
     monkeypatch.setenv("STOCKINTEL_MODEL_SPACE", "you/stockintel-models")
@@ -547,6 +567,25 @@ def test_published_weights_land_where_the_server_reads_them(monkeypatch, tmp_pat
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda repo, name, local_dir: got.append((repo, Path(local_dir) / name)))
     weights.pull([gru_line.WEIGHTS])
     assert got == [("you/alfa-weights", gru_line.WEIGHTS)] and gru_line.WEIGHTS in weights.PUBLISHED
+
+
+def test_fetching_the_agent_keeps_the_feedback_this_deployment_has_learned(monkeypatch, tmp_path):
+    import huggingface_hub
+    from backend.models.serving import weights
+    held = tmp_path / "repo"
+    (held / "artifacts").mkdir(parents=True)
+    (held / "data" / "prices").mkdir(parents=True)
+    (held / "artifacts" / "served.sqlite").write_text("as published")
+    (held / "artifacts" / "generator.npz").write_text("weights")
+    (held / "data" / "prices" / "INFY.NS.csv").write_text("bars")
+    artifacts, data = tmp_path / "artifacts", tmp_path / "data"
+    artifacts.mkdir()
+    (artifacts / "served.sqlite").write_text("learned since")
+    monkeypatch.setattr(weights, "ARTIFACTS", artifacts)
+    monkeypatch.setattr(weights, "DATA", data)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda repo, local_dir: str(held))
+    assert weights.pull_agent("you/alfa-agent") == ["generator.npz", "prices/INFY.NS.csv"]
+    assert (artifacts / "served.sqlite").read_text() == "learned since" and (data / "prices" / "INFY.NS.csv").exists()
 
 
 def test_alfa_says_how_to_reach_it_when_it_cannot(app_client, monkeypatch, tmp_path):

@@ -29,3 +29,6 @@ reference/
 
 # StockIntel was developed as its own repository here; its history is merged under backend/ on this branch.
 /self_project/
+
+# the Oracle VM's settings: its tokens and app key
+/deploy/oracle/.env

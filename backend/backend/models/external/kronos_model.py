@@ -21,6 +21,8 @@ from backend.database.sources.provider import DataUnavailable
 from backend.models.external.tsfm import model_record
 
 PATH = Path(os.environ.get("STOCKINTEL_KRONOS_PATH", Path.home() / ".stockintel" / "vendor" / "kronos"))
+# Kronos is not on PyPI, so its code is fetched at the commit the app was tested with
+CODE_REPO, CODE_COMMIT = "shiyu-coder/Kronos", "67b630e67f6a18c9e9be918d9b4337c960db1e9a"
 MODEL_ID, TOKENIZER_ID = "NeoQuasar/Kronos-small", "NeoQuasar/Kronos-Tokenizer-base"
 TUNED = ARTIFACTS / "external" / "kronos-nse"
 # our fine-tuned predictor when present, else the base one; the note names which one it is
@@ -31,6 +33,23 @@ _PRED = None
 
 def available() -> bool:
     return (PATH / "model" / "kronos.py").exists()
+
+
+def fetch_code(path: Path = PATH) -> None:
+    """Put the Kronos code at CODE_COMMIT into `path`; nothing to do when it is already there."""
+    if (path / "model" / "kronos.py").exists():
+        return
+    import io
+    import tarfile
+    import urllib.request
+    with urllib.request.urlopen(f"https://github.com/{CODE_REPO}/archive/{CODE_COMMIT}.tar.gz", timeout=120) as resp:
+        archive = tarfile.open(fileobj=io.BytesIO(resp.read()), mode="r:gz")
+    top = archive.getmembers()[0].name.split("/")[0] + "/"
+    path.mkdir(parents=True, exist_ok=True)
+    for member in archive.getmembers():
+        if member.name.startswith(top):
+            member.name = member.name[len(top):]
+            archive.extract(member, path, filter="data")
 
 
 def kronos_code():

@@ -59,13 +59,33 @@ def live_from(tokenizer):
     Filings first because they are the primary source and the dated one; the encyclopedia is what the half
     of our instruments EDGAR has never heard of have instead.
     """
-    from backend.database.live import Encyclopedia, Filings, Live, PoliteSession
+    from backend.database.live import Encyclopedia, Filings, Live, NewsWire, PoliteSession
 
     session = PoliteSession(timeout=LIVE_TIMEOUT, attempts=LIVE_ATTEMPTS)
-    return Live([Filings(session), Encyclopedia(session)], tokenizer)
+    return Live([Filings(session), Encyclopedia(session), NewsWire()], tokenizer)
 
 
-def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=False):
+def news_from(tokenizer):
+    """The newswire alone, read from the archive on disk; no network call at question time."""
+    from backend.database.live import Live, NewsWire
+    return Live([NewsWire()], tokenizer)
+
+
+def writer_from(phrase):
+    """The language model that rewords answers when `phrase` is asked for, else None (ALFA's words served)."""
+    if not phrase:
+        return None
+    from backend.models.external import remote_models
+    return remote_models.writer()
+
+
+def listed_names():
+    """{"INFY.NS": "Infosys"} for the Nifty 500, the names Indian questions and headlines use."""
+    from backend.database.sources.panel import company_names
+    return {f"{symbol}.NS": name for symbol, name in company_names("nifty500").items()}
+
+
+def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=False, writer=None):
     """The retrieval answer path, or None when no index was named.
 
     Its checkpoint is named by the caller and not taken from the registry, unlike the advisory one. The
@@ -92,11 +112,12 @@ def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=Fal
     # cutting and ranking respectively: a fetched page has to be chunked by the same rule the corpus was.
     return Reference(Hybrid(chunks, pretokenize), tokenizer, model, config, QUESTION_TOKENS, PASSAGES,
                      ANSWER_TEMPERATURE, ANSWER_TOP_P, np.random.default_rng(config.seed),
-                     paraphrase=paraphrase, live=live_from(tokenizer) if live else None)
+                     paraphrase=paraphrase, live=live_from(tokenizer) if live else None, writer=writer,
+                     news=news_from(tokenizer) if live else None)
 
 
 def build(artifacts, checkpoint, prices, gate, log, wanted, warmup, price_head, reference=None,
-          symbols=None, scenarios=""):
+          symbols=None, scenarios="", writer=None, listed=None):
     """The served agent, with every threshold loaded from what solved for it."""
     # Which checkpoint answers is the registry's to say. A default string here would serve a model on the
     # strength of its file name, and C6's gate exists because one of these files generates much worse.
@@ -109,10 +130,10 @@ def build(artifacts, checkpoint, prices, gate, log, wanted, warmup, price_head, 
         abstainer, calibrator, learned = adapt(feedback, wanted, warmup)
     advisor = models.load(Path(price_head)) if price_head else None
     market = finance.Market(Path(prices), advisor, symbols,
-                            models.scenarios.load(Path(scenarios)) if scenarios else None)
+                            models.scenarios.load(Path(scenarios)) if scenarios else None, listed)
     return Agent(finance, market, router, Abstainer.load(gate), tokenizer,
                  model, config, abstainer, calibrator, np.random.default_rng(config.seed),
-                 reference=reference), abstainer, learned, served
+                 reference=reference, writer=writer), abstainer, learned, served
 
 
 def show(turn):
@@ -130,6 +151,8 @@ def show(turn):
     sure = "" if turn.confidence != turn.confidence else f" (confidence {turn.confidence:.4f}{stated})"
     print(f"  {'ANSWER' if turn.spoke else 'QUIET '}    {turn.served}{sure}"
           + ("" if turn.spoke else f"  [{turn.because}]"))
+    if turn.phrased_by or turn.unphrased_because:
+        print(f"  phrasing  {turn.phrased_by or 'kept ALFA/source words: ' + turn.unphrased_because}")
 
 
 def main():
@@ -161,6 +184,9 @@ def main():
     parser.add_argument("--symbols", default=str(DATA / "raw/sec_edgar/company_tickers.json"),
                         help="SEC's symbol table, which is where an instrument's company name and filing "
                              "number come from; empty leaves it known only by its own symbol")
+    parser.add_argument("--phrase", action="store_true",
+                        help="reword each answer with the language model (the model Space's when one is set); "
+                             "its words are served only when they pass the figure and claim checks")
     parser.add_argument("--as-of", default=None, help="the last date a snapshot may read")
     parser.add_argument("--wanted", type=float, default=0.6, help="the stated chance of being right")
     parser.add_argument("--warmup", type=int, default=10,
@@ -168,12 +194,13 @@ def main():
     args = parser.parse_args()
 
     artifacts = Path(args.artifacts)
+    writer = writer_from(args.phrase)
     agent, abstainer, learned, served = build(
         artifacts, args.checkpoint, args.prices, args.gate, args.log, args.wanted, args.warmup,
         args.price_head,
         reference_from(artifacts, args.reference_index, args.reference_checkpoint, args.paraphrase,
-                       args.live),
-        args.symbols)
+                       args.live, writer),
+        args.symbols, writer=writer, listed=listed_names())
     # `expected` rather than `wanted`: the 60% bar is not reachable on this checkpoint, so the fit returns
     # the most precise cut its coverage floor allows and reports the shortfall. Printing the bar alone
     # would claim a precision nothing measured.

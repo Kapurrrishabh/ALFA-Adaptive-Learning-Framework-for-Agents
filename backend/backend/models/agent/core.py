@@ -37,14 +37,18 @@ from backend.models.guardrails import guardrails
 from backend.models.core.backend import xp
 from backend.models.networks.generator import ANSWER_TEMPERATURE, ANSWER_TOP_P
 
+from backend.models.agent import phrase
 from backend.models.agent.context import assemble
-from backend.models.agent.reference import REFERENCE, SearchFailed
+from backend.models.agent.reference import REFERENCE, UNANSWERED, SearchFailed
 
 # Everything the turn did, so a caller can log it, show it, or judge it without re-running anything.
 # `served` is what a user reads; `answer` is what the model wrote, which differ exactly when a guard
 # fired, and keeping both is what makes the unsupported-figure rate measurable at serving time.
+# `phrased_by` names the language model whose words were served; `unphrased_because` says why they were
+# not, when a writer was asked and its rewrite was not served.
 Turn = namedtuple("Turn", "question asked ticker intent served answer evidence confidence stated "
-                          "spoke margin unsupported because as_of")
+                          "spoke margin unsupported because as_of phrased_by unphrased_because",
+                  defaults=("", ""))
 
 
 class Agent:
@@ -56,13 +60,16 @@ class Agent:
 
     def __init__(self, domain, market, router, gate, tokenizer, model, config, abstainer,
                  calibrator=None, rng=None, temperature=ANSWER_TEMPERATURE, top_p=ANSWER_TOP_P,
-                 reference=None):
+                 reference=None, writer=None):
         self.domain = domain
         self.market = market
         self.router = router
         # Optional, and the default is the behaviour that was measured without it: the advisory path is
         # what C6's numbers are on, and this only takes over questions that path was going to refuse.
         self.reference = reference
+        # Optional too: the language model that rewords a spoken answer. Whether to speak is still decided
+        # on the generator's own draft, which is what the cut and the faithfulness record were measured on.
+        self.writer = writer
         # Two cuts, on two different quantities, fitted the same way: `gate` on the routing margin and
         # `abstainer` on the answer's own confidence. A question can be understood and the answer still
         # not worth saying, and the reverse, so one cut could not stand for both.
@@ -121,9 +128,12 @@ class Agent:
         served, unsupported = guardrails.screen(written, evidence, self.domain.REFUSAL)
         speaks = bool(self.abstainer.answers([confidence])[0]) and not unsupported
         because = "unsupported figure" if unsupported else ("" if speaks else "low confidence")
-        return Turn(question, asked, ticker, route.label, served if speaks else self.domain.REFUSAL,
+        phrased = (phrase.rewrite(question, written, evidence, self.writer, phrase.currency(ticker))
+                   if speaks and self.writer is not None else phrase.Phrased("", "", ""))
+        return Turn(question, asked, ticker, route.label,
+                    (phrased.text or served) if speaks else self.domain.REFUSAL,
                     written, evidence, confidence, self._stated(confidence), speaks, route.margin,
-                    unsupported, because, taken_at)
+                    unsupported, because, taken_at, phrased.by, phrased.because)
 
     def _looked_up(self, question, as_of, ticker="", margin=float("nan")):
         """A turn read out of the documents, or None when there is nothing to read one from.
@@ -154,9 +164,16 @@ class Agent:
                                ticker=ticker, margin=margin)
         if looked is None:
             return None
+        # Checked once something was found, so a question nothing matched keeps the refusal it always had:
+        # 519,135 general passages answer "write me a poem about the sea" out of The Lusiads otherwise.
+        if not ticker and not self.domain.about_money(question):
+            return self._quiet(question, self.domain.OFF_TOPIC, "not about money", margin=margin)
+        if looked.how == UNANSWERED:
+            return self._quiet(question, self.domain.NOT_IN_SOURCES, "sources do not answer it", ticker=ticker,
+                               evidence=looked.evidence, margin=margin, as_of=looked.day or None)
         return Turn(question, question, ticker, f"{REFERENCE} {looked.how}", looked.served,
                     looked.answer, looked.evidence, looked.confidence, None, True, margin,
-                    looked.unsupported, "", looked.day or None)
+                    looked.unsupported, "", looked.day or None, looked.phrased_by, looked.unphrased_because)
 
     def _stated(self, confidence):
         """The chance of being right, in the units B3 fitted. None until a calibrator has been fitted."""

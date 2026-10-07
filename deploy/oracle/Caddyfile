@@ -1,0 +1,4 @@
+# HTTPS for the app, with a certificate Caddy gets and renews itself; the agent is never exposed.
+{$DOMAIN} {
+	reverse_proxy app:8000
+}

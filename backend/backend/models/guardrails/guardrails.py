@@ -59,3 +59,39 @@ def screen(answer, evidence, refusal):
     """
     unsupported = unsupported_figures(answer, evidence)
     return (refusal if unsupported else answer), unsupported
+
+
+# a model that claims direction is wrong by the project's own measurements, so the draft is refused
+DIRECTION = re.compile(r"\b(will|is likely to|is expected to|should|could)\s+(rise|fall|go up|go down|increase|decrease|"
+                       r"climb|drop|rally|decline|gain)|\b(bullish|bearish|upside target|price target|upward trend|"
+                       r"downward trend|uptrend|downtrend|positive bias|negative bias)\b", re.I)
+# terms a writer may reach for that the note never uses; adding one means it added a claim
+NEW_TERMS = re.compile(r"\b(granger|sharpe|sortino|rsi|macd|bollinger|fibonacci|moving average|support level|"
+                       r"resistance|p/e|earnings|dividend|beta|alpha|regression|neural|deep learning|sentiment)\b", re.I)
+# praise the records do not support
+OVERCLAIM = re.compile(r"\b(reliab\w*|trust\w*|accurate|better than random|strong evidence|"
+                       r"performing well|confident(ly)?)\b", re.I)
+
+
+# a cause the source never gives: "infosys is falling because it is a technology company" passed every
+# figure check, since a reason invented out of true facts states no new number
+REASON = re.compile(r"\b(because|due to|as a result of|driven by|owing to|on account of|thanks to|on the back of)\b",
+                    re.I)
+
+
+def added_claims(text, source):
+    """Why `text` says more than `source` does: a direction call, praise, or a finance term it never uses.
+
+    Compared against the source rather than judged alone, so a rewrite may keep a call the draft made
+    ("turbulent" from the week-ahead model) and still may not add one.
+    """
+    reasons = []
+    for pattern, what in ((DIRECTION, "it claims a direction"), (OVERCLAIM, "it praises a model beyond its record"),
+                          (REASON, "it gives a reason the source does not")):
+        made = {m.group(0).lower() for m in pattern.finditer(text)} - {m.group(0).lower() for m in pattern.finditer(source)}
+        if made:
+            reasons.append(f"{what}: “{sorted(made)[0]}”")
+    added = {t.lower() for t in NEW_TERMS.findall(text)} - {t.lower() for t in NEW_TERMS.findall(source)}
+    if added:
+        reasons.append(f"it adds terms the source does not use: {', '.join(sorted(added))}")
+    return reasons

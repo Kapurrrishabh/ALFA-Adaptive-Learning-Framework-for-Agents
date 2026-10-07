@@ -781,3 +781,134 @@ def test_the_fan_is_ordered_at_every_step():
     fan = models.scenarios.fan(100.0, drawn)
     low, mid, high = (np.array(fan[q]) for q in ("0.05", "0.5", "0.95"))
     assert len(mid) == 15 and (low < mid).all() and (mid < high).all()
+
+
+# --- the language model as the last step: rewording, never deciding ---------
+
+class FakeWriter:
+    """Answers every request with one fixed text, the way the Space's language model replies."""
+
+    def __init__(self, reply="", error=None):
+        self.reply, self.error, self.asked = reply, error, []
+
+    def create(self, system, messages):
+        from backend.models.external.language import Reply
+        self.asked.append(messages[0]["content"])
+        if self.error:
+            raise self.error
+        return Reply("test-lm", self.reply)
+
+    @staticmethod
+    def text(resp):
+        return resp.content
+
+
+class ExplodingWriter:
+    def create(self, *_):
+        raise AssertionError("the language model was asked to reword something it must not touch")
+
+
+def phrased_agent(market, router, written, writer, **kw):
+    built = agent(market, router, written=written, **kw)
+    built.writer = writer
+    return built
+
+
+DRAFT = "it is up 13.8% over 20 days and closed at 165.00 ."
+ASKED = "how is AAPL doing ?"
+
+
+def test_a_rewrite_that_keeps_every_figure_is_served_and_names_its_writer(market, router):
+    """The rewrite is what is read; ALFA's draft stays in the turn as what the model wrote."""
+    plain = "AAPL has risen 13.8% over the last 20 days and closed at 165.00."
+    turn = phrased_agent(market, router, DRAFT, FakeWriter(plain)).answer(ASKED)
+    assert turn.spoke and turn.served == plain and turn.answer == DRAFT
+    assert (turn.phrased_by, turn.unphrased_because) == ("test-lm", "")
+
+
+@pytest.mark.parametrize("reply,reason", [
+    ("AAPL has been rising lately.", "leaves out"),                                            # drops the figures
+    ("Up 13.8% in 20 days, closed at 165.00, and 9.99% this week.", "figure 9.99%"),            # adds one
+    ("Up 13.8% in 20 days because of rates, closed at 165.00.", "gives a reason"),             # adds a cause
+    ("Up 13.8% in 20 days, closed at 165.00, and it will rise further.", "claims a direction"),  # adds a call
+    ("Up 13.8% in 20 days, closed at ₹165.00.", "writes ₹"),                                   # swaps currency
+    ("Up:\n- 13.8% in 20 days\n- closed at 165.00", "breaks into lines"),                     # a list
+])
+def test_a_rewrite_that_changes_the_facts_serves_alfas_words_and_says_why(market, router, reply, reason):
+    turn = phrased_agent(market, router, DRAFT, FakeWriter(reply)).answer(ASKED)
+    assert turn.spoke and turn.served == DRAFT and turn.phrased_by == ""
+    assert reason in turn.unphrased_because
+
+
+def test_a_writer_out_of_quota_serves_alfas_words_with_the_reason(market, router):
+    from backend.database.sources.provider import DataUnavailable
+    writer = FakeWriter(error=DataUnavailable("model Space failed on /write: GPU quota exceeded"))
+    turn = phrased_agent(market, router, DRAFT, writer).answer(ASKED)
+    assert turn.spoke and turn.served == DRAFT and "GPU quota exceeded" in turn.unphrased_because
+
+
+def test_whether_to_speak_is_still_decided_on_alfas_own_draft(market, router):
+    """The cut and the faithfulness record were measured on the generator's draft, so a refusal is never
+    handed to the language model to dress up."""
+    turn = phrased_agent(market, router, DRAFT, ExplodingWriter(), confidence=0.5, cut=0.9).answer(ASKED)
+    assert not turn.spoke and turn.served == finance.REFUSAL
+
+
+NEWS = Chunk("Mint, 6 Oct 2026: Reliance Industries commissioned its new refinery unit.", [],
+             "https://n.test/reliance", "2026-10-06")
+
+
+def news_reference(writer, news=(NEWS,), live=None):
+    built = reference("never written", model=ExplodingModel(), live=live or ExplodingLive())
+    built.writer, built.news = writer, FakeLive(list(news))
+    return built
+
+
+def test_a_question_about_lately_is_answered_from_the_newswire_alone(market, router):
+    """"Any news on tata steel" ranked over Wikipedia and the newswire together was answered from 2007."""
+    plain = "Reliance Industries commissioned a new refinery unit (Mint, 6 Oct 2026)."
+    turn = agent(market, router, gate_cut=1e9, reference=news_reference(FakeWriter(plain))).answer(
+        "any news on RELIANCE.NS ?")
+    assert turn.spoke and turn.served == plain and turn.phrased_by == "test-lm"
+    assert NEWS.document in turn.evidence
+
+
+def test_a_lately_question_with_no_news_says_so_rather_than_reading_the_encyclopedia(market, router):
+    """"Why is infosys falling" read from Wikipedia became "infosys is falling because it is a technology
+    company"; with no headline about it the honest answer is that there is none."""
+    turn = agent(market, router, gate_cut=1e9, reference=news_reference(ExplodingWriter(), news=())).answer(
+        "why is RELIANCE.NS falling ?")
+    assert not turn.spoke and turn.served == finance.NOT_IN_SOURCES
+
+
+def test_a_writer_that_finds_no_answer_in_the_news_refuses_instead_of_quoting(market, router):
+    """Half an answer and half a refusal ("...founded in 1981. The passage does not provide a reason. None.")
+    is a refusal: only that half was true."""
+    writer = FakeWriter("It was founded in 1981. The passages do not provide a reason. None.")
+    turn = agent(market, router, gate_cut=1e9, reference=news_reference(writer)).answer("why is RELIANCE.NS falling ?")
+    assert not turn.spoke and turn.served == finance.NOT_IN_SOURCES
+
+
+def test_forum_and_encyclopedia_passages_are_quoted_not_reworded(market, router):
+    """The language model misattributed long prose ("HDFCBANK.NS is a subsidiary of HDFC Bank"), as ALFA's
+    own generator did, so only dated headlines are reworded."""
+    built = reference("never written", model=ExplodingModel())
+    built.writer = ExplodingWriter()
+    turn = agent(market, router, reference=built).answer("what is a stop loss order ?")
+    assert turn.spoke and turn.served == PASSAGE
+
+
+def test_a_question_not_about_money_is_refused_even_when_a_passage_matches(market, router):
+    turn = agent(market, router, reference=reference("never written", model=ExplodingModel())).answer(
+        "what did the committee vote on at the meeting ?")
+    assert not turn.spoke and turn.served == finance.OFF_TOPIC
+
+
+def test_an_exchange_listed_name_resolves_to_its_ticker_as_whole_words(tmp_path):
+    price_file(tmp_path, "INFY.NS")
+    price_file(tmp_path, "HDFCBANK.NS")
+    named = finance.Market(tmp_path, listed={"INFY.NS": "Infosys", "HDFCBANK.NS": "HDFC Bank", "TCS.NS": "TCS"})
+    assert named.resolve("why is infosys falling ?") == "INFY.NS"
+    assert named.resolve("how is hdfc bank doing") == "HDFCBANK.NS"
+    assert named.resolve("an infosystem question") is None and "TCS.NS" not in named.listed
+    assert named.subject("INFY.NS").mentions("Infosys shares slip")

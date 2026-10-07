@@ -205,11 +205,32 @@ about an hour each) and save the weights with their test records in `backend/mod
 the app serves them whenever they are there. ALFA's return generator and the path GRU need no extras.
 `STOCKINTEL_ML=0` turns off the torch models and the analyst's language model.
 
-The self-learning chat agent runs as its own process and needs about 4.5 GB of RAM:
+The self-learning chat agent runs as its own process and peaked at 10.3 GB of RAM while loading:
 ```bash
-.venv/bin/python -m backend.models.agent.run.serve --port 8010
+.venv/bin/python -m backend.database.live.news --every 30                     # keeps the newswire archive fresh
+.venv/bin/python -m backend.models.agent.run.serve --port 8010 --live --phrase
 ```
 StockIntel finds it at `http://127.0.0.1:8010`; set `SELFAGENT_URL` if it runs elsewhere.
+- `--live` adds recent knowledge: SEC filings, Wikipedia, and dated Indian market headlines (Economic Times,
+  Mint, Hindu BusinessLine, NDTV Profit, SEBI) that `news` saves to `data/news/wire.jsonl`. Only feeds whose
+  robots.txt allows a reader are used. A question about lately ("why did titan fall", "any news on tata
+  steel") is answered from those headlines alone, or the agent says it found nothing recent.
+- `--phrase` has the language model reword each answer in plain English. ALFA's generator still drafts it
+  and still decides whether to speak; the rewording is served only when it keeps every figure and adds no
+  figure, cause, direction call or praise. Otherwise ALFA's words are served, and the chat says why.
+  Encyclopedia and forum passages are quoted rather than reworded, because the model misattributed them.
+
+## Put all of it on an Oracle Cloud free VM (including the self-learning agent)
+
+Oracle's Always Free tier includes an Ampere A1 VM with 4 cores and 24 GB of RAM, enough for the app, the
+agent and the forecasters together. `deploy/oracle/` runs them with Docker Compose: the app, the agent, a
+newswire refresher every 30 minutes, a daily price refresh, and Caddy for HTTPS. Only the language model
+stays on the ZeroGPU Space (`STOCKINTEL_SPACE_MODELS=writer`), because these cores lack fast 16-bit maths.
+Publish the models first (step 1 below; it also uploads the agent to `<you>/alfa-agent`), then on the VM:
+```bash
+git clone https://github.com/Kapurrrishabh/ALFA-Adaptive-Learning-Framework-for-Agents.git alfa
+bash alfa/deploy/oracle/setup.sh
+```
 
 ## Put it on the web for free (a link for your phone)
 

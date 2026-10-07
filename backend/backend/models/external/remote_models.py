@@ -19,8 +19,30 @@ _CLIENT = None
 _LOCK = threading.Lock()
 
 
+# Everything the Space serves. A host that can run some of them itself names the rest in
+# STOCKINTEL_SPACE_MODELS: a free Render instance sends all four, an Oracle VM only the writer.
+SPACE_MODELS = ("chronos", "kronos", "alfa", "writer")
+
+
 def space() -> str:
     return os.environ.get("STOCKINTEL_MODEL_SPACE", "")
+
+
+def on_space(model: str) -> bool:
+    """Whether `model` is served by the model Space rather than by this process."""
+    if model not in SPACE_MODELS:
+        raise ValueError(f"{model!r} is not served by the Space; it serves {', '.join(SPACE_MODELS)}")
+    named = [m.strip() for m in os.environ.get("STOCKINTEL_SPACE_MODELS", ",".join(SPACE_MODELS)).split(",") if m.strip()]
+    unknown = sorted(set(named) - set(SPACE_MODELS))
+    if unknown:
+        raise ValueError(f"STOCKINTEL_SPACE_MODELS names {', '.join(unknown)}; choose from {', '.join(SPACE_MODELS)}")
+    return bool(space()) and model in named
+
+
+def writer():
+    """The language model that phrases notes and answers: the Space's when it serves the writer, else local."""
+    from backend.models.external import language
+    return RemoteWriter() if on_space("writer") else language.OpenLM()
 
 
 def _client():

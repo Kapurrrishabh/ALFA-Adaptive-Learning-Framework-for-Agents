@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 import uvicorn  # noqa: E402
 
-from backend.models.agent.run.ask import build, reference_from  # noqa: E402
+from backend.models.agent.run.ask import build, listed_names, reference_from, writer_from  # noqa: E402
 from backend.database import Store  # noqa: E402
 from backend.api.agent_server import create_app  # noqa: E402
 from backend.models.agent.run.chat import adapt  # noqa: E402
@@ -30,11 +30,12 @@ def app_from(args):
     # One file for the accounts and the feedback, so a stored message can point at the row that judged
     # it, and the cuts are refitted from that same log.
     artifacts = Path(args.artifacts)
+    writer = writer_from(args.phrase)
     agent, _, _, served = build(artifacts, args.checkpoint, args.prices, args.gate, args.store,
                                 args.wanted, args.warmup, args.price_head,
                                 reference_from(artifacts, args.reference_index,
-                                               args.reference_checkpoint, args.paraphrase, args.live),
-                                args.symbols, args.scenarios)
+                                               args.reference_checkpoint, args.paraphrase, args.live, writer),
+                                args.symbols, args.scenarios, writer=writer, listed=listed_names())
     teacher = AgentTeacher(args.verdicts)
     store = Store(args.store)
     app = create_app(agent, store,
@@ -66,6 +67,8 @@ def main():
                              "default, and off is what makes this deployment offline")
     parser.add_argument("--symbols", default=str(DATA / "raw/sec_edgar/company_tickers.json"),
                         help="SEC's symbol table: an instrument's company name and filing number")
+    parser.add_argument("--phrase", action="store_true",
+                        help="reword each answer with the language model (the model Space's when one is set)")
     parser.add_argument("--store", default=str(ARTIFACTS / "served.sqlite"),
                         help="accounts, conversations and the feedback this deployment learns from")
     parser.add_argument("--verdicts", default=str(ARTIFACTS / "served_verdicts.jsonl"))

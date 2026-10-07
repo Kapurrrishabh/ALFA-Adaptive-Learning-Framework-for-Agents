@@ -102,3 +102,80 @@ def test_the_scorer_version_follows_the_lexicon_it_scores_with(monkeypatch):
     before = sentiment.VERSION
     monkeypatch.setattr(sentiment, "POSITIVE", sentiment.POSITIVE | {"moonshot"})
     assert sentiment._digest() != before.removeprefix("lexicon@")
+
+
+# --- the newswire archive the agent reads recent news from ------------------
+
+RSS = """<?xml version="1.0"?><rss><channel>
+<item><title>Titan Company shares fall 4% after Q2 business update</title><link>https://n.test/titan</link>
+<pubDate>Wed, 07 Oct 2026 04:00:00 GMT</pubDate><description>Titan reported 25% growth.</description></item>
+<item><title>Titan Company Share Price Live Updates: Titan Company Stock Details</title><link>https://n.test/live</link>
+<pubDate>Wed, 07 Oct 2026 05:00:00 GMT</pubDate></item>
+<item><title>An undated story</title><link>https://n.test/undated</link></item>
+</channel></rss>"""
+
+SEBI = """<?xml version="1.0"?><rss><channel><item><title>SEBI order on X</title><link>https://s.test/1</link>
+<pubDate>05 Oct, 2026 +0530</pubDate></item></channel></rss>"""
+
+
+class FeedSession:
+    """Serves fixed feed bodies by URL; a URL missing from the table is refused the way a host refuses us."""
+
+    def __init__(self, bodies):
+        self.bodies = bodies
+
+    def get_text(self, url):
+        if url not in self.bodies:
+            raise RuntimeError(f"403 from {url}")
+        return self.bodies[url]
+
+
+def test_an_item_is_kept_only_when_it_is_dated_and_reports_something():
+    """An undated item could be years old, and the per-stock "Live Updates" pages were 22 of Economic Times'
+    59 items on the day measured, each matching any question that named the stock and saying nothing."""
+    from backend.database.live import news
+    assert [row["link"] for row in news.parse(RSS, "ET")] == ["https://n.test/titan"]
+
+
+def test_sebis_own_date_format_is_read():
+    from backend.database.live import news
+    assert news.parse(SEBI, "SEBI")[0]["day"] == "2026-10-05"
+
+
+def test_refreshing_adds_only_unseen_items_and_drops_those_past_the_window(tmp_path):
+    from datetime import date
+    from backend.database.live import news
+    archive = tmp_path / "wire.jsonl"
+    feeds = (("ET", "https://e.test/rss"), ("SEBI", "https://s.test/rss"))
+    session = FeedSession({"https://e.test/rss": RSS, "https://s.test/rss": SEBI})
+    assert news.refresh(session, archive, feeds, today=date(2026, 10, 7)) == 2
+    assert news.refresh(session, archive, feeds, today=date(2026, 10, 7)) == 0
+    assert [row["day"] for row in news.read(archive)] == ["2026-10-07", "2026-10-05"]
+    news.refresh(session, archive, feeds, today=date(2027, 1, 10))     # 95 days on: both are past the window
+    assert news.read(archive) == []
+
+
+def test_one_feed_refusing_costs_its_items_and_all_refusing_is_an_error(tmp_path):
+    """An archive that silently stopped growing would go on answering "lately" with last month's news."""
+    from backend.database.live import news
+    archive = tmp_path / "wire.jsonl"
+    feeds = (("ET", "https://e.test/rss"), ("Moneycontrol", "https://m.test/rss"))
+    assert news.refresh(FeedSession({"https://e.test/rss": RSS}), archive, feeds) == 1
+    with pytest.raises(RuntimeError, match="no news feed could be read"):
+        news.refresh(FeedSession({}), archive, feeds)
+
+
+def test_the_newswire_reads_the_newest_items_about_the_subject_up_to_the_as_of_date(tmp_path):
+    from backend.database.live import news
+    from backend.database.live.sources import NewsWire
+    from backend.models.agent.finance import Subject
+    archive = tmp_path / "wire.jsonl"
+    rows = [{"link": f"https://n.test/{day}", "day": day, "source": "Mint", "title": f"Infosys update {day}", "summary": ""}
+            for day in ("2026-10-07", "2026-10-06", "2026-10-05")]
+    rows.append({"link": "https://n.test/tcs", "day": "2026-10-07", "source": "Mint", "title": "TCS update", "summary": ""})
+    archive.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    wire = NewsWire(archive, items=2)
+    found = wire.documents("why is infosys falling", [], as_of="2026-10-06", subject=Subject("INFY.NS", ("infosys",), None))
+    assert [page.day for page in found] == ["2026-10-06", "2026-10-05"]
+    assert found[0].text.startswith("Mint, 6 Oct 2026: Infosys update")
+    assert [page.key for page in wire.documents("tcs news", ["tcs"])] == ["https://n.test/tcs"]

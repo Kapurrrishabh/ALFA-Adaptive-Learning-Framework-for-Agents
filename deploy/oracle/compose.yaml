@@ -1,0 +1,41 @@
+# The whole app on one Oracle Cloud Always Free VM (Ampere A1: 4 cores, 24 GB). Everything runs here except
+# the language model, which stays on the ZeroGPU Space: these cores lack fast 16-bit maths, and it writes
+# an answer in about 6 s there. Start with `docker compose up -d --build` after setup.sh has written .env.
+name: alfa
+
+x-alfa: &alfa
+  image: alfa:latest
+  pull_policy: never        # built once from this repository by `app`, never fetched from a registry
+  env_file: .env
+  volumes: [data:/data]
+  restart: unless-stopped
+
+services:
+  app:
+    <<: *alfa
+    build: {context: ../.., args: {EXTRAS: "ml,cloud,collect"}}
+    environment: {SELFAGENT_URL: "http://agent:8010"}
+    command: ["stockintel", "serve", "--host", "0.0.0.0", "--port", "8000"]
+
+  agent:
+    <<: *alfa
+    command: ["sh", "-c", "python -m backend.models.serving.weights agent && exec python -m backend.models.agent.run.serve --host 0.0.0.0 --port 8010 --live --phrase"]
+
+  news:
+    <<: *alfa
+    command: ["python", "-m", "backend.database.live.news", "--every", "30"]
+
+  prices:
+    <<: *alfa
+    command: ["sh", "-c", "while true; do python -m backend.database.dataforge.collect --source yahoo_prices --tier standard; sleep 86400; done"]
+
+  caddy:
+    image: caddy:2
+    ports: ["80:80", "443:443"]
+    environment: {DOMAIN: "${DOMAIN}"}
+    volumes: [./Caddyfile:/etc/caddy/Caddyfile:ro, caddy:/data]
+    restart: unless-stopped
+
+volumes:
+  data: {}
+  caddy: {}

@@ -248,7 +248,8 @@ def _as_frame(turn):
             "spoke": turn.spoke, "because": turn.because, "as_of": turn.as_of,
             "margin": _number(turn.margin), "confidence": _number(turn.confidence),
             "stated": _number(turn.stated), "unsupported": list(turn.unsupported),
-            "wrote": turn.answer if turn.answer != turn.served else None}
+            "wrote": turn.answer if turn.answer != turn.served else None,
+            "phrased_by": turn.phrased_by, "unphrased_because": turn.unphrased_because}
 
 
 def _store_turn(store, token, conversation, turn, judge, refit, agent):

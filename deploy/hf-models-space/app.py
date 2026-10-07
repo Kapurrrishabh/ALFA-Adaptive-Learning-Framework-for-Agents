@@ -6,13 +6,8 @@
 """
 import json
 import os
-import subprocess
 
-KRONOS_DIR, KRONOS_COMMIT = "/tmp/kronos", "67b630e67f6a18c9e9be918d9b4337c960db1e9a"
-if not os.path.exists(KRONOS_DIR):         # Kronos is not on PyPI; pin the commit the app was tested with
-    subprocess.run(["git", "clone", "https://github.com/shiyu-coder/Kronos", KRONOS_DIR], check=True)
-    subprocess.run(["git", "-C", KRONOS_DIR, "checkout", KRONOS_COMMIT], check=True)
-os.environ["STOCKINTEL_KRONOS_PATH"] = KRONOS_DIR
+os.environ["STOCKINTEL_KRONOS_PATH"] = "/tmp/kronos"
 os.environ.setdefault("STOCKINTEL_TORCH_DEVICE", "cuda" if os.environ.get("SPACES_ZERO_GPU") else "cpu")
 
 import gradio as gr  # noqa: E402
@@ -21,6 +16,7 @@ import spaces  # noqa: E402
 from backend.models.external import kronos_model, language, tsfm  # noqa: E402
 from backend.models.serving import alfa_fan as alfa_model, weights  # noqa: E402
 
+kronos_model.fetch_code()
 if weights.repo():
     weights.pull([alfa_model.WEIGHTS])
 # ZeroGPU wants the models placed at import time, not inside the GPU functions

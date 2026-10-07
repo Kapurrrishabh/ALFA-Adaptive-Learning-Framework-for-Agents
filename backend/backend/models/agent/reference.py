@@ -25,11 +25,13 @@ different task, so one number could not stand for both. Grounding is what decide
 grounding is checked rather than predicted.
 """
 
+import re
 from collections import namedtuple
 
 from backend.models.guardrails import guardrails
 
 from backend.knowledge_base.retrieval import Hybrid
+from backend.models.agent import phrase
 from backend.models.agent.context import assemble
 
 # How many of the question's rare words a live search is given when there is no subject to search by.
@@ -41,6 +43,20 @@ LIVE_TERMS = 2
 REFERENCE = "reference"
 PARAPHRASED = "paraphrased"
 QUOTED = "quoted"
+PHRASED = "phrased"
+# the sources were read and do not answer it: a refusal, because quoting the top passage would serve text
+# a reader of it just said is beside the point
+UNANSWERED = "unanswered"
+
+# Words that say the answer is about what happened lately, so the live sources -- the newswire among them --
+# are read before a corpus that holds no news at all.
+RECENT = re.compile(r"\b(today|yesterday|this (week|month|quarter)|latest|recent(ly)?|news|now|currently|"
+                    r"announc\w*|results?)\b", re.I)
+# A question about a price move or what a company is up to asks what happened lately, and the newswire is
+# read before anything else: "any news on tata steel" ranked over Wikipedia and the newswire together was
+# answered from its 2007 acquisition, because a long article repeats the name more often than a headline.
+LATELY = re.compile(RECENT.pattern + r"|\b(fall(s|ing)?|fell|drop(s|ped|ping)?|rise[sn]?|rising|rose|jump(s|ed)?|"
+                    r"surge[sd]?|slump(s|ed)?|crash(es|ed|ing)?|rall(y|ies|ied)|gain(s|ed)?|doing)\b", re.I)
 
 
 class SearchFailed(RuntimeError):
@@ -51,7 +67,8 @@ class SearchFailed(RuntimeError):
     `requests` to exist.
     """
 
-Looked = namedtuple("Looked", "served evidence how unsupported confidence answer day")
+Looked = namedtuple("Looked", "served evidence how unsupported confidence answer day phrased_by unphrased_because",
+                    defaults=("", ""))
 
 
 class Reference:
@@ -65,8 +82,14 @@ class Reference:
     """
 
     def __init__(self, index, tokenizer, model, config, question_tokens, passages,
-                 temperature, top_p, rng=None, paraphrase=False, live=None):
+                 temperature, top_p, rng=None, paraphrase=False, live=None, writer=None, news=None):
         self.paraphrase = paraphrase
+        # The language model that answers from newswire passages only. Short dated headlines it restates
+        # well; long encyclopedia and forum text it misattributed ("HDFCBANK.NS is a subsidiary of HDFC Bank"),
+        # as ALFA's own generator did, so those are still quoted. A failed check also quotes.
+        self.writer = writer
+        # The newswire on its own, asked first when a question is about what happened lately (`LATELY`).
+        self.news = news
         self.index = index
         # Optional, and left out the path makes no network call, which is how the offline gate is still met
         # by this code. Which of it and the index is asked first is `_arms`, and depends on the subject.
@@ -91,13 +114,17 @@ class Reference:
         one company was answered out of a passage about another.
         """
         query = f"{question} {' '.join(subject.names)}" if subject else question
-        for arm in self._arms(subject):
+        lately = self.news is not None and LATELY.search(question) is not None
+        for arm in self._arms(subject, question):
             chunks = arm(query, as_of, subject)
             if chunks:
-                return self._read(question, chunks)
+                return self._read(question, chunks, subject, reworded=arm == self._newswire)
+        if lately:
+            # Read and found nothing recent: saying so beats an encyclopedia's answer to "why is it falling".
+            return Looked("", "", UNANSWERED, [], float("nan"), "", "", "", "no recent news names it")
         return None
 
-    def _arms(self, subject):
+    def _arms(self, subject, question):
         """The arms in the order they are asked, decided by whether the subject has an identity to ask by.
 
         A company with an SEC number is searched for before the corpus is read, which is measured. On five
@@ -111,11 +138,17 @@ class Reference:
         network is down, where before it would have been answered out of the corpus. That is the right
         trade against 0 of 5, and it is not a silent one -- the refusal says the source could not be read.
 
+        Any other named company is searched for first too, now that the live sources include a newswire: the
+        corpus holds no Indian news, and "why is infosys falling" read from it was served a Stack Exchange
+        thread about phone scams. So is a question asking about lately (`RECENT`).
+
         Anything else reads the corpus first. 519,135 passages cost nothing and a fetch costs a user's wait.
         """
         if self.live is None:
             return (self._stored,)
-        return (self._searched, self._stored) if subject is not None and subject.cik \
+        if self.news is not None and LATELY.search(question):
+            return (self._newswire,)
+        return (self._searched, self._stored) if subject is not None or RECENT.search(question) \
             else (self._stored, self._searched)
 
     def _stored(self, query, as_of, subject):
@@ -123,7 +156,11 @@ class Reference:
         found = self.index.search(query, self.passages, as_of)
         return self._about([self.index.cite(where) for where in found], subject)
 
-    def _searched(self, query, as_of, subject):
+    def _newswire(self, query, as_of, subject):
+        """Headlines from the archive the refresher keeps, ranked like any fetched passage."""
+        return self._searched(query, as_of, subject, self.news)
+
+    def _searched(self, query, as_of, subject, live=None):
         """Passages fetched for the query, ranked by the same code that ranks the stored ones.
 
         Gated differently from the stored arm rather than not at all, and the difference rests on how each
@@ -146,7 +183,7 @@ class Reference:
         """
         terms = [] if subject else self.index.rare_terms(query, LIVE_TERMS)
         try:
-            fetched = self.live.passages(query, terms, as_of, subject)
+            fetched = (live or self.live).passages(query, terms, as_of, subject)
         except RuntimeError as error:
             raise SearchFailed(str(error)) from error
         if subject is not None and not subject.cik:
@@ -181,7 +218,7 @@ class Reference:
             return chunks or None
         return [chunk for chunk in chunks if subject.mentions(chunk.text)] or None
 
-    def _read(self, question, chunks):
+    def _read(self, question, chunks, subject=None, reworded=False):
         """What to serve from passages already judged to be about the question.
 
         One reader for both origins on purpose: a live answer that went through different code would be a
@@ -190,6 +227,15 @@ class Reference:
         """
         evidence = _as_evidence(chunks)
         quote = chunks[0].text
+        if self.writer is not None and reworded:
+            phrased = phrase.from_passages(question, chunks, self.writer,
+                                           phrase.currency(subject.ticker) if subject else None)
+            if phrased.text:
+                return Looked(phrased.text, evidence, PHRASED, [], float("nan"), quote, chunks[0].day,
+                              phrased.by, "")
+            if phrased.because == phrase.NOT_ANSWERED:
+                return Looked("", evidence, UNANSWERED, [], float("nan"), quote, chunks[0].day, "", phrased.because)
+            return Looked(quote, evidence, QUOTED, [], float("nan"), quote, chunks[0].day, "", phrased.because)
         if not self.paraphrase:
             # No decoder pass at all, which is most of the cost of a turn. `answer` is the quote rather than
             # empty so that `answer != served` keeps meaning "a guard changed this", and `how` is what says

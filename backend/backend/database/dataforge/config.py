@@ -2,8 +2,10 @@
 
 from pathlib import Path
 
+from backend.paths import DATA
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = PROJECT_ROOT / "data"
+DATA_ROOT = DATA
 
 RAW_DIR = DATA_ROOT / "raw"
 TEXT_DIR = DATA_ROOT / "text"

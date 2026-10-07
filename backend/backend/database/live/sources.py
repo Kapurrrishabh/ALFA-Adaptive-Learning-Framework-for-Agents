@@ -55,6 +55,9 @@ CURRENT_REPORT = "8-K"
 FILINGS = 2
 ARTICLES = 2
 
+# provisional: how many of the newest matching headlines one question reads
+NEWS_ITEMS = 6
+
 # The size the reference index was chunked at, so a fetched passage is laid out like a stored one.
 CHUNK_TOKENS = 192
 
@@ -132,7 +135,7 @@ class Filings:
                 for url, hit in ((_archive(hit), hit) for hit in newest[: self.filings]) if url]
 
     def _text(self, url):
-        return _as_text(self.session.get_text(url))[: self.keep]
+        return as_text(self.session.get_text(url))[: self.keep]
 
 
 class Encyclopedia:
@@ -169,7 +172,7 @@ class Encyclopedia:
         if current is None:
             raise RuntimeError(f"the last 20 revisions of {key} all postdate {as_of}, the oldest being "
                                f"{_day(revisions[-1])}; reading today's article would be look-ahead")
-        text = _as_text(self.session.get_text(f"{WIKIPEDIA}/revision/{current['id']}/html"))
+        text = as_text(self.session.get_text(f"{WIKIPEDIA}/revision/{current['id']}/html"))
         return Fetched(WIKIPEDIA_CITATION.format(key=key, revision=current["id"]),
                        _day(current), text[: self.keep])
 
@@ -227,6 +230,45 @@ def _day(revision):
     return revision["timestamp"][:10]
 
 
-def _as_text(markup):
+def as_text(markup):
     """Tag-stripped, entity-decoded, whitespace-collapsed text."""
     return " ".join(html.unescape(_MARKUP.sub(" ", markup)).split())
+
+
+class NewsWire:
+    """Recent Indian market headlines from the archive `news.refresh` keeps, read with no network call.
+
+    About the subject when there is one, by the same name gate the stored passages pass; otherwise sharing
+    one of the question's rare words. Newest first, because "why is it falling" means this week.
+    """
+
+    name = "news"
+
+    def __init__(self, archive=None, items=NEWS_ITEMS):
+        from backend.database.live import news
+        self.news = news
+        self.archive = archive or news.ARCHIVE
+        self.items = items
+
+    def documents(self, query, terms, as_of=None, subject=None):
+        found = []
+        for row in self.news.read(self.archive):
+            if as_of and row["day"] > str(as_of):
+                continue
+            text = f"{row['title']}. {row['summary']}" if row["summary"] else row["title"]
+            lowered = text.lower()
+            if subject.mentions(text) if subject is not None else any(_says(lowered, term) for term in terms):
+                found.append(Fetched(row["link"], row["day"], f"{row['source']}, {_long_day(row['day'])}: {text}"))
+                if len(found) == self.items:
+                    break
+        return found
+
+
+def _says(text, term):
+    return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text) is not None
+
+
+def _long_day(day):
+    """"2026-10-06" as "6 Oct 2026", the form a reader writes, so a rewrite naming the date uses its figures."""
+    year, month, dom = day.split("-")
+    return f"{int(dom)} {('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')[int(month) - 1]} {year}"

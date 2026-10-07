@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +54,19 @@ class Panel:
 def index_constituents(index: str = "nifty500") -> pd.DataFrame:
     """Today's constituents (symbol, sector). Using today's list for history
     is survivorship-biased; callers must say so."""
+    df = _constituents_file(index)
+    return pd.DataFrame({"symbol": df["Symbol"].str.strip(), "sector": df["Industry"].str.strip()})
+
+
+def company_names(index: str = "nifty500") -> Dict[str, str]:
+    """symbol -> the company's name as people write it: "Infosys Ltd." becomes "Infosys"."""
+    df = _constituents_file(index)
+    return {sym.strip(): re.sub(r"\s+(Ltd\.?|Limited)$", "", name.strip())
+            for sym, name in zip(df["Symbol"], df["Company Name"])}
+
+
+def _constituents_file(index: str) -> pd.DataFrame:
+    """The exchange's constituent list, refreshed weekly and kept in the cache."""
     if index not in INDEX_LISTS:
         raise ValueError(f"unknown index {index!r}; choose from {sorted(INDEX_LISTS)}")
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -67,8 +81,7 @@ def index_constituents(index: str = "nifty500") -> pd.DataFrame:
             log.warning("constituent refresh failed (HTTP %s); using cached list", resp.status_code)
         else:
             raise DataUnavailable(f"could not download {index} constituents: HTTP {resp.status_code}")
-    df = pd.read_csv(path)
-    return pd.DataFrame({"symbol": df["Symbol"].str.strip(), "sector": df["Industry"].str.strip()})
+    return pd.read_csv(path)
 
 
 def load_panel(symbols: List[str], sectors: Optional[Dict[str, str]] = None, period: str = "10y",

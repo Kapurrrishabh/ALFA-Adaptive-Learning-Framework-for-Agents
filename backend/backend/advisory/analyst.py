@@ -13,6 +13,7 @@ import re
 from typing import Any, Dict, List
 
 from backend.models.external.llm import verify_numbers
+from backend.models.guardrails import added_claims
 
 SYSTEM = """Rewrite the NOTE for an Indian retail investor in 4 short, plain sentences. Keep every number \
 exactly as written, in rupees (₹). Keep every judgement as it is: "about the same", "within noise", the \
@@ -20,16 +21,6 @@ momentum fifth and the verdict. Add nothing: no new facts, no reasons, no tests 
 does not name, no predictions, no advice. Never say the price will rise or fall, and never call a model \
 reliable or trustworthy. No lists or headings."""
 
-# a model that claims direction is wrong by the project's own measurements, so the draft is refused
-DIRECTION = re.compile(r"\b(will|is likely to|is expected to|should|could)\s+(rise|fall|go up|go down|increase|decrease|"
-                       r"climb|drop|rally|decline|gain)|\b(bullish|bearish|upside target|price target|upward trend|"
-                       r"downward trend|uptrend|downtrend|positive bias|negative bias)\b", re.I)
-# terms a writer may reach for that the note never uses; adding one means it added a claim
-NEW_TERMS = re.compile(r"\b(granger|sharpe|sortino|rsi|macd|bollinger|fibonacci|moving average|support level|"
-                       r"resistance|p/e|earnings|dividend|beta|alpha|regression|neural|deep learning|sentiment)\b", re.I)
-# praise the records do not support
-OVERCLAIM = re.compile(r"\b(reliab\w*|trust\w*|accurate|better than random|strong evidence|"
-                       r"performing well|confident(ly)?)\b", re.I)
 # the one-day limit belongs to the return model; the GRU was scored on every day it forecasts
 ONE_DAY = re.compile(r"\b(one|next)[- ]day\b", re.I)
 # provisional: within 2% of no-change's own error we call it "about the same"; there is no confidence
@@ -86,17 +77,11 @@ def computed_note(f: Dict[str, Any]) -> str:
 def check(text: str, f: Dict[str, Any]) -> List[str]:
     """Why a draft cannot be shown; empty when it can."""
     reasons = [f"figure {x} is not in the facts" for x in verify_numbers(text, [f, computed_note(f)])]
-    if DIRECTION.search(text):
-        reasons.append(f"it claims a direction: “{DIRECTION.search(text).group(0)}”")
-    if OVERCLAIM.search(text):
-        reasons.append(f"it praises a model beyond its record: “{OVERCLAIM.search(text).group(0)}”")
+    reasons += added_claims(text, computed_note(f))
     if any("GRU" in s and "return model" not in s and ONE_DAY.search(s) for s in re.split(r"(?<=\.)\s+", text)):
         reasons.append("it gives the return model's one-day limit to the GRU")
     if "$" in text:
         reasons.append("it writes dollars, not rupees")
-    added = {t.lower() for t in NEW_TERMS.findall(text)} - {t.lower() for t in NEW_TERMS.findall(computed_note(f))}
-    if added:
-        reasons.append(f"it adds terms the note does not use: {', '.join(sorted(added))}")
     for need in f["_required"]:
         options = need if isinstance(need, tuple) else (need,)
         if not any(o in text.lower() if o.islower() else o in text for o in options):
