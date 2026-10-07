@@ -10,7 +10,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/data \
 COPY backend/pyproject.toml backend/README.md ./backend/
 COPY backend/backend ./backend/backend
 COPY frontend ./frontend
-RUN pip install --no-cache-dir "./backend[${EXTRAS}]" && mkdir -p /data \
+# the CPU-only torch first, so a host without a GPU never downloads the CUDA libraries
+RUN case ",${EXTRAS}," in *,ml,*) pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch;; esac \
+    && pip install --no-cache-dir "./backend[${EXTRAS}]" && mkdir -p /data \
     && case ",${EXTRAS}," in *,ml,*) python -c "from backend.models.external import kronos_model; kronos_model.fetch_code()";; esac
 VOLUME ["/data"]
 EXPOSE 8000
