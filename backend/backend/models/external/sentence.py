@@ -46,6 +46,11 @@ def embed_query(text):
     return embed([QUERY_INSTRUCTION + text])[0]
 
 
+def closeness(question, passages):
+    """Cosine between the question, embedded as a search, and each passage."""
+    return embed(passages) @ embed_query(question)
+
+
 def similarity(texts):
     """A router score function over `texts`: one cosine per known text for each question asked."""
     known = embed(texts)

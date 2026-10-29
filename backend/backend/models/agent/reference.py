@@ -59,14 +59,11 @@ RECENT = re.compile(NEWS.pattern + r"|\b(lately|recent(ly)?|now|currently)\b", r
 # A question about a price move or what a company is up to asks what happened lately, and the newswire is
 # read before anything else: "any news on tata steel" ranked over Wikipedia and the newswire together was
 # answered from its 2007 acquisition, because a long article repeats the name more often than a headline.
-LATELY = re.compile(RECENT.pattern + r"|\b(fall(s|ing)?|fell|drop(s|ped|ping)?|rise[sn]?|rising|rose|jump(s|ed)?|"
-                    r"surge[sd]?|slump(s|ed)?|crash(es|ed|ing)?|rall(y|ies|ied)|gain(s|ed)?|doing)\b", re.I)
-# Asks what a thing is or how it works, which a lesson answers even with a move word in it ("how are capital
-# gains taxed", "does rsi rise before a rally"). "Are bond yields rising", "what is nifty doing" and "how much did
-# it fall" ask what is happening or happened, so the news goes first.
-CONCEPT = re.compile(r"^(?!.*\b(doing|did)\b|\W*(how )?(is|are)( \w+){1,3} (rising|falling|dropping|crashing)\b)"
-                     r"\W*(what(['’]?s| is| are| does| happens)|how (do|does|are|is|much|should)|do(es)?|are|can i|"
-                     r"tell me how|explain|define|.*\bwhat does that mean)\b", re.I)
+LATELY = re.compile(RECENT.pattern + r"|\b(fall(s|ing|en)?|fell|drop(s|ped|ping)?|rise[sn]?|rising|rose|jump(s|ed|ing)?|"
+                    r"surge[sd]?|slump(s|ed)?|crash(es|ed|ing)?|rall(y|ies|ied|ying)|gain(s|ed|ing)?|doing)\b", re.I)
+# provisional, on `judge`'s scale (bge cosine) and from 32 questions with a move word: lessons beside the point
+# ("FCF yield" for bond yields) scored 0.53-0.62 and lessons that answered 0.66-0.84
+LESSON_FLOOR = 0.63
 
 
 class SearchFailed(RuntimeError):
@@ -93,7 +90,7 @@ class Reference:
 
     def __init__(self, index, tokenizer, model, config, question_tokens, passages,
                  temperature, top_p, rng=None, paraphrase=False, live=None, writer=None, news=None,
-                 filings=None, rank=None, lessons=None):
+                 filings=None, rank=None, lessons=None, judge=None):
         self.paraphrase = paraphrase
         # The language model that answers recent questions from prices, filings and headlines. Long
         # encyclopedia and forum text it misattributed ("HDFCBANK.NS is a subsidiary of HDFC Bank"), as
@@ -110,6 +107,9 @@ class Reference:
         # question that names no company: the corpus is mostly US forums, and "how does a SIP work" read from it
         # was answered with Wikipedia's sales incentive plan.
         self.lessons = lessons
+        # (question, texts) -> closeness of each, deciding a lesson against the news when a question has a move word
+        # in it: word rules sent "are bond yields going to rise" to the lesson on FCF yield
+        self.judge = judge
         self.index = index
         # Optional, and left out the path makes no network call, which is how the offline gate is still met
         # by this code. Which of it and the index is asked first is `_arms`, and depends on the subject.
@@ -138,13 +138,11 @@ class Reference:
         """
         query = f"{question} {' '.join(subject.names)}" if subject else question
         news_first = self.news is not None and LATELY.search(question)
-        asks_concept = CONCEPT.match(question) and not RECENT.search(question)
-        if subject is None and self.lessons is not None and (not news_first or asks_concept):
-            taught = self.lessons(question)
-            if taught:
-                title, text = taught[0]
-                return Looked(text, f"document lesson:{title} ; published undated ; passage_1 {text}", LESSON_HOW,
-                              [], float("nan"), text, "")
+        taught = self.lessons(question) if subject is None and self.lessons is not None else None
+        if taught and (not news_first or not RECENT.search(question) and self._teaches(question, taught[0], query, as_of)):
+            title, text = taught[0]
+            return Looked(text, f"document lesson:{title} ; published undated ; passage_1 {text}", LESSON_HOW,
+                          [], float("nan"), text, "")
         if news_first:
             return self._recent(question, query, as_of, subject, prices)
         for arm in self._arms(subject, question):
@@ -152,6 +150,12 @@ class Reference:
             if chunks:
                 return self._read(question, chunks, subject)
         return None
+
+    def _teaches(self, question, lesson, query, as_of):
+        """Whether the lesson answers the question better than every headline does, and well enough to serve."""
+        headlines = self._newswire(query, as_of, None) or []
+        scores = self.judge(question, [f"{lesson[0]}. {lesson[1]}"] + [chunk.text for chunk in headlines])
+        return scores[0] >= LESSON_FLOOR and all(scores[0] > score for score in scores[1:])
 
     def asks_lately(self, question, moves):
         """Whether a question says it is about now ("lately", "today", "news"), so prices, filings and headlines

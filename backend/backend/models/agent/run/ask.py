@@ -84,6 +84,12 @@ def news_from(tokenizer):
     return Live([NewsWire()], tokenizer)
 
 
+def judge_from():
+    """Closeness in meaning by the pretrained encoder, which `Reference` decides a lesson against the news by."""
+    from backend.models.external import sentence
+    return sentence.closeness
+
+
 def writer_from(phrase):
     """The language model that rewords answers when `phrase` is asked for, else None (ALFA's words served)."""
     if not phrase:
@@ -137,7 +143,8 @@ def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=Fal
                      paraphrase=paraphrase, live=live_from(tokenizer) if live else None, writer=writer,
                      news=news_from(tokenizer) if live else None,
                      filings=filings_from(tokenizer) if live else None,
-                     rank=ranker_from(chunks) if dense else None, lessons=lessons_from())
+                     rank=ranker_from(chunks) if dense else None, lessons=lessons_from(),
+                     judge=judge_from() if live else None)
 
 
 # Which encoder routes, and the gate fitted for it: models/training/route.py fitted ALFA's at 97% precision,
