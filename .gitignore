@@ -32,3 +32,6 @@ reference/
 
 # the Oracle VM's settings: its tokens and app key
 /deploy/oracle/.env
+
+# Claude Code session files and its temporary worktrees
+/.claude/
