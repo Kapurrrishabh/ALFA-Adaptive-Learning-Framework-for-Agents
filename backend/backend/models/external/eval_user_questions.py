@@ -28,12 +28,20 @@ HHEM = "vectara/hallucination_evaluation_model"
 HHEM_REVISION = "de9a5e6ba9ba49531a022dba17e35ffeb2a6fad8"
 
 
+LISTS = ("**Key figures**", "**Sources**", "**Source**", "**Related**")
+
+
 def plain(markdown):
-    """The prose a reader reads: no links, headings, figure lines or source lists."""
+    """The prose a reader reads, bullets included, with each line a sentence: no links, headings, tags like
+    [FACT], or the figure and source lists. Dropping every bullet hid most of the jargon from the grade."""
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", markdown)
-    text = "\n".join(line for line in text.splitlines()
-                     if not line.startswith(("###", "**Key figures**", "**Sources**", "- ", "**Source**", "**Related**")))
-    return " ".join(text.replace("**", "").split())
+    kept, listed = [], False
+    for line in text.splitlines():
+        listed = line.startswith(LISTS) or (listed and line.strip() != "" and not line.startswith("#"))
+        line = re.sub(r"^\s*([-•▲▼·✓✕*]\s*)+|\[[A-Z ]+\]\s*", "", line.replace("**", "")).strip()
+        if line and not listed and not line.startswith("#"):
+            kept.append(line if line[-1] in ".!?:" else line + ".")
+    return " ".join(" ".join(kept).split())
 
 
 def grade(text):
