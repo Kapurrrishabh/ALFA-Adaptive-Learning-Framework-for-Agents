@@ -906,12 +906,18 @@ def test_a_lately_question_with_neither_prices_nor_news_says_so(market, router):
     assert "documents" not in turn.served
 
 
-def test_a_move_word_in_a_question_naming_no_company_does_not_skip_the_lessons(market, router):
+@pytest.mark.parametrize("question", [
+    "How are capital gains on shares taxed?", "how much tax do I pay on capital gains ?",
+    "how is long term capital gains tax calculated on shares ?", "are dividends taxed like capital gains ?",
+    "does rsi rise before a rally ?", "what happens to my SIP if the market falls ?",
+    "how is a stop loss triggered when a stock falls ?", "tell me how SIP works when markets fall ?",
+    "when a stock's RSI is rising what does that mean ?", "what’s a bear market rally ?"])
+def test_a_move_word_in_a_question_naming_no_company_does_not_skip_the_lessons(market, router, question):
     """"How are capital gains on shares taxed?" says "gains", and was sent to the newswire instead of the
     lesson on taxes that answers it."""
     built = news_reference(ExplodingWriter())
     built.lessons = lambda question: [("Taxes on listed equity", "Gains held over a year are taxed at 12.5%.")]
-    turn = agent(market, router, reference=built).answer("How are capital gains on shares taxed?")
+    turn = agent(market, router, reference=built).answer(question)
     assert turn.spoke and turn.intent == "reference lesson"
 
 
@@ -925,7 +931,8 @@ def test_a_move_word_in_a_question_naming_no_company_and_no_lesson_reads_the_new
     assert turn.intent == "reference recent" and crash.text in turn.served
 
 
-@pytest.mark.parametrize("question", ["why are bond yields rising ?", "what is the nifty doing ?"])
+@pytest.mark.parametrize("question", ["why are bond yields rising ?", "what is the nifty doing ?",
+                                      "are bond yields rising ?", "how much did bond yields rise ?"])
 def test_a_move_question_naming_no_company_reads_the_news_before_a_lesson_sharing_a_word(market, router, question):
     """"Why are bond yields rising" was served the lesson on free cash flow yield, because its heading says "yield"."""
     moved = Chunk("Mint, 28 Oct 2026: The Nifty slipped as bond yields kept rising.", [], "https://n.test/yields",

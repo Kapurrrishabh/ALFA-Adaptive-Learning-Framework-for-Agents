@@ -62,8 +62,11 @@ RECENT = re.compile(NEWS.pattern + r"|\b(lately|recent(ly)?|now|currently)\b", r
 LATELY = re.compile(RECENT.pattern + r"|\b(fall(s|ing)?|fell|drop(s|ped|ping)?|rise[sn]?|rising|rose|jump(s|ed)?|"
                     r"surge[sd]?|slump(s|ed)?|crash(es|ed|ing)?|rall(y|ies|ied)|gain(s|ed)?|doing)\b", re.I)
 # Asks what a thing is or how it works, which a lesson answers even with a move word in it ("how are capital
-# gains taxed"). "Why are bond yields rising" and "what is nifty doing" ask what happened, so the news goes first.
-CONCEPT = re.compile(r"^\W*(what('s| is| are| does)|how (do|does|are)|explain|define)\b(?!.*\bdoing\b)", re.I)
+# gains taxed", "does rsi rise before a rally"). "Are bond yields rising", "what is nifty doing" and "how much did
+# it fall" ask what is happening or happened, so the news goes first.
+CONCEPT = re.compile(r"^(?!.*\b(doing|did)\b|\W*(how )?(is|are)( \w+){1,3} (rising|falling|dropping|crashing)\b)"
+                     r"\W*(what(['’]?s| is| are| does| happens)|how (do|does|are|is|much|should)|do(es)?|are|can i|"
+                     r"tell me how|explain|define|.*\bwhat does that mean)\b", re.I)
 
 
 class SearchFailed(RuntimeError):
