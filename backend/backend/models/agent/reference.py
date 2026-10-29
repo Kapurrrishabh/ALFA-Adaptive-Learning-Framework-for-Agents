@@ -131,9 +131,10 @@ class Reference:
         `finance.Market.snapshot`, given by the caller that holds the price files.
         """
         query = f"{question} {' '.join(subject.names)}" if subject else question
-        # A move word with no instrument is a concept question ("how are capital gains taxed"), not news
-        news_first = self.news is not None and (LATELY if subject else RECENT).search(question)
-        if subject is None and self.lessons is not None and not news_first:
+        news_first = self.news is not None and LATELY.search(question)
+        # A move word with no instrument can be a concept ("how are capital gains taxed"), so the lessons go
+        # first; they match nothing for "why did the sensex crash", which still reads the news, not the corpus.
+        if subject is None and self.lessons is not None and not (news_first and RECENT.search(question)):
             taught = self.lessons(question)
             if taught:
                 title, text = taught[0]
@@ -166,7 +167,7 @@ class Reference:
         if not found and prices is None:
             return Looked("", "", UNANSWERED, [], float("nan"), "", "", "", "no recent news names it")
         evidence = _as_dated_evidence(found, prices)
-        day = prices[2] if prices else found[0].day
+        day = prices[2] if prices else phrase.latest(found).day
         money = phrase.currency(subject.ticker) if subject else None
         # prices alone need no rewording: the plain answer already says all they do, and that nothing says why
         written = phrase.recent(question, subject, prices, found, self.writer, money) if self.writer and found else None

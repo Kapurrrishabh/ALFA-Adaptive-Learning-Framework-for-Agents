@@ -255,11 +255,12 @@ def test_an_indian_ticker_resolves_without_its_suffix(market):
     ("what is a V-shaped recovery", None), ("is the price above the 50-day MA", None),
     ("what happens after 3 pm", None), ("what happens after 3 PM", None),
     ("how is COST doing ?", "COST"), ("is V a buy ?", "V"), ("is aapl above its 50-day MA ?", "AAPL"),
-    ("how is reliance doing ?", "RELIANCE.NS"),
+    ("how is reliance doing ?", "RELIANCE.NS"), ("Q3 COST results", "COST"), ("FY24 KO", "KO"),
+    ("what did PM Modi say about the budget ?", None), ("give me a pep talk", None),
 ])
 def test_a_symbol_that_is_an_everyday_word_names_its_instrument_only_when_typed_as_one(tmp_path, question, named):
     """"What is the transaction cost of buying shares in India?" was answered about Costco."""
-    for name in ("COST", "CAT", "PM", "MA", "V", "AAPL", "RELIANCE.NS"):
+    for name in ("COST", "CAT", "PM", "MA", "V", "KO", "PEP", "AAPL", "RELIANCE.NS"):
         price_file(tmp_path, name)
     assert finance.Market(tmp_path).resolve(question) == named
 
@@ -913,6 +914,16 @@ def test_a_move_word_in_a_question_naming_no_company_does_not_skip_the_lessons(m
     assert turn.spoke and turn.intent == "reference lesson"
 
 
+def test_a_move_word_in_a_question_naming_no_company_and_no_lesson_reads_the_news(market, router):
+    """"Why did the sensex crash?" read from the corpus was quoted a passage on the 2016 demonetisation crash."""
+    crash = Chunk("Mint, 28 Oct 2026: The Sensex crashed 900 points as bank stocks fell.", [], "https://n.test/crash",
+                  "2026-10-28")
+    built = news_reference(None, news=(crash,))
+    built.lessons = lambda question: []
+    turn = agent(market, router, reference=built).answer("why did the sensex crash ?")
+    assert turn.intent == "reference recent" and crash.text in turn.served
+
+
 @pytest.mark.parametrize("question,intent", [("is AAPL overbought right now ?", "overbought"),
                                              ("how far is AAPL off its recent high ?", "drawdown"),
                                              ("is AAPL a good buy right now ?", "buy")])
@@ -929,6 +940,14 @@ def test_the_latest_report_is_the_newest_passage_not_the_best_ranked():
     from backend.models.agent import phrase
     older = Chunk("Mint, 1 Sep 2026: Reliance Industries shares fell.", [], "https://n.test/old", "2026-09-01")
     assert phrase.recent_plain(None, None, [older, NEWS]) == f"The latest report: {NEWS.text}"
+
+
+def test_a_latest_report_with_no_prices_is_dated_by_the_report_it_serves(market, router):
+    """The chat shows "data as of" beside the answer, and it gave the best-ranked passage's day, not the one served."""
+    older = Chunk("Mint, 1 Sep 2026: Industries shares fell.", [], "https://n.test/old", "2026-09-01")
+    turn = agent(market, router, reference=news_reference(None, news=(older, NEWS))).answer(
+        "why did industries shares fall today ?")
+    assert turn.served == f"The latest report: {NEWS.text}" and turn.as_of == NEWS.day
 
 
 def test_the_language_model_reads_the_news_and_our_own_sentence_gives_the_prices(market, router):

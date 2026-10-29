@@ -262,7 +262,7 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     def ui_agent_ask(body: ChatIn):
         from backend.models.agent.client import AgentUnavailable
         try:
-            return ok(agent_client.ask(body.message, ""))
+            return ok(agent_client.ask(body.message, "", session=body.session_id))
         except AgentUnavailable as exc:
             raise HTTPException(503, str(exc)) from None
 

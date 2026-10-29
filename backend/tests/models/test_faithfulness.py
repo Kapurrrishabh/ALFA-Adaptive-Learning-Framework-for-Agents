@@ -67,6 +67,19 @@ def test_a_window_in_a_key_name_does_not_support_a_value(evidence):
     "sma_50". The spaced form is the decoded evidence the measured gate reads."""
     answer = "its 14 day rsi is 50 , which is neither overbought nor oversold ."
     assert guardrails.unsupported_figures(answer, evidence) == ["50"]
+    assert guardrails.unsupported_figures("its 14 day rsi is 73 , and its 50 day average 231.50 .", evidence) == []
+
+
+@pytest.mark.parametrize("answer,evidence", [
+    ("it returned 7% over 10 years .", "Over the past 10 years the index returned 7%."),
+    ("over the past 10 years it returned 7% .", "The index returned 7% over 10 years."),
+    ("it gained 5% over 3 sessions .", "It gained 5% in the past 3 sessions."),
+    ("RSI (14) is 73, and the 50-DMA is 231.50.", "rsi_14 73 ; sma_50 231.50 its 14 day rsi is 73 , with a "
+                                                  "50 day average of 231.50 ."),
+])
+def test_a_window_written_in_free_text_on_either_side_still_supports_its_figure(answer, evidence):
+    """Treating "past 10" or "3 day" as windows everywhere rejected faithful passage answers and rewrites."""
+    assert guardrails.unsupported_figures(answer, evidence) == []
 
 
 def test_a_refusal_has_nothing_to_support():

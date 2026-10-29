@@ -17,6 +17,9 @@ from typing import Any, Dict, Optional
 DEFAULT_URL = "http://127.0.0.1:8010"
 CREDENTIALS = Path.home() / ".stockintel" / "selfagent.json"
 TIMEOUT_S = 60
+# Provisional, not measured: far more chat tabs than one deployment has open. A session dropped past it
+# only starts a new agent conversation, so its next "why?" loses the instrument.
+CONVERSATIONS_KEPT = 1000
 
 
 class AgentUnavailable(Exception):
@@ -62,7 +65,7 @@ class SelfAgentClient:
                 raise AgentUnavailable(f"could not log in to the self-learning agent: HTTP {r.status_code} {r.text[:120]}")
             return r.json()["token"]
 
-    def ask(self, question: str, subject: str = "", session: str = "") -> Dict[str, Any]:
+    def ask(self, question: str, subject: str = "", *, session: str) -> Dict[str, Any]:
         """One question over one socket; returns the agent's 'turn' frame.
 
         An empty `session` starts a new conversation each time."""
@@ -82,7 +85,10 @@ class SelfAgentClient:
                         self._conversations.clear()
                         raise AgentUnavailable(f"agent refused the session: {first.get('because')}")
                     if session:
+                        self._conversations.pop(session, None)
                         self._conversations[session] = first["conversation"]
+                        if len(self._conversations) > CONVERSATIONS_KEPT:
+                            del self._conversations[next(iter(self._conversations))]
                     ws.send(json.dumps({"question": question}))
                     while True:
                         frame = json.loads(ws.recv(timeout=TIMEOUT_S))

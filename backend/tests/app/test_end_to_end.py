@@ -546,6 +546,16 @@ def test_agent_ask_is_503_not_500_when_the_agent_is_down(orch, monkeypatch, tmp_
     assert r.status_code == 503 and "not reachable" in r.json()["detail"]
 
 
+def test_agent_ask_carries_the_chat_session_to_the_agent(orch, monkeypatch):
+    """Every question opened a new agent conversation, so "Analyze RELIANCE" then "Why?" lost the instrument."""
+    from backend.models.agent.client import SelfAgentClient
+    sessions = []
+    monkeypatch.setattr(SelfAgentClient, "ask", lambda self, question, subject="", *, session: sessions.append(session))
+    client = TestClient(create_app(orch, api_key=KEY))
+    client.post("/ui/agent/ask", json={"message": "Why?", "session_id": "web-1"}, headers={"X-API-Key": KEY})
+    assert sessions == ["web-1"]
+
+
 def test_phone_install_manifest_and_service_worker_are_served(app_client):
     m = app_client.get("/manifest.webmanifest").json()
     assert m["start_url"] == "/#/home" and m["display"] == "standalone"

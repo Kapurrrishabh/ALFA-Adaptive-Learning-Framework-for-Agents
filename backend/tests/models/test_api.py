@@ -169,8 +169,13 @@ def test_the_stockintel_client_keeps_one_conversation_per_session(tmp_path, monk
     asking = SelfAgentClient("http://agent.test")
     asking.ask("is AAPL overbought ?", session="one")
     asking.ask("why ?", session="one")
-    asking.ask("why ?")
+    asking.ask("why ?", session="")
     assert [subject for _, subject in agent.asked] == ["", "AAPL", ""]
+    # the oldest session is forgotten past the cap, so the map cannot grow without end
+    monkeypatch.setattr("backend.models.agent.client.CONVERSATIONS_KEPT", 1)
+    asking.ask("is AAPL overbought ?", session="two")
+    asking.ask("why ?", session="one")
+    assert [subject for _, subject in agent.asked[3:]] == ["", ""]
 
 
 def test_an_unjudged_turn_is_answered_and_stored_and_leaves_the_cut_alone(tmp_path):
