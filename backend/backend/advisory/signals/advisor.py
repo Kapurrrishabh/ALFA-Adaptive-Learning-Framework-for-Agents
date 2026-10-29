@@ -29,10 +29,14 @@ from backend.advisory.signals import strategies as S
 N_DEFAULT = 20
 DP_CHARGE = 15.34            # ₹ per scrip per sell day (CDSL/NSDL + broker), Zerodha 2026
 MIN_POSITION = 20_000.0      # below this the DP charge alone costs > 0.08% per exit
-STOP_PCT = 0.10              # on by default; our backtest measured it cutting return as well as drawdown
+STOP_PCT = 0.10              # on every buy except low-vol; measured to cut return as well as drawdown (DESIGN.md §28.2)
 LTCG_DAYS = 365
 TAX_WINDOW_DAYS = 60         # PROVISIONAL: defer profitable exits this close to long-term status
 REBALANCE_MONTHS = (6, 12)   # NSE semi-annual, executed in June and December
+STOP_EVIDENCE = (f"The {STOP_PCT:.0%} stop-loss is our own risk rule, not part of NSE's method, and the track record "
+                 f"figures were measured without it. In our backtest, a stop {STOP_PCT:.0%} below the buy price made "
+                 "the worst fall smaller but also cut the return, enough that the strategy no longer beat simply "
+                 "holding every stock it picks from in equal amounts.")
 
 
 @dataclass
@@ -253,9 +257,11 @@ def plan(panel: Panel, bench: pd.Series, capital: float, holdings: List[Holding]
             if a.action == "ADD" and not a.shares:
                 a.action = "HOLD"
         actions = [a for a in actions if a.shares or a.action != "BUY"]
+        kept = [a.symbol for a in actions if a.action == "HOLD"
+                and by_sym[a.symbol].quantity * a.price > budget * weights.get(a.symbol, 0.0)]
         warnings.append(f"Buys cut from ₹{spend:,.0f} to ₹{sum(a.value for a in buys):,.0f}: cash plus sale proceeds "
-                        f"come to ₹{raised:,.0f}, because some holdings stay above target (kept for tax, or close "
-                        "enough to it)")
+                        f"come to ₹{raised:,.0f}, because these holdings are kept above their target rather than "
+                        f"sold, so they raise no cash: {', '.join(kept)} (the reason is on each line)")
     stale = [a.symbol for a in actions if a.symbol in close.columns and np.isnan(close[a.symbol].iloc[-1])]
     if stale:
         warnings.append(f"{', '.join(stale)}: no price for {asof.date()}, so priced at the last close; re-run the "
@@ -272,9 +278,7 @@ def plan(panel: Panel, bench: pd.Series, capital: float, holdings: List[Holding]
         *measured,
         "Momentum crashes happen in sharp rebounds after bear markets; "
         f"'balanced' mode cuts exposure to {CRASH_EXPOSURE:.0%} in that regime.",
-        f"The {STOP_PCT:.0%} stop per stock is a risk rule added to NSE's method, and the figures above were "
-        "measured without it. In our backtest it cut the worst fall but also cut the return, and left no edge "
-        "over holding the same stocks in equal weights (docs/DESIGN.md §28.2).",
+        STOP_EVIDENCE,
         "Expect to trail the market in some years. Stick to the schedule.",
     ]
     return Plan(as_of=str(asof.date()), generated_at=utcnow_iso(), strategy=strategy, capital=total,
@@ -383,7 +387,7 @@ def render(p: Plan) -> str:
         lines.append("\nWarnings:")
         lines += [f"  ! {w}" for w in p.warnings]
     lines.append("\nHow to use: place orders on the next trading day; check stops daily "
-                 "(`stockintel stops`); re-run at the scheduled rebalance.")
+                 "(ask 'Check my stops', or run `stockintel stops`); re-run at the scheduled rebalance.")
     lines.append("Evidence and limits:")
     lines += [f"  - {e}" for e in p.evidence]
     return "\n".join(lines)

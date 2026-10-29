@@ -42,11 +42,17 @@ class Transaction:
 @dataclass
 class Position:
     symbol: str
-    quantity: float
-    cost_basis: float
+    lots: List[Tuple[str, float, float]]      # open (date, shares, cost each), oldest first
     realized_pl: float
     sector: Optional[str]
-    lots: List[Tuple[str, float, float]] = field(default_factory=list)  # open (date, shares, cost each), oldest first
+
+    @property
+    def quantity(self) -> float:
+        return sum(q for _, q, _ in self.lots)
+
+    @property
+    def cost_basis(self) -> float:
+        return sum(q * c for _, q, c in self.lots)
 
     @property
     def avg_cost(self) -> float:
@@ -81,9 +87,7 @@ def build_positions(transactions: Sequence[Transaction]) -> Dict[str, Position]:
                 q.popleft()
     out = {}
     for sym, q in lots.items():
-        qty = sum(l[0] for l in q)
-        out[sym] = Position(symbol=sym, quantity=qty, cost_basis=sum(l[0] * l[1] for l in q),
-                            realized_pl=realized[sym], sector=sectors.get(sym), lots=[(l[2], l[0], l[1]) for l in q])
+        out[sym] = Position(sym, [(l[2], l[0], l[1]) for l in q], realized[sym], sectors.get(sym))
     return out
 
 
@@ -246,8 +250,7 @@ def what_if(positions: Dict[str, Position], cash: float, prices: Dict[str, pd.Se
     base = analyze(positions, cash, prices, risk_profile, sectors=sectors)
     out = {"current": _risk_summary(base), "scenarios": {}}
     for name, adds in scenarios.items():
-        pos = {s: Position(p.symbol, p.quantity, p.cost_basis, p.realized_pl, p.sector)
-               for s, p in positions.items()}
+        pos = {s: Position(p.symbol, list(p.lots), p.realized_pl, p.sector) for s, p in positions.items()}
         spent = 0.0
         bought = {}
         for sym, amount in adds.items():
@@ -260,11 +263,11 @@ def what_if(positions: Dict[str, Position], cash: float, prices: Dict[str, pd.Se
                 raise ValueError(f"{amount} buys no whole shares of {sym} at {px:.2f}")
             spent += qty * px
             bought[sym] = qty
+            lot = (str(prices[sym].dropna().index[-1].date()), qty, px)
             if sym in pos:
-                pos[sym].quantity += qty
-                pos[sym].cost_basis += qty * px
+                pos[sym].lots.append(lot)
             else:
-                pos[sym] = Position(sym, qty, qty * px, 0.0, (sectors or {}).get(sym))
+                pos[sym] = Position(sym, [lot], 0.0, (sectors or {}).get(sym))
         rep = analyze(pos, cash + sum(adds.values()) - spent, prices, risk_profile, sectors=sectors)
         out["scenarios"][name] = {"shares_bought": bought, "spent": round(spent, 2),
                                   **_risk_summary(rep)}

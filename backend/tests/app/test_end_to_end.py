@@ -158,6 +158,38 @@ def test_signal_plan_refuses_a_buy_stored_in_pre_split_shares(orch, local_provid
     assert "Re-enter it as 2× the shares" in r.text
 
 
+def test_signal_plan_asks_for_a_check_when_the_split_record_and_prices_disagree(orch, local_provider, signal_inputs):
+    close, d = signal_inputs, _days_ago(200)
+    local_provider.split_histories["TEST.NS"] = _split_history(close, close.index[-50])
+    _store_test_buy(orch, 100_000.0, 10 * float(close.loc[:d].iloc[-1]), d)
+    r = orch.handle("Rebalance my portfolio", "t")
+    assert "The two do not agree" in r.text and "Re-enter it as" not in r.text
+
+
+def test_cli_signals_checks_for_splits_before_planning(orch, local_provider, signal_inputs, monkeypatch):
+    import argparse
+    from backend import cli
+    close, d = signal_inputs, _days_ago(200)
+    local_provider.split_histories["TEST.NS"] = _split_history(close, close.index[-50])
+    _store_test_buy(orch, 100_000.0, 2 * float(close.loc[:d].iloc[-1]), d)
+    monkeypatch.setattr(cli, "_orchestrator", lambda *a, **k: orch)
+    monkeypatch.setattr(cli, "_signal_inputs", lambda *a, **k: pytest.fail("planned without the split check"))
+    with pytest.raises(ValueError, match="Re-enter it as 2× the shares"):
+        cli.cmd_signals(argparse.Namespace(capital=None))
+
+
+def test_cli_stops_flags_a_split_instead_of_a_stop_hit(orch, local_provider, signal_inputs, monkeypatch, capsys):
+    import argparse
+    from backend import cli
+    close, d = signal_inputs, _days_ago(200)
+    local_provider.split_histories["TEST.NS"] = _split_history(close, close.index[-50])
+    _store_test_buy(orch, 0.0, 2 * float(close.loc[:d].iloc[-1]), d)
+    monkeypatch.setattr(cli, "_orchestrator", lambda *a, **k: orch)
+    assert cli.cmd_stops(argparse.Namespace()) == 0
+    out = capsys.readouterr().out
+    assert "through splits or bonus issues" in out and "STOP HIT" not in out
+
+
 def test_signal_plan_keeps_a_buy_already_in_post_split_shares(orch, local_provider, signal_inputs):
     close, d = signal_inputs, _days_ago(200)
     local_provider.split_histories["TEST.NS"] = _split_history(close, close.index[-50])
@@ -409,6 +441,11 @@ def test_neutral_fundamentals_are_not_a_reason_to_buy(app_client, orch, monkeypa
     v = app_client.get("/ui/stock/TEST/verdict", headers={"X-API-Key": KEY}).json()
     line = f"Fundamentals look mixed (trend: {trend})."
     assert line not in v["why_buy"] and (line in v["why_not"]) == listed_against
+
+
+def test_ui_verdict_that_gives_a_stop_says_the_track_record_left_it_out(app_client):
+    v = app_client.get("/ui/stock/TEST/verdict", headers={"X-API-Key": KEY}).json()
+    assert v["plan"]["stop_loss"] and "measured without it" in v["evidence_note"]
 
 
 def test_portfolio_single_transaction_add_and_delete(app_client, orch):

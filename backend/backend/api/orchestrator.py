@@ -11,6 +11,7 @@ deterministic answer plus a sentence saying which of those happened.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -38,21 +39,32 @@ SESSION_REUSE_S = 900
 SYMBOL_RE = re.compile(r"^\^?[A-Z0-9&\-]{1,20}(\.(NS|BO))?$")
 DOMAINS = ("technical", "candlestick", "pattern", "fundamental", "news_sentiment", "risk",
            "regime", "forecast", "historical")
+MAX_PAID_TO_CLOSE = 1.25    # high/close and close/low stay below this on 99.9% of Nifty 500 stock-days, 2016–26
 
 
 def _split_note(symbol: str, lots: List[Tuple[str, float, float]], history: pd.DataFrame) -> Optional[str]:
     """Stored buys are in the shares of their day; `history` (Provider.splits) is in today's shares."""
-    for day, _, cost in lots:
+    for day, shares, cost in lots:
         ratio = float(history["ratio"].loc[history.index > day].prod())
         before = history["close"].loc[:day]
         if ratio == 1 or before.empty:
             continue
         close = float(before.iloc[-1])
+        paid = cost / close
         # A buy kept in old shares cost about ratio× that day's close, so ask which of 1× and ratio× is nearer.
-        if cost / close > ratio ** 0.5:
+        # Near neither means the record missed part of it: Yahoo logs BAJFINANCE's 2025 split + bonus (10×) as 2.
+        nearer = min((1.0, ratio), key=lambda f: abs(math.log(paid / f)))
+        if abs(math.log(paid / nearer)) > math.log(MAX_PAID_TO_CLOSE):
+            return (f"{symbol}: your buy on {day} cost ₹{cost:,.2f} a share, {paid:.1f}× that day's close of "
+                    f"₹{close:,.2f} in today's shares, but the split and bonus record says each share has become "
+                    f"{ratio:g} since then. The two do not agree (a split and a bonus on the same day are sometimes "
+                    "recorded as one), so the app cannot tell how many shares you hold now. Check your contract note "
+                    "and demat holdings, then re-enter this buy as the shares you hold today at the same total cost "
+                    f"of ₹{shares * cost:,.0f}, fees included.")
+        if nearer == ratio:
             return (f"{symbol}: since your buy on {day}, each share has become {ratio:g} through splits or bonus "
                     f"issues, and that buy is stored in the old shares: it cost ₹{cost:,.2f} a share, "
-                    f"{cost / close:.1f}× that day's close of ₹{close:,.2f} in today's shares. "
+                    f"{paid:.1f}× that day's close of ₹{close:,.2f} in today's shares. "
                     f"Re-enter it as {ratio:g}× the shares at ₹{cost / ratio:,.2f} each.")
     return None
 
@@ -519,11 +531,9 @@ class Orchestrator:
         res = what_if(positions, cash, prices, scenarios, meta.get("risk_profile", s.risk_profile))
         return Reply(R.render_what_if(res), i.name, {"payload": res}, ["portfolio_what_if"])
 
-    def _signal_plan(self, s: Session, i: Intent):
-        from backend.database.sources.panel import index_constituents, universe_panel
-        from backend.advisory.signals.advisor import Holding, plan
-        panel = universe_panel("nifty500", "10y")
-        bench = self.service().history("^NSEI")["close"]
+    def signal_holdings(self) -> Tuple[list, float, List[str]]:
+        """Stored holdings, cash and warnings for a signal plan; refuses buys stored in pre-split shares."""
+        from backend.advisory.signals.advisor import Holding
         positions, cash, _ = self.holdings()
         holdings = [Holding(k, p.lots) for k, p in positions.items() if p.quantity > 0]
         split_notes, unchecked = [], []
@@ -534,6 +544,16 @@ class Orchestrator:
                 unchecked.append(f"{h.symbol} ({exc})")
         if any(split_notes):
             raise ValueError(" ".join(filter(None, split_notes)) + " Then ask for the plan again.")
+        warnings = [f"Could not check {', '.join(unchecked)} for a split or bonus issue since you bought; "
+                    "if there was one, the shares and cost used here are from before it."] if unchecked else []
+        return holdings, cash, warnings
+
+    def _signal_plan(self, s: Session, i: Intent):
+        from backend.database.sources.panel import index_constituents, universe_panel
+        from backend.advisory.signals.advisor import plan
+        panel = universe_panel("nifty500", "10y")
+        bench = self.service().history("^NSEI")["close"]
+        holdings, cash, split_warnings = self.signal_holdings()
         capital = i.amount if i.amount else cash
         if not capital and not holdings:
             raise ValueError("Tell me how much you want to invest (e.g. 'what should I buy with ₹1 lakh?') "
@@ -550,9 +570,7 @@ class Orchestrator:
         p = plan(panel, bench, float(capital or 0.0) or 1.0, holdings, strategy=strategy, risk_mode=risk,
                  universe=list(index_constituents("nifty200")["symbol"]), insider_trades=trades,
                  measured=performance.momentum_evidence(performance.track_record()))
-        if unchecked:
-            p.warnings.append(f"Could not check {', '.join(unchecked)} for a split or bonus issue since you bought; "
-                              "if there was one, the shares and cost used here are from before it.")
+        p.warnings += split_warnings
         return p
 
     def _h_signals(self, s: Session, i: Intent) -> Reply:

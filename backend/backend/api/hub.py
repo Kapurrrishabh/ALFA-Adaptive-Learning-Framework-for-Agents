@@ -26,7 +26,7 @@ from backend.knowledge_base.lessons import knowledge_base
 from backend.api.nlu import ALIASES
 from backend.api.orchestrator import Orchestrator
 from backend.advisory.signals import factors as F
-from backend.advisory.signals.advisor import N_DEFAULT, STOP_PCT, exposure_for, market_state, next_rebalance
+from backend.advisory.signals.advisor import N_DEFAULT, STOP_EVIDENCE, STOP_PCT, exposure_for, market_state, next_rebalance
 
 log = logging.getLogger("stockintel.hub")
 
@@ -398,7 +398,8 @@ class Hub:
                                       f"(≈{100 * exposure_for('balanced', m) / N_DEFAULT:.1f}% with {N_DEFAULT} stocks)"
                      if tone == "positive" else None},
             "market": m, "analysis_timestamp": a.analysis_timestamp, "data_as_of": a.quality["last_date"],
-            "evidence_note": performance.evidence_note(performance.track_record()),
+            "evidence_note": performance.evidence_note(performance.track_record())
+            + (f" {STOP_EVIDENCE}" if tone == "positive" else ""),
         }
 
     def portfolio_history(self) -> Dict[str, Any]:
@@ -590,7 +591,8 @@ class Hub:
         sector = dict(zip(names["symbol"], names["sector"]))
         name_of = dict(zip(names["symbol"], names["name"]))
         close = self.panel().close
-        positions = {a.symbol: Position(a.symbol, a.shares, a.value, 0.0, sector.get(a.symbol)) for a in buys}
+        positions = {a.symbol: Position(a.symbol, [(p.as_of, a.shares, a.price)], 0.0, sector.get(a.symbol))
+                     for a in buys}
         spent = sum(a.value for a in buys)
         risk, curve = {}, {"dates": [], "basket": [], "nifty": []}
         if positions:

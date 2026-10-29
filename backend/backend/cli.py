@@ -360,16 +360,10 @@ def cmd_insider_fetch(args) -> int:
     return 0
 
 
-def _stored_holdings(orch):
-    from backend.advisory.signals.advisor import Holding
-    positions, cash, _ = orch.holdings()
-    return [Holding(s, p.lots) for s, p in positions.items() if p.quantity > 0], cash
-
-
 def cmd_signals(args) -> int:
     from backend.advisory.signals.advisor import plan, render
     orch = _orchestrator(args)
-    holdings, stored_cash = _stored_holdings(orch)
+    holdings, stored_cash, split_warnings = orch.signal_holdings()
     capital = args.capital if args.capital is not None else stored_cash
     if not capital and not holdings:
         raise SystemExit("give --capital (new money to invest) or import a portfolio first")
@@ -377,30 +371,16 @@ def cmd_signals(args) -> int:
     p = plan(panel, bench, float(capital or 0.0) or 1.0, holdings, strategy=args.strategy,
              risk_mode=args.risk, n=args.positions, universe=uni, insider_trades=_insider_or_none(),
              measured=performance.momentum_evidence(performance.track_record()))
+    p.warnings += split_warnings
     orch.store.save_plan(sanitize(p.to_dict()))
     print(json.dumps(sanitize(p.to_dict()), indent=2) if args.json else render(p))
     return 0
 
 
 def cmd_stops(args) -> int:
-    from backend.advisory.signals.advisor import STOP_PCT
-    orch = _orchestrator(args)
-    holdings, _ = _stored_holdings(orch)
-    if not holdings:
-        raise SystemExit("no stored portfolio; import one with `stockintel portfolio import`")
-    last = orch.store.latest_plan() or {}
-    planned = {a["symbol"]: a["stop_level"] for a in last.get("actions", []) if a.get("stop_level")}
-    svc = orch.service()
-    print(f"Stop check ({STOP_PCT:.0%} stops; levels from the plan of {last.get('as_of', 'n/a')}, "
-          "else 10% below your average cost):")
-    for h in holdings:
-        df = svc.history(h.symbol)
-        px, low = float(df["close"].iloc[-1]), float(df["low"].iloc[-1])
-        level = planned.get(h.symbol, round(h.avg_cost * (1 - STOP_PCT), 2))
-        status = ("STOP HIT — sell at next open" if low <= level
-                  else f"ok ({(px / level - 1) * 100:+.1f}% above stop)")
-        print(f"  {h.symbol:<12} close ₹{px:,.2f}  stop ₹{level:,.2f}  {status}")
-    return 0
+    r = _orchestrator(args).handle("Check my stops", "cli")
+    print(r.text)
+    return 1 if "error" in r.data else 0
 
 
 def cmd_evaluate_signals(args) -> int:

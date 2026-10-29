@@ -8,7 +8,7 @@ from backend.database.sources import synthetic
 from backend.database.sources.panel import panel_from_frames
 from backend.advisory.signals import factors as F
 from backend.advisory.signals import strategies as S
-from backend.advisory.signals.advisor import Holding, _tax_note, exposure_for, market_state, plan
+from backend.advisory.signals.advisor import Holding, _tax_note, exposure_for, market_state, plan, render
 from backend.advisory.signals.simulate import metrics, simulate
 
 END = "2026-09-25"
@@ -199,6 +199,16 @@ def test_plan_never_spends_more_cash_than_it_has(panel):
     assert any(w.startswith("Buys cut from") and f"to ₹{spent:,.0f}:" in w for w in p.warnings)
 
 
+def test_buys_cut_names_the_holding_that_raises_no_cash(panel):
+    frames = _frames(panel)
+    frames["WIN"].iloc[-1] = np.nan
+    p2 = panel_from_frames(frames)
+    p = plan(p2, p2.close["S01"], 100_000, [Holding("WIN", [("2026-01-02", 10, 100.0)])], n=4, risk_mode="full",
+             today=date(2026, 9, 27), measured=[])
+    cut = next(w for w in p.warnings if w.startswith("Buys cut"))
+    assert cut.endswith("so they raise no cash: WIN (the reason is on each line)")
+
+
 def test_plan_prices_a_holding_that_misses_the_last_bar_at_its_last_close(panel):
     frames = _frames(panel)
     frames["S03"].iloc[-1] = np.nan
@@ -236,9 +246,14 @@ def test_market_trend_reads_only_finished_months():
 
 def test_plan_says_the_stop_was_measured_cutting_return(panel):
     p = plan(panel, panel.close["S01"], 100_000, [], n=4, today=date(2026, 9, 27), measured=[])
-    assert not any("Han–Zhou–Zhu" in e for e in p.evidence)
-    assert any("stop per stock" in e and "measured without it" in e and "also cut the return" in e
-               for e in p.evidence)
+    assert not any("Han–Zhou–Zhu" in e or "docs/" in e for e in p.evidence)
+    assert any("measured without it" in e and "also cut the return" in e
+               and "no longer beat simply holding every stock it picks from in equal amounts" in e for e in p.evidence)
+
+
+def test_plan_text_tells_app_users_how_to_check_stops(panel):
+    p = plan(panel, panel.close["S01"], 100_000, [], n=4, today=date(2026, 9, 27), measured=[])
+    assert "ask 'Check my stops'" in render(p)
 
 
 def test_metrics_on_a_known_path():
