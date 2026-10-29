@@ -155,7 +155,7 @@ cut, and unjudged ones are stored but do not move it.
 
 | Model | What it is | Trained by | Runs | Used for | Measured out of sample |
 |---|---|---|---|---|---|
-| NSE momentum rank | Nifty200 Momentum 30 formula: z of 12- and 6-month return ÷ 1-year volatility | Formula, not trained | Server | The buy/sell signal | Live ETF beat the Nifty 500 by +1.9 pts/yr (2022–26), unevenly |
+| NSE momentum rank | Nifty200 Momentum 30 formula: z of 12- and 6-month return ÷ 1-year volatility | Formula, not trained | Server | The buy/sell signal | Live ETF beat the Nifty 500 price index by +1.9 pts/yr (2022–26), unevenly; the index leaves out dividends the ETF keeps |
 | Candle and chart-pattern rules | 15 candle rules, 19 chart-pattern shapes (28 with breakout direction) | Rules | Server | Drawn on charts as context | 0 of 43 show an edge |
 | Logistic regression, gradient boosting | scikit-learn direction forecasts | Walk-forward at run time | Server | Research engine | No skill; weight set to 0 |
 | EWMA volatility band | Volatility-scaled range | Formula | Server | Grey range on charts | Its 80% band held 77–83% across our tests |

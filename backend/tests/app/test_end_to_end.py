@@ -1,4 +1,5 @@
 import re
+from datetime import time
 from pathlib import Path
 
 import pandas as pd
@@ -462,13 +463,17 @@ def test_evidence_note_reads_every_figure_off_the_track_record(tmp_path, monkeyp
         "Backtest on today's index list (survivorship-inflated): worst fall -35%, -21% with the trend + volatility overlay.")
 
 
-def test_the_live_edge_says_its_benchmark_leaves_out_dividends(tmp_path, monkeypatch):
+def test_the_live_edge_says_its_benchmark_leaves_out_dividends(app_client, tmp_path, monkeypatch):
     """The ETF's NAV keeps its dividends and ^CRSLDX is a price index, so the gap overstates a like-for-like edge."""
     import backend.advisory.calculators.performance as perf
     monkeypatch.setattr(perf, "PATH", _record(tmp_path))
     rec = perf.track_record()
     for claim in (perf.evidence_note(rec), perf.momentum_evidence(rec)[0]):
         assert "beat the Nifty 500 price index by +1.9" in claim and perf.NO_DIVIDENDS_NOTE in claim
+    live = app_client.get("/ui/performance", headers={"X-API-Key": KEY}).json()["momentum"]["live_check"]
+    assert live["benchmark_note"] == perf.NO_DIVIDENDS_NOTE
+    # the home page and the performance page each quote the gap, so each shows the caveat
+    assert app_client.get("/static/app.js").text.count("${live.benchmark_note}") == 2
 
 
 def test_technical_range_claim_and_stop_come_from_data(app_client, tmp_path, monkeypatch):
@@ -765,18 +770,67 @@ def test_gru_note_judges_its_record_instead_of_assuming_it_won(app_client, monke
     assert f"daily move sizes {moves}" in note and note.endswith(direction)
 
 
-def test_a_forecast_is_redrawn_when_the_last_close_moves_during_the_day(app_client, orch, monkeypatch):
-    """In market hours the last bar is today's live price; a cache keyed on the date alone kept the first
-    visitor's price all day, so the line started away from the chart's close."""
+def _at_exchange_time(orch, monkeypatch, at):
+    """Set the service's clock to `at`, exchange time, on the day of TEST's last bar; returns TEST's history."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    svc = orch.service()
+    history = svc.history("TEST")
+    moment = datetime.combine(history.index[-1].date(), at, ZoneInfo(svc.market.timezone))
+    monkeypatch.setattr(svc, "now", lambda: moment.astimezone().replace(tzinfo=None))     # local and naive, like datetime.now
+    return history
+
+
+@pytest.mark.parametrize("at, origin", [(time(11, 0), -2), (time(15, 30), -1)])
+def test_forecasts_start_from_the_last_closed_bar(app_client, orch, monkeypatch, at, origin):
+    """In market hours the last bar is the moving price, which no model trained on, so the GRU starts from the bar
+    before it and its first forecast day is today."""
     starts = _fake_gru_line(monkeypatch, _gru_record())
+    history = _at_exchange_time(orch, monkeypatch, at)
+    r = app_client.get("/ui/stock/TEST/ai?model=gru", headers={"X-API-Key": KEY}).json()
+    assert starts == [pytest.approx(float(history["close"].iloc[origin]))] and r["as_of"] == str(history.index[origin].date())
+    assert r["dates"][0] == str(pd.bdate_range(history.index[origin], periods=2)[1].date())
+
+
+@pytest.mark.parametrize("at, runs", [(time(11, 0), 1), (time(15, 45), 2)])
+def test_a_forecast_reruns_only_when_its_closed_bar_moves(app_client, orch, monkeypatch, at, runs):
+    """Keyed on the moving close, every 15-minute price refresh reran the models under the lock every forecast
+    shares. Once the session has closed, a cached mid-day price can still give way to the final close."""
+    starts = _fake_gru_line(monkeypatch, _gru_record())
+    _at_exchange_time(orch, monkeypatch, at)
     h = {"X-API-Key": KEY}
     app_client.get("/ui/stock/TEST/ai?model=gru", headers=h)
     svc = orch.service()
     history, moved = svc.history, svc.history("TEST").copy()
     moved.loc[moved.index[-1], "close"] *= 1.04
     monkeypatch.setattr(svc, "history", lambda sym: moved if sym == "TEST" else history(sym))
-    second = app_client.get("/ui/stock/TEST/ai?model=gru", headers=h).json()
-    assert len(starts) == 2 and second["close"][0] == pytest.approx(float(moved["close"].iloc[-1]))
+    app_client.get("/ui/stock/TEST/ai?model=gru", headers=h)
+    assert len(starts) == runs
+
+
+def test_the_analyst_note_quotes_the_closed_bar_its_forecasts_start_from(app_client, orch, monkeypatch):
+    import backend.advisory.analyst as an
+    import backend.api.hub as hubmod
+    from tests.app.test_nlu_llm import _analyst_facts
+    monkeypatch.setenv("STOCKINTEL_ML", "0")
+    monkeypatch.setattr(hubmod.Hub, "ai_forecast", lambda self, sym, model: {})
+    f, quoted = _analyst_facts(), []
+    monkeypatch.setattr(an, "facts", lambda sym, close, as_of, *rest: quoted.append((close, as_of)) or f)
+    history = _at_exchange_time(orch, monkeypatch, time(11, 0))
+    app_client.get("/ui/stock/TEST/analyst", headers={"X-API-Key": KEY})
+    assert quoted == [(round(float(history["close"].iloc[-2]), 2), str(history.index[-2].date()))]
+
+
+def test_the_gru_refuses_a_newest_bar_it_cannot_read(app_client, orch, monkeypatch):
+    """dropna dropped a newest bar with no high, so the line started from the day before while its dates counted
+    from the newest bar."""
+    _fake_gru_line(monkeypatch, _gru_record())
+    svc = orch.service()
+    history, gap = svc.history, svc.history("TEST").copy()
+    gap.loc[gap.index[-1], "high"] = float("nan")
+    monkeypatch.setattr(svc, "history", lambda sym: gap if sym == "TEST" else history(sym))
+    r = app_client.get("/ui/stock/TEST/ai?model=gru", headers={"X-API-Key": KEY})
+    assert r.status_code == 404 and f"{gap.index[-1].date()} bar has no high" in r.json()["detail"]
 
 
 def test_the_gru_starts_from_the_stocks_last_close_when_the_nifty_lags_a_bar(app_client, orch, monkeypatch):

@@ -32,6 +32,8 @@ LEVEL = 0.8
 TRAILING_DAYS = 365
 # an origin's 10-day outcome is known about two calendar weeks later
 KNOWN_AFTER_DAYS = 20
+# saved with the multiple; the GRU is served only with a multiple fitted this way (models/serving/gru_line.py)
+METHOD = f"conformal, refitted at each date on the trailing {TRAILING_DAYS} days of test outcomes known by then"
 
 
 def spreads(mean, log_sd, Y, k):
@@ -69,19 +71,43 @@ def one_per_date(rows, seed=0):
     return xp.asarray([held[int(rng.integers(0, len(held)))] for held in by_date.values()])
 
 
-def rolling_cut(distance, origins):
-    """Each origin's multiple, refitted on the trailing TRAILING_DAYS of outcomes known by then; NaN until a full
-    window of them is known. `distance` must hold only outcomes the weights never trained on."""
+def cut_at(distance, origins, day):
+    """The multiple used on `day`: the LEVEL quantile of the trailing TRAILING_DAYS of outcomes known by then."""
     lag, window = pd.Timedelta(days=KNOWN_AFTER_DAYS), pd.Timedelta(days=TRAILING_DAYS)
-    days = sorted(set(origins[origins >= origins.min() + lag + window]))
+    return float(xp.quantile(distance[(origins <= day - lag) & (origins > day - lag - window)], LEVEL))
+
+
+def rolling_cut(distance, origins):
+    """Each origin's multiple from cut_at; NaN until a full window of known outcomes is behind it. `distance`
+    must hold only outcomes the weights never trained on."""
+    days = sorted(set(origins[origins >= origins.min() + pd.Timedelta(days=KNOWN_AFTER_DAYS + TRAILING_DAYS)]))
     if not days:
         raise ValueError(f"origins {origins.min().date()} to {origins.max().date()} never have {TRAILING_DAYS} days "
                          f"of known outcomes behind them; score a longer test period")
     cut = xp.full(len(distance), xp.nan)
     for day in days:
-        usable = (origins <= day - lag) & (origins > day - lag - window)
-        cut[origins == day] = xp.quantile(distance[usable], LEVEL)
+        cut[origins == day] = cut_at(distance, origins, day)
     return cut
+
+
+def calibrate(test, origins, validation):
+    """(the multiple served for each day ahead, each range's coverage on the test dates with a full window behind
+    them). `test` and `validation` are (mean, log_sd, outcomes); the validation fit is only a comparison row."""
+    calibration, out = {}, []
+    for k in range(1, G.HORIZON + 1):
+        distance_v, _ = spreads(*validation, k)
+        distance_s, _ = spreads(*test, k)
+        rolling = rolling_cut(distance_s, origins)
+        full_year = ~xp.isnan(rolling)
+        fixed = float(xp.quantile(distance_v, LEVEL))
+        # the rolling policy's own refit on the first day every scored outcome is known
+        calibration[k] = round(cut_at(distance_s, origins, origins.max() + pd.Timedelta(days=KNOWN_AFTER_DAYS)), 4)
+        for name, cut in (("raw", T.Z80), ("validation-fitted", fixed), ("rolling 12 months", rolling[full_year])):
+            covered = distance_s[full_year] <= cut
+            out.append({"day": k, "range": name, "z": round(float(xp.mean(cut)), 4),
+                        "cover80": round(float(covered.mean()), 4), "cover80_lo_hi": date_range(origins[full_year], covered),
+                        "dates": origins[full_year].nunique(), "forecasts": int(full_year.sum())})
+    return calibration, out
 
 
 def main():
@@ -97,29 +123,14 @@ def main():
     mean_v, sd_v = T.predict(model, Xv)
     mean_s, sd_s = T.predict(model, Xs)
     origins = pd.to_datetime([r["date"] for r in rs])
-    lag, window = pd.Timedelta(days=KNOWN_AFTER_DAYS), pd.Timedelta(days=TRAILING_DAYS)
-    calibration, out = {}, []
-    for k in range(1, G.HORIZON + 1):
-        distance_v, _ = spreads(mean_v, sd_v, Yv, k)
-        distance_s, _ = spreads(mean_s, sd_s, Ys, k)
-        rolling = rolling_cut(distance_s, origins)
-        full_year = ~xp.isnan(rolling)
-        fixed = float(xp.quantile(distance_v, LEVEL))
-        latest = origins.max()
-        calibration[k] = round(float(xp.quantile(distance_s[origins > latest - lag - window], LEVEL)), 4)
-        for name, cut in (("raw", T.Z80), ("validation-fitted", fixed), ("rolling 12 months", rolling[full_year])):
-            covered = distance_s[full_year] <= cut
-            out.append({"day": k, "range": name, "z": round(float(xp.mean(cut)), 4),
-                        "cover80": round(float(covered.mean()), 4), "cover80_lo_hi": date_range(origins[full_year], covered),
-                        "dates": origins[full_year].nunique(), "forecasts": int(full_year.sum())})
+    calibration, out = calibrate((mean_s, sd_s, Ys), origins, (mean_v, sd_v, Yv))
     for row in out:
         if row["day"] in T.REPORT_DAYS:
             print(f"day {row['day']:2} {row['range']:18} z {row['z']:.3f}  held {row['cover80']:.1%} "
                   f"(95% range {row['cover80_lo_hi'][0]:.1%}-{row['cover80_lo_hi'][1]:.1%}) "
                   f"over {row['forecasts']} forecasts on {row['dates']} dates")
     record["interval_z80"] = {str(k): z for k, z in calibration.items()}
-    record["calibration"] = {"method": f"conformal, refitted on the trailing {TRAILING_DAYS} days of known test outcomes",
-                             "level": LEVEL, "fitted_through": str(origins.max().date()), "test": out}
+    record["calibration"] = {"method": METHOD, "level": LEVEL, "fitted_through": str(origins.max().date()), "test": out}
     G.save(WEIGHTS, model, record)
     print(f"saved the calibration into {WEIGHTS}")
     print(json.dumps(calibration))

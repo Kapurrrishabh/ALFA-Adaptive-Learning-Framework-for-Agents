@@ -3,7 +3,8 @@ concrete actions for the user's capital and holdings.
 
 What is (and isn't) evidenced — see docs/research/ and docs/DESIGN.md §28:
 - Momentum selection follows NSE's Nifty200 Momentum 30 score. The live ETF
-  tracking it beat the Nifty 500 by +1.5 to +2.5 pts/yr (Sep 2022–Sep 2026, −10 pts in 2025); our
+  tracking it beat the Nifty 500 price index, which leaves out the dividends the
+  ETF keeps (the gap is read from the track record and is uneven by year); our
   same-universe backtest edge was +2.9 pts/yr. Absolute backtest returns are
   inflated by survivorship bias and are never shown as expectations.
 - Low-volatility selection gives roughly market returns with less risk.

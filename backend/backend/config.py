@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import time
 from typing import Dict, Optional
 
 TORCH_DEVICE = os.environ.get("STOCKINTEL_TORCH_DEVICE", "cpu")    # "cuda" inside the ZeroGPU model Space
@@ -26,15 +27,16 @@ class Market:
     suffix: str            # provider ticker suffix, e.g. ".NS"
     benchmark: str         # provider symbol of the default benchmark index
     risk_free_rate: float  # annualized; PROVISIONAL, update from current T-bill/G-sec
+    closes_at: time        # local time the regular session ends, after which the day's bar is final
 
 
 MARKETS: Dict[str, Market] = {
     "NSE": Market("NSE", "National Stock Exchange of India", "INR", "Asia/Kolkata",
-                  ".NS", "^NSEI", risk_free_rate=0.068),
+                  ".NS", "^NSEI", risk_free_rate=0.068, closes_at=time(15, 30)),
     "BSE": Market("BSE", "Bombay Stock Exchange", "INR", "Asia/Kolkata",
-                  ".BO", "^BSESN", risk_free_rate=0.068),
+                  ".BO", "^BSESN", risk_free_rate=0.068, closes_at=time(15, 30)),
     "US": Market("US", "United States", "USD", "America/New_York",
-                 "", "^GSPC", risk_free_rate=0.042),
+                 "", "^GSPC", risk_free_rate=0.042, closes_at=time(16, 0)),
 }
 
 DEFAULT_MARKET = "NSE"

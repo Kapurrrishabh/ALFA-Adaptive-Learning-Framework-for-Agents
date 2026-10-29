@@ -958,6 +958,54 @@ def test_the_rolling_calibration_scores_a_date_only_once_a_full_year_of_test_out
     assert np.isnan(cut[origins < full_year]).all() and not np.isnan(cut[origins >= full_year]).any()
 
 
+def test_the_rolling_calibration_fits_each_date_on_the_year_of_outcomes_known_before_it_and_nothing_else():
+    """An outcome not yet known on a date, the date's own included, must not move its multiple; nor may one
+    older than the trailing year. One inside that year must."""
+    import pandas as pd
+    from backend.models.training.calibrate_path_gru import KNOWN_AFTER_DAYS, TRAILING_DAYS, rolling_cut
+    months = pd.date_range("2024-01-01", periods=36, freq="MS")
+    origins = pd.DatetimeIndex(np.repeat(months, 5))
+    distance = default_rng(0).uniform(0.5, 2.0, len(origins))
+    day = origins == months[24]
+    known = origins <= months[24] - pd.Timedelta(days=KNOWN_AFTER_DAYS)
+    in_year = known & (origins > months[24] - pd.Timedelta(days=KNOWN_AFTER_DAYS + TRAILING_DAYS))
+    cut = rolling_cut(distance, origins)[day][0]
+    assert rolling_cut(np.where(in_year, distance, 100.0), origins)[day][0] == cut
+    assert rolling_cut(np.where(in_year, 100.0, distance), origins)[day][0] != cut
+
+
+def _calibration_inputs(validation_scale=1.0):
+    """(test, origins, validation) for calibrate: five forecasts a month for three years, unit spreads."""
+    import pandas as pd
+    from backend.models.networks import path_gru as G
+    origins = pd.DatetimeIndex(np.repeat(pd.date_range("2024-01-01", periods=36, freq="MS"), 5))
+    zeros = np.zeros((len(origins), G.HORIZON))
+    validation = (zeros[:50], zeros[:50], validation_scale * default_rng(1).normal(0, 1, (50, G.HORIZON)))
+    return (zeros, zeros, default_rng(0).normal(0, 1, zeros.shape)), origins, validation
+
+
+def test_validation_outcomes_never_move_the_served_multiple_or_its_rolling_backtest():
+    """The served weights trained on the validation years, so their residuals are in sample."""
+    from backend.models.training.calibrate_path_gru import calibrate
+    served, rows = calibrate(*_calibration_inputs())
+    served_wide, rows_wide = calibrate(*_calibration_inputs(validation_scale=10.0))
+    out_of_sample = lambda rs: [r for r in rs if r["range"] != "validation-fitted"]
+    assert served_wide == served and out_of_sample(rows_wide) == out_of_sample(rows)
+    assert [r for r in rows_wide if r["range"] == "validation-fitted"] != [r for r in rows if r["range"] == "validation-fitted"]
+
+
+def test_the_served_multiple_is_the_rolling_policys_own_refit_once_every_outcome_is_known():
+    """The multiple served is the one the backtested policy would use, not a fit on a different window."""
+    import pandas as pd
+    from backend.models.networks import path_gru as G
+    from backend.models.training.calibrate_path_gru import KNOWN_AFTER_DAYS, calibrate, rolling_cut, spreads
+    test, origins, validation = _calibration_inputs()
+    served, _ = calibrate(test, origins, validation)
+    distance, _ = spreads(*test, G.HORIZON)
+    later = origins.append(pd.DatetimeIndex([origins.max() + pd.Timedelta(days=KNOWN_AFTER_DAYS)]))
+    assert served[G.HORIZON] == pytest.approx(rolling_cut(np.append(distance, 0.0), later)[-1], abs=1e-4)
+
+
 def test_the_rolling_calibration_refuses_a_test_period_shorter_than_its_window():
     import pandas as pd
     from backend.models.training.calibrate_path_gru import rolling_cut
@@ -966,13 +1014,28 @@ def test_the_rolling_calibration_refuses_a_test_period_shorter_than_its_window()
         rolling_cut(np.ones(len(origins)), origins)
 
 
+def _gru_calibrated(monkeypatch, method, z):
+    """Serve the saved GRU weights with a calibration made by `method` that fitted the multiple `z`."""
+    from backend.models.serving import gru_line as gl
+    model, record = gl.G.load(gl.WEIGHTS)
+    calibrated = {**record, "calibration": {"method": method}, "interval_z80": {str(gl.G.HORIZON): z}}
+    monkeypatch.setattr(gl, "_LOADED", (gl.WEIGHTS.stat().st_mtime_ns, (model, calibrated)))
+    closes = 100.0 * np.exp(np.cumsum(default_rng(0).normal(0, 0.01, 600)))
+    return lambda: gl.line(closes, closes * 1.01, closes * 0.99, closes)
+
+
 def test_a_calibrated_gru_spreads_its_paths_by_the_calibrated_multiple(monkeypatch):
     """A multiple under the normal 1.2816 narrows the simulated paths, so the low and high paths sit closer."""
     from backend.models.serving import gru_line as gl
-    closes = 100.0 * np.exp(np.cumsum(default_rng(0).normal(0, 0.01, 600)))
-    model, record = gl.G.load(gl.WEIGHTS)
-    wide = gl.line(closes, closes * 1.01, closes * 0.99, closes)
-    monkeypatch.setattr(gl, "_LOADED", (gl.WEIGHTS.stat().st_mtime_ns, (model, {**record, "interval_z80": {str(gl.G.HORIZON): 0.6408}})))
-    narrow = gl.line(closes, closes * 1.01, closes * 0.99, closes)
+    wide = _gru_calibrated(monkeypatch, gl.METHOD, gl.NORMAL_Z80)()
+    narrow = _gru_calibrated(monkeypatch, gl.METHOD, 0.6408)()
     spread = lambda out: out["paths"][2]["close"][-1] - out["paths"][0]["close"][-1]
     assert spread(narrow) < 0.75 * spread(wide)
+
+
+def test_the_gru_is_not_served_with_a_range_calibrated_the_old_way(monkeypatch):
+    """Records saved before the range was refitted only on test outcomes quote a partly in-sample coverage."""
+    from backend.database.sources.provider import DataUnavailable
+    line = _gru_calibrated(monkeypatch, "conformal, refitted on the trailing 365 days of known outcomes", 1.1764)
+    with pytest.raises(DataUnavailable, match="rerun python -m backend.models.training.calibrate_path_gru"):
+        line()

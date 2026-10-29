@@ -524,7 +524,7 @@ Only the edge over the same-universe equal-weight portfolio is comparable to rea
 | Strategy | Backtest CAGR | vs same-universe EW | Max DD | Real-world check |
 |---|---|---|---|---|
 | Equal-weight universe | 15.1% | — | −43.7% | real Nifty 500: 10.7% |
-| Momentum 20, semi-annual, buffer 40 | 25.1% | **+10.0** (full); **+2.9** over the ETF's life | −35.3% | **live Momentum 30 ETF beat Nifty 500 by +1.5 pts/yr from 1 Sep 2022 (+2.5 from 22 Aug; its listing-day price is an artefact). By year: +14.7, +6.8, −10.1, +3.0 (2023–26)** |
+| Momentum 20, semi-annual, buffer 40 | 25.1% | **+10.0** (full); **+2.9** over the ETF's life | −35.3% | **live Momentum 30 ETF beat the Nifty 500 price index (no dividends; the ETF keeps its own) by +1.5 pts/yr from 1 Sep 2022 (+2.5 from 22 Aug; its listing-day price is an artefact). By year: +14.7, +6.8, −10.1, +3.0 (2023–26)** |
 | Momentum, monthly | 23.9% | +8.8 | −35.7% | 2.4× the turnover, 61% of gains short-term |
 | Low vol 20, quarterly | 11.3% | −3.9 | −28.9% | live Low Vol ETF: 11.6% vs Nifty 50 9.5% (2018–26) |
 | Momentum + trend/vol overlay | 16.4% | +1.3 | **−21.6%** | lower drawdown, lower return |

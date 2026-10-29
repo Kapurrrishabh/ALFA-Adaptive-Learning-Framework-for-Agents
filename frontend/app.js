@@ -217,7 +217,7 @@ function candleChart(container, t, layers, selected, onPick) {
   let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.05; lo -= pad; hi += pad;
   const dateIdx = new Map(t.dates.map((d, i) => [d, i])); t.cone.forEach((c, k) => dateIdx.set(c.date, n + k));
   const X = (i) => m.l + step * (i + 0.5), Y = (v) => m.t + ph - ((v - lo) / (hi - lo)) * ph;
-  const XD = (d) => X(dateIdx.has(d) ? dateIdx.get(d) : d < t.dates[0] ? 0 : n - 1);   // clamp dates outside the window
+  const DI = (d) => dateIdx.has(d) ? dateIdx.get(d) : d < t.dates[0] ? 0 : n - 1, XD = (d) => X(DI(d));   // clamp dates outside the window
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Candlestick chart of ${t.symbol} with detected patterns` });
   const txt = (x, y, str, attrs = {}) => { const e = s("text", { x, y, "font-size": 11, fill: css("--muted"), ...attrs }); e.textContent = str; svg.append(e); return e; };
   for (let k = 1; k <= 3; k++) { const v = lo + (hi - lo) * k / 4; svg.append(s("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: css("--line"), "stroke-dasharray": "2 4" })); txt(W - m.r + 6, Y(v) + 4, num(v, v > 1000 ? 0 : 2)); }
@@ -263,7 +263,8 @@ function candleChart(container, t, layers, selected, onPick) {
     svg.append(s("rect", { x: X(i) - bw / 2, y: top, width: bw, height: hgt, fill: col, stroke: col, "stroke-width": 1 }));
   }
   for (const [fan, ai, name, side] of fans) {
-    const xs = fan.dates.map((d, k) => X(n + k)), start = `${X(n - 1)},${Y(t.close[n - 1])}`;
+    // forecasts start from the last closed bar, so in market hours their first day sits on today's moving candle
+    const o = DI(fan.as_of), xs = fan.dates.map((d, k) => X(o + 1 + k)), start = `${X(o)},${Y(t.close[o])}`;
     const band = (a, b) => `M${start} L${xs.map((x, k) => `${x},${Y(fan[a][k])}`).join(" L")} L${xs.map((x, k) => `${x},${Y(fan[b][k])}`).reverse().join(" L")} Z`;
     svg.append(s("path", { d: band("q90", "q10"), fill: ai, "fill-opacity": 0.1 }), s("path", { d: band("q75", "q25"), fill: ai, "fill-opacity": 0.18 }));
     svg.append(s("path", { d: `M${start} L${xs.map((x, k) => `${x},${Y(fan.q50[k])}`).join(" L")}`, fill: "none", stroke: ai, "stroke-width": 2, "stroke-dasharray": "5 4", filter: glow(svg, W, H, 2.5) }));
@@ -274,12 +275,12 @@ function candleChart(container, t, layers, selected, onPick) {
     txt(xs[last], side > 0 ? Y(fan.q10[last]) + 14 : Y(fan.q90[last]) - 8, `${name} median ${inr(fan.q50[last], 0)}`, { fill: ai, "text-anchor": "middle", "font-weight": 700 });
   }
   if (gru) {
-    const col = css("--series-1"), pts = [`${X(n - 1)},${Y(t.close[n - 1])}`, ...gru.close.map((v, k) => `${X(n + k)},${Y(v)}`)];
+    const o = DI(gru.as_of), col = css("--series-1"), pts = [`${X(o)},${Y(t.close[o])}`, ...gru.close.map((v, k) => `${X(o + 1 + k)},${Y(v)}`)];
     const path = s("path", { d: `M${pts.join(" L")}`, fill: "none", stroke: col, "stroke-width": 2, "stroke-dasharray": "7 5", opacity: 0.85, cursor: "help" });
     path.addEventListener("mousemove", (ev) => showTip(ev, [h("b", {}, "Our GRU forecast"), `ends at ${inr(gru.close[gru.close.length - 1])} on ${gru.dates[gru.dates.length - 1]}`]));
     path.addEventListener("mouseleave", () => hideTip());
     for (const p of gru.paths || []) {
-      const d = `M${[pts[0], ...p.close.map((v, k) => `${X(n + k)},${Y(v)}`)].join(" L")}`;
+      const d = `M${[pts[0], ...p.close.map((v, k) => `${X(o + 1 + k)},${Y(v)}`)].join(" L")}`;
       svg.append(s("path", { d, fill: "none", stroke: GRU_PATH_COLORS[p.name](), "stroke-width": 1.4, opacity: 0.8, "pointer-events": "none" }));
       // a wide transparent twin takes the hover, so a thin line is still easy to point at
       const hit = s("path", { d, fill: "none", stroke: "transparent", "stroke-width": 10, cursor: "help" });
@@ -289,7 +290,7 @@ function candleChart(container, t, layers, selected, onPick) {
     }
     svg.append(path);
   }
-  if (ghost) ghost.dates.forEach((d, k) => { const x = X(n + k), up = ghost.close[k] >= ghost.open[k], col = up ? css("--up") : css("--down");
+  if (ghost) ghost.dates.forEach((d, k) => { const x = X(DI(ghost.as_of) + 1 + k), up = ghost.close[k] >= ghost.open[k], col = up ? css("--up") : css("--down");
     svg.append(s("line", { x1: x, x2: x, y1: Y(ghost.high[k]), y2: Y(ghost.low[k]), stroke: col, opacity: 0.6 }));
     svg.append(s("rect", { x: x - bw / 2, y: Y(Math.max(ghost.open[k], ghost.close[k])), width: bw, height: Math.max(1, Math.abs(Y(ghost.open[k]) - Y(ghost.close[k]))), fill: "none", stroke: col, "stroke-dasharray": "2 2", opacity: 0.8 })); });
   // volume
@@ -679,12 +680,12 @@ async function pagePerformance(view) {
     h("p", { class: "sub" }, `Growth of ₹1 since ${new Date(mom.dates[0]).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}. Backtest lines are inflated by survivorship bias (they use today's Nifty 500 list), so compare momentum with the equal-weight line, not with the index.`));
   const plot1 = h("div", { class: "chart" });
   const names = Object.keys(mom.curves); const cols = [css("--series-1"), css("--series-3"), css("--series-2"), css("--series-4")];
-  const series = names.map((n, k) => ({ name: n, short: ["Momentum", "Mom + overlay", "Equal wt", "Nifty 500"][k], values: mom.curves[n], color: cols[k], dashed: n.includes("real") }));
+  const series = names.map((n, k) => ({ name: n, short: ["Momentum", "Mom + overlay", "Equal wt", "Nifty 500 (price)"][k], values: mom.curves[n], color: cols[k], dashed: n.includes("real") }));
   curveCard.append(legend(series.map((x) => [x.name, x.color, x.dashed])), plot1);
   const liveBars = h("div"), yearBars = h("div");
   const liveCard = h("div", { class: "card" }, h("h3", {}, "Reality check: the live momentum ETF"), h("p", { class: "sub" }, `Real fund tracking the same NSE formula, ${live.window}. Real money, no survivorship bias.`), liveBars,
     h("h3", { style: "margin-top:14px" }, "Year by year"), yearBars,
-    h("div", { class: "verdict-line" }, `Edge: ${pct(live.bars[0].cagr - live.bars[1].cagr, 1)} a year over the Nifty 500 — real but uneven. It lost to the market in ${live.yearly.filter((y) => y.etf < y.nifty500).map((y) => y.year).join(", ") || "no year"}.`));
+    h("div", { class: "verdict-line" }, `Edge: ${pct(live.bars[0].cagr - live.bars[1].cagr, 1)} a year over the Nifty 500 price index, unevenly. ${live.benchmark_note} It lost even to the price index in ${live.yearly.filter((y) => y.etf < y.nifty500).map((y) => y.year).join(", ") || "no year"}.`));
   view.append(h("div", { class: "grid cols-2", style: "margin-top:18px" }, curveCard, liveCard));
   // 2. forecasts
   const acc = h("div"), cal = h("div"), fh = d.forecast.horizons, beats = fh.filter((x) => x.accuracy > x.always_up_accuracy);
@@ -725,7 +726,7 @@ async function pagePerformance(view) {
   const drawAll = () => {
     lineChart(plot1, mom.dates, series, { fmt: (v) => "₹" + num(v, 2), logScale: true });
     barChart(liveBars, live.bars.map((b, k) => ({ label: b.label, value: b.cagr, color: css(["--series-1", "--series-4", "--series-1", "--series-2"][k]), faded: !b.real })), { fmt: (v) => pct(v, 1) + "/yr" });
-    barChart(yearBars, live.yearly.flatMap((y) => [{ label: `${y.year} momentum ETF`, value: y.etf, color: css("--series-1") }, { label: `${y.year} Nifty 500`, value: y.nifty500, color: css("--series-4") }]));
+    barChart(yearBars, live.yearly.flatMap((y) => [{ label: `${y.year} momentum ETF`, value: y.etf, color: css("--series-1") }, { label: `${y.year} Nifty 500 price index`, value: y.nifty500, color: css("--series-4") }]));
     barChart(acc, d.forecast.horizons.map((x) => ({ label: `${x.horizon}-day accuracy`, value: x.accuracy * 100, color: css("--series-1") })), { fmt: (v) => num(v, 1) + "%", ref: Math.max(...d.forecast.horizons.map((x) => x.always_up_accuracy)) * 100, refLabel: "always-up guess" });
     calibrationPlot(cal, d.forecast.calibration);
     barChart(cov, bands.map((b) => ({ label: `${b.horizon}-day, median of ${b.n} stocks`, value: b.mid, color: css("--series-3") })), { fmt: (v) => num(v, 0) + "%", ref: 80, refLabel: "target 80%" });
@@ -1147,11 +1148,11 @@ async function pageHome(view) {
   const live = d.momentum.live_check, band = bandRecords(d.forecast.coverage)[0];
   const edge = d.patterns.filter((r) => Math.abs(r.z || 0) >= d.bonferroni_z).length, ch5 = d.open_models && d.open_models.chronos.horizons.find((x) => x.horizon === 5);
   const gap = live.bars[0].cagr - live.bars[1].cagr, gapText = `${gap > 0 ? "+" : ""}${num(gap, 1)} pts/yr`;
-  floatA.replaceChildren(h("b", { class: cls(gap) }, gapText), "momentum fund vs Nifty 500"); floatB.replaceChildren(h("b", {}, `${num(band.mid, 0)}%`), `of outcomes inside the ${band.horizon}-day 80% range`);
+  floatA.replaceChildren(h("b", { class: cls(gap) }, gapText), "momentum fund vs Nifty 500 price index"); floatB.replaceChildren(h("b", {}, `${num(band.mid, 0)}%`), `of outcomes inside the ${band.horizon}-day 80% range`);
   floatA.hidden = floatB.hidden = false;
   const tile = (visual, k, sub) => h("div", { class: "card ring-tile" }, visual, h("div", {}, h("div", { class: "k" }, k), h("div", { class: "muted", style: "font-size:12px" }, sub)));
   stats.replaceChildren(h("h2", { class: "section-title" }, "Measured, not promised"), h("div", { class: "grid cols-4" },
-    tile(h("div", { class: `big-num ${cls(gap)}` }, gapText), "Momentum fund vs Nifty 500", `live ETF, ${live.window}`),
+    tile(h("div", { class: `big-num ${cls(gap)}` }, gapText), "Momentum fund vs Nifty 500 price index", `live ETF, ${live.window}. ${live.benchmark_note}`),
     tile(ring(band.mid / 100, `${num(band.mid, 0)}%`, css("--up")), "Outcomes inside the 80% range", `${band.horizon}-day band, out of sample — the target is 80%`),
     tile(ring(edge / d.patterns.length, `${edge}/${d.patterns.length}`, css("--down")), "Patterns with a proven edge", "so patterns are shown, never traded"),
     ch5 ? tile(ring(ch5.chronos_direction_acc, `${num(ch5.chronos_direction_acc * 100, 0)}%`, css("--ai")), `AI (Chronos) ${ch5.horizon}-day direction`, `vs ${num(ch5.base_rate_acc * 100, 1)}% for the base rate, over ${num(ch5.n, 0)} forecasts`)

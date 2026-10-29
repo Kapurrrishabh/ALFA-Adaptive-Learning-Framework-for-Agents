@@ -227,6 +227,7 @@ def load() -> Dict[str, Any]:
     if not PATH.exists():
         raise FileNotFoundError("performance results not built yet; run `stockintel build-performance`")
     out = json.loads(PATH.read_text())
+    out["momentum"]["live_check"]["benchmark_note"] = NO_DIVIDENDS_NOTE
     if MODELS_PATH.exists():
         out["open_models"] = json.loads(MODELS_PATH.read_text())
         out["open_models"]["verdicts"] = model_verdicts(out["open_models"])

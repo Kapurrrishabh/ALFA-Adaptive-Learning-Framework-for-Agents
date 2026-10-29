@@ -151,14 +151,15 @@ class Hub:
                 "close": [round(float(x), 2) for x in df["close"]],
                 "volume": [float(x) for x in df["volume"]]}
 
-    def technical(self, symbol: str, bars: int = 180, horizon: int = FORECAST_DAYS) -> Dict[str, Any]:
-        """Everything the candlestick chart draws. Every overlay carries its tested
-        track record so a clean-looking shape is never shown as a proven signal."""
+    def technical(self, symbol: str, bars: int = 180, horizon: int = FORECAST_DAYS, closed: bool = False) -> Dict[str, Any]:
+        """Everything the candlestick chart draws, up to the moving bar or, with `closed`, the last closed one.
+        Every overlay carries its tested track record so a clean-looking shape is never shown as a proven signal."""
         from backend.advisory.statistics import candlesticks, indicators as ind, patterns, technical
         from backend.advisory.statistics.forecast import ewma_sigma
         from backend.advisory.statistics.validation import event_study, with_prior
         from backend.advisory.statistics.stats import norm_ppf
-        df = self.orch.service().history(symbol)
+        svc = self.orch.service()
+        df = svc.closed_history(symbol) if closed else svc.history(symbol)
         if len(df) < 120:
             raise DataUnavailable(f"only {len(df)} bars for {symbol}; need 120 for chart overlays")
         bars = max(20, min(bars, len(df)))
@@ -449,8 +450,8 @@ class Hub:
         if model in ("chronos", "kronos") and not self.ml_enabled():
             raise DataUnavailable("open-source models are disabled on this server "
                                   "(STOCKINTEL_ML=0, or neither torch nor STOCKINTEL_MODEL_SPACE)")
-        df = self.orch.service().history(symbol)
-        # during market hours the last bar is today's moving price, and every forecast starts from it
+        df = self.orch.service().closed_history(symbol)
+        # the close is in the key because, just after the session ends, the cached bar can still hold a mid-day price
         key = (symbol.upper(), model, str(df.index[-1].date()), round(float(df["close"].iloc[-1]), 2))
         cache = self.__dict__.setdefault("_ai_cache", {})
         if key not in cache:
@@ -461,8 +462,11 @@ class Hub:
                     cache[key] = {"dates": future(FORECAST_DAYS),
                                   **(remote_models.fan if remote_models.on_space("chronos") else tsfm.fan)(df["close"], FORECAST_DAYS)}
                 elif model == "gru":
-                    # aligned as in training: every stock bar kept, so the line starts from the close the chart ends on
+                    # aligned as in training: every stock bar kept, so the line starts from the last closed bar
                     bars = df[["close", "high", "low"]].assign(market=self.bench().reindex(df.index).ffill()).dropna()
+                    if bars.index[-1] != df.index[-1]:
+                        raise DataUnavailable(f"{symbol}'s {df.index[-1].date()} bar has no high, low or Nifty close, so "
+                                              f"the GRU line would start from {bars.index[-1].date()}; retry once it is filled")
                     cache[key] = {"dates": future(FORECAST_DAYS), **gru_line.line(bars.close.to_numpy(), bars.high.to_numpy(),
                                                                                 bars.low.to_numpy(), bars.market.to_numpy())}
                 elif model == "alfa":
@@ -539,7 +543,7 @@ class Hub:
         from backend.advisory import analyst
         from backend.models.external.llm import LLMUnavailable
         sym = symbol.upper()
-        t = self.technical(sym, bars=21)
+        t = self.technical(sym, bars=21, closed=True)
         v = self.verdict(sym)
         f = analyst.facts(sym, t["close"][-1], t["as_of"], self.ai_forecast(sym, "alfa"), self.ai_forecast(sym, "gru"),
                           t["cone"][-1], {"stop": t["stop"], "rank": v["momentum_rank"], "universe": v["universe_size"],

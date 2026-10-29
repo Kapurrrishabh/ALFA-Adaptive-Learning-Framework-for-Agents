@@ -436,8 +436,8 @@ def cmd_evaluate_signals(args) -> int:
         s = s.loc[a:b].dropna()
         return ((s.iloc[-1] / s.iloc[0]) ** (365.25 / (s.index[-1] - s.index[0]).days) - 1) * 100
     print(f"\nSurvivorship check over the live ETF's life ({a.date()} → {b.date()}):")
-    print(f"  real momentum ETF {cagr(etf):.1f}% vs Nifty 500 {cagr(bm['Nifty 500 (price)']):.1f}% "
-          f"→ real edge {cagr(etf) - cagr(bm['Nifty 500 (price)']):+.1f} pts/yr")
+    print(f"  real momentum ETF {cagr(etf):.1f}% vs Nifty 500 price index {cagr(bm['Nifty 500 (price)']):.1f}% "
+          f"→ gap {cagr(etf) - cagr(bm['Nifty 500 (price)']):+.1f} pts/yr. {performance.NO_DIVIDENDS_NOTE}")
     print(f"  backtest momentum {cagr(res['momentum_semiannual'].equity):.1f}% vs backtest equal-weight "
           f"{cagr(res['equal_weight_universe'].equity):.1f}% → backtest edge "
           f"{cagr(res['momentum_semiannual'].equity) - cagr(res['equal_weight_universe'].equity):+.1f} pts/yr")

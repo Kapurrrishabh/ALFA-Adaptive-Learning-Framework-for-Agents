@@ -7,6 +7,7 @@ from backend.database.sources.provider import DataUnavailable
 from backend.models.core.backend import xp
 from backend.models.data import returns
 from backend.models.networks import path_gru as G
+from backend.models.training.calibrate_path_gru import METHOD
 from backend.paths import ARTIFACTS
 
 WEIGHTS = ARTIFACTS / "path_gru.npz"
@@ -49,9 +50,11 @@ def line(closes, highs, lows, market):
     mean, log_sd = (t.data[0] for t in model(window[None].astype("float32")))
     # Trained on likelihood, its 80% range was too wide; scaled by the multiple the calibration fitted on outcomes the
     # weights never trained on (models/training/calibrate_path_gru.py), "1 in 10 ends lower" is true of the low path.
-    z = record.get("interval_z80", {}).get(str(G.HORIZON))
-    if z is None:
-        raise DataUnavailable(f"{WEIGHTS} has no calibration; run python -m backend.models.training.calibrate_path_gru")
+    method = record.get("calibration", {}).get("method")
+    if method != METHOD:
+        raise DataUnavailable(f"{WEIGHTS} carries the calibration {method!r}, not {METHOD!r}; rerun "
+                              "python -m backend.models.training.calibrate_path_gru")
+    z = record["interval_z80"][str(G.HORIZON)]
     paths = G.sample_paths(c[-1], mean, log_sd + xp.log(z / NORMAL_Z80), scale, SIMULATED)
     return {"close": [round(float(v), 2) for v in G.median_prices(c[-1], mean, scale)],
             "paths": labelled_paths(paths), "record": record}

@@ -68,6 +68,8 @@ def facts(symbol: str, close: float, as_of: str, alfa: Dict[str, Any], gru: Dict
         "_required": [f"₹{lo:,}", f"₹{hi:,}", verdict["verdict"], str(days)]
                      + ([("within noise", "within the noise")] if direction == 0 else [])
                      + ([("worse", "less often")] if direction < 0 else [])
+                     + ([("did not beat", "didn't beat")] if gt["nll_gain_lo"] <= 0 else [])
+                     + ([("GARCH",), ("not beaten", "hasn't beaten")] if not generative else [])
                      + ([("about the same", "similar", "roughly the same")] if error_words == "about the same as" else []),
     }
 

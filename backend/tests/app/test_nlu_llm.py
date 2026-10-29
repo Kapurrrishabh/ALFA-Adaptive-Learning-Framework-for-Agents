@@ -190,12 +190,12 @@ def test_should_buy_questions_get_the_verdict_intent(text):
     assert classify(text, KNOWN, False, []).name == "should_buy"
 
 
-def _analyst_facts(rank=161, edge=(-0.008, 0.02), gru_mae=6.479, drawer="generative"):
+def _analyst_facts(rank=161, edge=(-0.008, 0.02), gru_mae=6.479, drawer="generative", nll_gain_lo=0.019):
     from backend.advisory import analyst
     from backend.config import FORECAST_DAYS as days
     alfa = {"q10": [663.0] * days, "q50": [714.0] * days, "q90": [766.0] * days, "record": {"vs_garch": -0.0323},
             "drawer": {"name": drawer}}
-    gru = {"close": [712.0] * days, "record": {"test": {"nll_gain_lo": 0.019, "nll_gain_hi": 0.058, "days": [
+    gru = {"close": [712.0] * days, "record": {"test": {"nll_gain_lo": nll_gain_lo, "nll_gain_hi": 0.058, "days": [
                                                          {"day": days, "mae_pct": gru_mae, "no_change_mae_pct": 6.54,
                                                                     "direction_acc": 0.539, "base_rate_acc": 0.533,
                                                                     "direction_edge_lo": edge[0], "direction_edge_hi": edge[1]}]}}}
@@ -224,6 +224,18 @@ def test_analyst_note_credits_garch_when_garch_drew_the_fan():
     assert note.startswith(f"Over the next {f['days_ahead']} trading days the standard GARCH model puts HDFCBANK at")
     assert "beat the standard GARCH" not in note and "our return model has not beaten it" in note
     assert analyst.check(note, f) == []
+    credits_ours = (f"Over the next {f['days_ahead']} trading days our return model puts HDFCBANK at ₹663 to ₹766, middle "
+                    "₹714. The GRU's error was about the same as assuming no change, and its direction was within noise. "
+                    "Verdict: DON'T BUY, stop-loss ₹638.")
+    assert any("leaves out GARCH" in r for r in analyst.check(credits_ours, f))
+
+
+def test_analyst_check_refuses_a_rewrite_that_says_the_gru_beat_the_band_when_it_did_not():
+    from backend.advisory import analyst
+    f = _analyst_facts(nll_gain_lo=-0.01)
+    note = analyst.computed_note(f)
+    assert analyst.check(note, f) == []
+    assert any("leaves out did not beat" in r for r in analyst.check(note.replace("did not beat", "beat"), f))
 
 
 def test_analyst_check_passes_the_computed_note_and_refuses_bad_drafts():

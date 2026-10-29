@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -115,6 +116,13 @@ class AnalysisService:
     def history(self, symbol: str) -> pd.DataFrame:
         sym = resolve_symbol(symbol, self.market.code)
         return self._cached(("ohlcv", sym), lambda: self.provider.ohlcv(sym, self.history_period))
+
+    def closed_history(self, symbol: str) -> pd.DataFrame:
+        """history() without a bar whose session is still open: that bar is the moving price, which no forecast
+        model trained on, and forecasting from it reran every model on each price refresh."""
+        df = self.history(symbol)
+        now = self.now().astimezone(ZoneInfo(self.market.timezone))
+        return df.iloc[:-1] if df.index[-1].date() == now.date() and now.time() < self.market.closes_at else df
 
     def benchmark(self) -> Optional[pd.DataFrame]:
         try:
