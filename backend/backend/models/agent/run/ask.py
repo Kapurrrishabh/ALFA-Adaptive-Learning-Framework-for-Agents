@@ -105,12 +105,14 @@ def listed_names():
 
 
 def ranker_from(chunks):
-    """Search by meaning over the passage vectors, reordered by a cross-encoder (models/external/sentence.py)."""
+    """Search by meaning over the passage vectors. A cross-encoder reorder put the endorsed answer first 21.4% of the
+    time against 22.6% without it (models/external/rerank_eval.py), at about a second per question."""
     from backend.models.core.backend import xp
     from backend.models.external import sentence
     from backend.models.external.embed_index import vectors_for
     vectors = xp.asarray(vectors_for(chunks), dtype=xp.float32)
-    return sentence.reranked(Hybrid(chunks, pretokenize, vectors, sentence.embed_query, centre=False))
+    index = Hybrid(chunks, pretokenize, vectors, sentence.embed_query, centre=False)
+    return lambda query, top_k, as_of=None: index.search(query, top_k, as_of, arm="vector")
 
 
 def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=False, writer=None, dense=False):
@@ -235,8 +237,8 @@ def main():
                         help="reword each answer with the language model (the model Space's when one is set); "
                              "its words are served only when they pass the figure and claim checks")
     parser.add_argument("--dense", action="store_true",
-                        help="find reference passages by meaning and rerank them with a cross-encoder; the "
-                             "endorsed answer came first 20.6%% of the time against 12.3%% for BM25")
+                        help="find reference passages by meaning; the endorsed answer came first 22.6%% of the "
+                             "time against 12.3%% for BM25")
     parser.add_argument("--as-of", default=None, help="the last date a snapshot may read")
     parser.add_argument("--wanted", type=float, default=0.6, help="the stated chance of being right")
     parser.add_argument("--warmup", type=int, default=10,

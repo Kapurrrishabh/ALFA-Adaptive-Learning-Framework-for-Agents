@@ -80,7 +80,7 @@ def main():
     parser.add_argument("--phrase", action="store_true",
                         help="reword each answer with the language model (the model Space's when one is set)")
     parser.add_argument("--dense", action="store_true",
-                        help="find reference passages by meaning and rerank them with a cross-encoder")
+                        help="find reference passages by meaning rather than by shared words")
     parser.add_argument("--store", default=str(ARTIFACTS / "served.sqlite"),
                         help="accounts, conversations and the feedback this deployment learns from")
     parser.add_argument("--verdicts", default=str(ARTIFACTS / "served_verdicts.jsonl"))
