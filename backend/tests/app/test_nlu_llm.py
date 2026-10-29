@@ -190,10 +190,11 @@ def test_should_buy_questions_get_the_verdict_intent(text):
     assert classify(text, KNOWN, False, []).name == "should_buy"
 
 
-def _analyst_facts(rank=161, edge=(-0.008, 0.02), gru_mae=6.479):
+def _analyst_facts(rank=161, edge=(-0.008, 0.02), gru_mae=6.479, drawer="generative"):
     from backend.advisory import analyst
     from backend.config import FORECAST_DAYS as days
-    alfa = {"q10": [663.0] * days, "q50": [714.0] * days, "q90": [766.0] * days, "record": {"vs_garch": -0.0323}}
+    alfa = {"q10": [663.0] * days, "q50": [714.0] * days, "q90": [766.0] * days, "record": {"vs_garch": -0.0323},
+            "drawer": {"name": drawer}}
     gru = {"close": [712.0] * days, "record": {"test": {"nll_gain_lo": 0.019, "nll_gain_hi": 0.058, "days": [
                                                          {"day": days, "mae_pct": gru_mae, "no_change_mae_pct": 6.54,
                                                                     "direction_acc": 0.539, "base_rate_acc": 0.533,
@@ -208,6 +209,21 @@ def test_analyst_facts_carry_our_judgements_not_the_writers():
     assert "bottom fifth" in f["momentum"]
     assert "lower than" in _analyst_facts(gru_mae=6.0)["gru_error"]          # 8% below no-change is not "the same"
     assert "real but small edge" in _analyst_facts(edge=(0.01, 0.05))["gru_direction"]
+
+
+def test_analyst_facts_call_a_direction_reliably_below_the_base_rate_worse_and_require_it():
+    f = _analyst_facts(edge=(-0.07, -0.01))
+    assert "worse than the base rate" in f["gru_direction"] and "edge" not in f["gru_direction"]
+    assert ("worse", "less often") in f["_required"]
+
+
+def test_analyst_note_credits_garch_when_garch_drew_the_fan():
+    from backend.advisory import analyst
+    f = _analyst_facts(drawer="garch")
+    note = analyst.computed_note(f)
+    assert note.startswith(f"Over the next {f['days_ahead']} trading days the standard GARCH model puts HDFCBANK at")
+    assert "beat the standard GARCH" not in note and "our return model has not beaten it" in note
+    assert analyst.check(note, f) == []
 
 
 def test_analyst_check_passes_the_computed_note_and_refuses_bad_drafts():

@@ -274,6 +274,53 @@ def test_ui_verdict_explains_both_sides(app_client):
     assert v["evidence_note"].startswith("The buy/sell rule is NSE's momentum method.")
 
 
+def test_verdict_bands_say_which_portfolio_size_they_assume(app_client):
+    """plan() sizes the portfolio from the capital, so a ₹2 lakh plan keeps only the top 20; bands set for 20 stocks
+    gave the opposite advice on the same holding without saying why."""
+    from backend.advisory.signals.advisor import N_DEFAULT
+    v = app_client.get("/ui/stock/TEST/verdict", headers={"X-API-Key": KEY}).json()
+    assert (v["buy_rank"], v["keep_rank"]) == (N_DEFAULT, 2 * N_DEFAULT)
+    assert f"These bands are for a {N_DEFAULT}-stock portfolio" in v["headline"]
+
+
+def test_a_half_size_verdict_sizes_the_position_at_half(app_client, monkeypatch):
+    import backend.api.hub as hubmod
+    from backend.advisory.signals.advisor import CRASH_EXPOSURE, N_DEFAULT
+    state = hubmod.market_state
+    monkeypatch.setattr(hubmod, "market_state", lambda bench, asof: {**state(bench, asof), "momentum_crash_risk": True})
+    v = app_client.get("/ui/stock/TEST/verdict", headers={"X-API-Key": KEY}).json()
+    assert v["verdict"] == "BUY — HALF SIZE"
+    assert f"(≈{100 * CRASH_EXPOSURE / N_DEFAULT:.1f}% with {N_DEFAULT} stocks)" in v["plan"]["position_size"]
+
+
+def test_verdict_promoter_totals_count_every_filing_in_the_window(app_client, monkeypatch):
+    """The display list keeps the 20 newest filings; a promoter buy behind 25 newer director sales still counts."""
+    from backend.database.sources import insider
+    today = pd.Timestamp.today().normalize()
+    sales = [{"broadcast": today - pd.Timedelta(days=1 + i % 20), "symbol": "TEST", "category": "Director",
+              "direction": -1, "value": 1e6, "shares": 100, "pid": i} for i in range(25)]
+    buy = {"broadcast": today - pd.Timedelta(days=60), "symbol": "TEST", "category": "Promoters",
+           "direction": 1, "value": 5e7, "shares": 10_000, "pid": 99}
+    monkeypatch.setattr(insider, "load", lambda: pd.DataFrame(sales + [buy]))
+    v = app_client.get("/ui/stock/TEST/verdict", headers={"X-API-Key": KEY}).json()
+    assert "Promoters bought ₹5.00 cr in the last 90 days (weak signal on its own)." in v["why_buy"]
+
+
+@pytest.mark.parametrize("trend, listed_against", [("deteriorating", True), ("stable/mixed", False)])
+def test_neutral_fundamentals_are_not_a_reason_to_buy(app_client, orch, monkeypatch, trend, listed_against):
+    from backend.advisory.fusion.evidence import DomainResult
+    analysis = orch.analysis
+
+    def neutral(s, sym):
+        a = analysis(s, sym)
+        a.results["fundamental"] = DomainResult("fundamental", "mixed", -0.05, details={"trend": trend})
+        return a
+    monkeypatch.setattr(orch, "analysis", neutral)
+    v = app_client.get("/ui/stock/TEST/verdict", headers={"X-API-Key": KEY}).json()
+    line = f"Fundamentals look mixed (trend: {trend})."
+    assert line not in v["why_buy"] and (line in v["why_not"]) == listed_against
+
+
 def test_portfolio_single_transaction_add_and_delete(app_client, orch):
     h = {"X-API-Key": KEY}
     tx = {"symbol": "TEST", "side": "BUY", "quantity": 3, "price": 100, "trade_date": "2025-01-02"}
@@ -413,6 +460,15 @@ def test_evidence_note_reads_every_figure_off_the_track_record(tmp_path, monkeyp
     assert "not built yet" in perf.evidence_note(None)
     assert perf.momentum_evidence(perf.track_record())[1] == (
         "Backtest on today's index list (survivorship-inflated): worst fall -35%, -21% with the trend + volatility overlay.")
+
+
+def test_the_live_edge_says_its_benchmark_leaves_out_dividends(tmp_path, monkeypatch):
+    """The ETF's NAV keeps its dividends and ^CRSLDX is a price index, so the gap overstates a like-for-like edge."""
+    import backend.advisory.calculators.performance as perf
+    monkeypatch.setattr(perf, "PATH", _record(tmp_path))
+    rec = perf.track_record()
+    for claim in (perf.evidence_note(rec), perf.momentum_evidence(rec)[0]):
+        assert "beat the Nifty 500 price index by +1.9" in claim and perf.NO_DIVIDENDS_NOTE in claim
 
 
 def test_technical_range_claim_and_stop_come_from_data(app_client, tmp_path, monkeypatch):
@@ -667,13 +723,27 @@ def test_the_gru_shows_the_simulated_paths_ending_at_the_10th_50th_and_90th_perc
     assert [p["close"][-1] for p in shown] == [84.0, 100.0, 116.0]
 
 
+def _gru_record(nll_gain_lo=0.019, edge=(-0.0079, 0.0199)):
+    """A GRU record shaped like the one train_path_gru.py and calibrate_path_gru.py save."""
+    return {"test_from": "2024-01-01", "test": {"n": 5954, "nll_gain_lo": nll_gain_lo, "nll_gain_hi": 0.058, "days": [
+        {"day": FORECAST_DAYS, "mae_pct": 6.479, "no_change_mae_pct": 6.54, "direction_acc": 0.5391, "base_rate_acc": 0.5334,
+         "direction_edge_lo": edge[0], "direction_edge_hi": edge[1]}]},
+        "calibration": {"fitted_through": "2026-10-09", "test": [{"day": FORECAST_DAYS, "range": "rolling 12 months",
+                        "cover80": 0.7914, "cover80_lo_hi": [0.76, 0.821], "dates": 20}]}}
+
+
+def _fake_gru_line(monkeypatch, record):
+    """Swap the GRU for one that returns `record`; the list returned fills with the last close each call was given."""
+    import backend.models.serving.gru_line as gl
+    starts = []
+    monkeypatch.setattr(gl, "line", lambda c, h, l, m: starts.append(float(c[-1])) or
+                        {"close": [float(c[-1])] * FORECAST_DAYS, "paths": [], "record": record})
+    return starts
+
+
 def test_gru_line_note_quotes_its_test_record(app_client, monkeypatch):
     import backend.models.serving.gru_line as gl
-    record = {"test_from": "2024-01-01", "test": {"n": 5954, "nll_gain_lo": 0.019, "nll_gain_hi": 0.058, "days": [
-        {"day": FORECAST_DAYS, "mae_pct": 6.479, "no_change_mae_pct": 6.54, "direction_acc": 0.5391, "base_rate_acc": 0.5334,
-         "direction_edge_lo": -0.0079, "direction_edge_hi": 0.0199}]},
-        "calibration": {"fitted_through": "2026-10-09", "test": [{"day": FORECAST_DAYS, "range": "rolling 12 months",
-                        "cover80": 0.7914, "cover80_lo_hi": [0.76, 0.821], "kupiec_p_one_per_date": 0.863}]}}
+    record = _gru_record()
     paths = [{"name": n, "percentile": q, "meaning": "", "close": [100.0 + q] * FORECAST_DAYS}
              for n, q in (("low", 10), ("middle", 50), ("high", 90))]
     monkeypatch.setattr(gl, "line", lambda c, h, l, m: {"close": [101.0] * FORECAST_DAYS, "paths": paths, "record": record})
@@ -681,8 +751,42 @@ def test_gru_line_note_quotes_its_test_record(app_client, monkeypatch):
     assert len(r["dates"]) == FORECAST_DAYS and r["close"] == [101.0] * FORECAST_DAYS
     assert r["paths"] == paths and "three of 1,000 simulated paths, picked by where they end" in r["note"]
     assert "beat the volatility band (likelihood better by 0.019 to 0.058 per day" in r["note"]
-    assert "recalibrated on the year to 2026-10-09, held 79.1% of outcomes (95% range 76.0%–82.1%, Kupiec test p = 0.86)" in r["note"]
+    assert ("recalibrated on the year to 2026-10-09, held 79.1% of outcomes over 20 test dates "
+            "(95% range 76.0%–82.1% when whole dates are resampled)") in r["note"] and "Kupiec" not in r["note"]
     assert "error was 6.479% against 6.54% for assuming no change" in r["note"] and r["note"].endswith("within noise.")
+
+
+@pytest.mark.parametrize("nll_gain_lo, edge, moves, direction", [
+    (-0.01, (-0.07, -0.01), "did not beat the volatility band", "worse than the base rate."),
+    (0.019, (0.01, 0.05), "beat the volatility band", "a small edge.")])
+def test_gru_note_judges_its_record_instead_of_assuming_it_won(app_client, monkeypatch, nll_gain_lo, edge, moves, direction):
+    _fake_gru_line(monkeypatch, _gru_record(nll_gain_lo, edge))
+    note = app_client.get("/ui/stock/TEST/ai?model=gru", headers={"X-API-Key": KEY}).json()["note"]
+    assert f"daily move sizes {moves}" in note and note.endswith(direction)
+
+
+def test_a_forecast_is_redrawn_when_the_last_close_moves_during_the_day(app_client, orch, monkeypatch):
+    """In market hours the last bar is today's live price; a cache keyed on the date alone kept the first
+    visitor's price all day, so the line started away from the chart's close."""
+    starts = _fake_gru_line(monkeypatch, _gru_record())
+    h = {"X-API-Key": KEY}
+    app_client.get("/ui/stock/TEST/ai?model=gru", headers=h)
+    svc = orch.service()
+    history, moved = svc.history, svc.history("TEST").copy()
+    moved.loc[moved.index[-1], "close"] *= 1.04
+    monkeypatch.setattr(svc, "history", lambda sym: moved if sym == "TEST" else history(sym))
+    second = app_client.get("/ui/stock/TEST/ai?model=gru", headers=h).json()
+    assert len(starts) == 2 and second["close"][0] == pytest.approx(float(moved["close"].iloc[-1]))
+
+
+def test_the_gru_starts_from_the_stocks_last_close_when_the_nifty_lags_a_bar(app_client, orch, monkeypatch):
+    """The Nifty is cached on its own clock and can miss the stock's newest bar; an inner join dropped that bar,
+    so the line started from the day before while being drawn from today."""
+    starts = _fake_gru_line(monkeypatch, _gru_record())
+    nifty = orch.hub.bench()
+    monkeypatch.setattr(orch.hub, "bench", lambda: nifty.iloc[:-1])
+    app_client.get("/ui/stock/TEST/ai?model=gru", headers={"X-API-Key": KEY})
+    assert starts == [pytest.approx(float(orch.service().history("TEST")["close"].iloc[-1]))]
 
 
 def test_analyst_note_falls_back_to_the_computed_note_when_models_are_off(app_client, monkeypatch):

@@ -47,8 +47,8 @@ def line(closes, highs, lows, market):
     ranges = xp.log(xp.asarray(highs, dtype=float) / xp.asarray(lows, dtype=float))[1:]
     window, scale = G.window_at(r, rm, ranges, len(r) - 1)
     mean, log_sd = (t.data[0] for t in model(window[None].astype("float32")))
-    # Trained on likelihood, its 10-day 80% range held 83.0% of test outcomes; scaled by the calibration
-    # (models/training/calibrate_path_gru.py) it held 79.1%, so "1 in 10 ends lower" is true of the low path.
+    # Trained on likelihood, its 80% range was too wide; scaled by the multiple the calibration fitted on outcomes the
+    # weights never trained on (models/training/calibrate_path_gru.py), "1 in 10 ends lower" is true of the low path.
     z = record.get("interval_z80", {}).get(str(G.HORIZON))
     if z is None:
         raise DataUnavailable(f"{WEIGHTS} has no calibration; run python -m backend.models.training.calibrate_path_gru")

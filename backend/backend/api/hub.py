@@ -4,8 +4,8 @@ The verdict answers "should I buy this?" with the one signal that has
 measured edge — NSE-method momentum rank inside the Nifty 200 — and puts
 everything else (research engines, market regime, insider flags,
 valuation) into explicit "why buy" / "why not" lists. It never invents a
-confidence it hasn't measured; the momentum edge it relies on is modest
-(≈ +1.5 to +2.5 pts/yr for the live index ETF, very uneven by year) and it says so.
+confidence it hasn't measured; the momentum edge it relies on is modest (the live
+index ETF against the Nifty 500 price index, read from the track record; very uneven by year) and it says so.
 """
 from __future__ import annotations
 
@@ -26,13 +26,13 @@ from backend.knowledge_base.lessons import knowledge_base
 from backend.api.nlu import ALIASES
 from backend.api.orchestrator import Orchestrator
 from backend.advisory.signals import factors as F
-from backend.advisory.signals.advisor import N_DEFAULT, STOP_PCT, market_state, next_rebalance
+from backend.advisory.signals.advisor import N_DEFAULT, STOP_PCT, exposure_for, market_state, next_rebalance
 
 log = logging.getLogger("stockintel.hub")
 
 INDICES = [("^NSEI", "NIFTY 50"), ("^BSESN", "SENSEX"), ("^NSEBANK", "BANK NIFTY"),
            ("^CRSLDX", "NIFTY 500")]
-BUY_RANK, KEEP_RANK = 20, 40
+BUY_RANK, KEEP_RANK = N_DEFAULT, 2 * N_DEFAULT
 PANEL_TTL_S = 6 * 3600
 
 
@@ -41,7 +41,8 @@ def _calibration_words(record: Dict[str, Any]) -> str:
     row = next(r for r in record["calibration"]["test"] if r["day"] == FORECAST_DAYS and r["range"].startswith("rolling"))
     lo, hi = row["cover80_lo_hi"]
     return (f"its 80% range, recalibrated on the year to {record['calibration']['fitted_through']}, held "
-            f"{row['cover80']:.1%} of outcomes (95% range {lo:.1%}–{hi:.1%}, Kupiec test p = {row['kupiec_p_one_per_date']:.2f}), ")
+            f"{row['cover80']:.1%} of outcomes over {row['dates']} test dates (95% range {lo:.1%}–{hi:.1%} "
+            f"when whole dates are resampled), ")
 
 
 class Hub:
@@ -293,7 +294,7 @@ class Hub:
                 "vol20_pct": [None if np.isnan(x) else round(float(x) * 100, 2) for x in vol.iloc[view]],
                 "max_drawdown_5y_pct": round(float(dd.min()) * 100, 2)}
 
-    def insider(self, symbol: str, days: int = 365) -> List[Dict[str, Any]]:
+    def insider(self, symbol: str, days: int = 365, limit: Optional[int] = 20) -> List[Dict[str, Any]]:
         from backend.database.sources import insider
         try:
             df = insider.load()
@@ -304,7 +305,7 @@ class Hub:
         return [{"date": str(r.broadcast.date()), "category": r.category,
                  "action": "Bought" if r.direction > 0 else "Sold",
                  "value_cr": round(float(r.value) / 1e7, 2), "shares": r.shares}
-                for r in mine.head(20).itertuples()]
+                for r in mine.iloc[:limit].itertuples()]
 
     # --- verdict --------------------------------------------------------------------------
     def verdict(self, symbol: str) -> Dict[str, Any]:
@@ -332,8 +333,11 @@ class Hub:
             why_not.append(e["claim"])
         fund = a.results.get("fundamental")
         if fund is not None and fund.available:
-            (why_buy if fund.score > 0.1 else why_not if fund.score < -0.1 else why_buy).append(
-                f"Fundamentals look {fund.state} (trend: {fund.details.get('trend')}).")
+            line = f"Fundamentals look {fund.state} (trend: {fund.details.get('trend')})."
+            if fund.score > 0.1:
+                why_buy.append(line)
+            elif fund.score < -0.1 or fund.details.get("trend") == "deteriorating":
+                why_not.append(line)
         risk = a.results.get("risk")
         if risk is not None and risk.available:
             vol = risk.details["annualized_vol_pct"]
@@ -347,7 +351,7 @@ class Hub:
                            f"{m['sma_10m']:,.0f}); new buys carry more risk.")
         if m["momentum_crash_risk"]:
             why_not.append("Market is in a bear-then-rebound regime where momentum stocks have crashed before.")
-        ins = self.insider(sym, 90)
+        ins = self.insider(sym, 90, limit=None)
         bought = sum(x["value_cr"] for x in ins if x["action"] == "Bought" and "romoter" in x["category"])
         sold = sum(x["value_cr"] for x in ins if x["action"] == "Sold" and "romoter" in x["category"])
         if bought:
@@ -362,10 +366,10 @@ class Hub:
         elif rank <= BUY_RANK:
             if m["momentum_crash_risk"]:
                 verdict, tone = "BUY — HALF SIZE", "positive"
-                headline = "Top-20 momentum stock, but the market regime calls for half position size."
+                headline = f"Top-{BUY_RANK} momentum stock, but the market regime calls for half position size."
             else:
                 verdict, tone = ("HOLD / ADD" if held else "BUY"), "positive"
-                headline = "Top-20 momentum stock in the Nifty 200 — it qualifies for the signal portfolio."
+                headline = f"Top-{BUY_RANK} momentum stock in the Nifty 200 — it qualifies for the signal portfolio."
         elif rank <= KEEP_RANK:
             verdict, tone = ("HOLD" if held else "WAIT"), "neutral"
             headline = (f"Rank {rank}: good enough to keep if you own it (top {KEEP_RANK}), "
@@ -373,6 +377,10 @@ class Hub:
         else:
             verdict, tone = ("SELL AT REBALANCE" if held else "DON'T BUY"), "negative"
             headline = f"Rank {rank} of {total}: momentum is weak, which is where the signal says to avoid."
+        if in_uni and rank <= KEEP_RANK:
+            # plan() sizes the portfolio from the capital and owns that rule, so the verdict names the size it assumes
+            headline += (f" These bands are for a {N_DEFAULT}-stock portfolio; your rebalance plan sizes the portfolio "
+                         "to your capital, and with fewer stocks it buys and keeps only higher ranks.")
         price = a.price
         return {
             "symbol": sym, "verdict": verdict, "tone": tone, "headline": headline, "held": held,
@@ -381,7 +389,8 @@ class Hub:
             "why_buy": why_buy[:7], "why_not": why_not[:7],
             "plan": {"stop_loss": round(price * (1 - STOP_PCT), 2) if tone == "positive" else None,
                      "next_review": next_rebalance(date.today()),
-                     "position_size": f"equal slice of your momentum portfolio (≈{100 / N_DEFAULT:.0f}% with {N_DEFAULT} stocks)"
+                     "position_size": f"equal slice of your momentum portfolio "
+                                      f"(≈{100 * exposure_for('balanced', m) / N_DEFAULT:.1f}% with {N_DEFAULT} stocks)"
                      if tone == "positive" else None},
             "market": m, "analysis_timestamp": a.analysis_timestamp, "data_as_of": a.quality["last_date"],
             "evidence_note": performance.evidence_note(performance.track_record()),
@@ -441,7 +450,8 @@ class Hub:
             raise DataUnavailable("open-source models are disabled on this server "
                                   "(STOCKINTEL_ML=0, or neither torch nor STOCKINTEL_MODEL_SPACE)")
         df = self.orch.service().history(symbol)
-        key = (symbol.upper(), model, str(df.index[-1].date()))
+        # during market hours the last bar is today's moving price, and every forecast starts from it
+        key = (symbol.upper(), model, str(df.index[-1].date()), round(float(df["close"].iloc[-1]), 2))
         cache = self.__dict__.setdefault("_ai_cache", {})
         if key not in cache:
             future = lambda n: [str(d.date()) for d in pd.bdate_range(df.index[-1], periods=n + 1)[1:]]
@@ -451,7 +461,8 @@ class Hub:
                     cache[key] = {"dates": future(FORECAST_DAYS),
                                   **(remote_models.fan if remote_models.on_space("chronos") else tsfm.fan)(df["close"], FORECAST_DAYS)}
                 elif model == "gru":
-                    bars = df[["close", "high", "low"]].join(self.bench().rename("market"), how="inner").ffill().dropna()
+                    # aligned as in training: every stock bar kept, so the line starts from the close the chart ends on
+                    bars = df[["close", "high", "low"]].assign(market=self.bench().reindex(df.index).ffill()).dropna()
                     cache[key] = {"dates": future(FORECAST_DAYS), **gru_line.line(bars.close.to_numpy(), bars.high.to_numpy(),
                                                                                 bars.low.to_numpy(), bars.market.to_numpy())}
                 elif model == "alfa":
@@ -467,12 +478,14 @@ class Hub:
             note = (f"Our GRU (ALFA's own NumPy framework, trained by us). Dashed: its median path. Thin lines: "
                     f"three of {gru_line.SIMULATED:,} simulated paths, picked by where they end (the 10th, 50th and 90th "
                     f"percentile), each day's swing drawn at the size it forecast for that day. "
-                    f"On {t['n']:,} forecasts from {rec['test_from']} its forecast of daily move sizes beat the volatility band "
+                    f"On {t['n']:,} forecasts from {rec['test_from']} its forecast of daily move sizes "
+                    + ("beat" if t["nll_gain_lo"] > 0 else "did not beat") + " the volatility band "
                     f"(likelihood better by {t['nll_gain_lo']} to {t['nll_gain_hi']} per day, grouped by date). Its "
                     f"{FORECAST_DAYS}-day error was {day['mae_pct']}% against {day['no_change_mae_pct']}% for assuming no change, "
                     + _calibration_words(rec) +
                     f"and its direction was right {day['direction_acc']:.1%} against {day['base_rate_acc']:.1%} for the base rate: "
-                    + ("within noise." if day["direction_edge_lo"] <= 0 <= day["direction_edge_hi"] else "a small edge."))
+                    + {1: "a small edge.", 0: "within noise.", -1: "worse than the base rate."}[
+                        performance.edge_sign(day["direction_edge_lo"], day["direction_edge_hi"])])
             return {"symbol": symbol.upper(), "model": model, "as_of": key[2], **cache[key], "note": note}
         if model == "alfa":
             d = cache[key]["drawer"]
@@ -531,7 +544,7 @@ class Hub:
         f = analyst.facts(sym, t["close"][-1], t["as_of"], self.ai_forecast(sym, "alfa"), self.ai_forecast(sym, "gru"),
                           t["cone"][-1], {"stop": t["stop"], "rank": v["momentum_rank"], "universe": v["universe_size"],
                                           "verdict": v["verdict"]})
-        key = (sym, t["as_of"])
+        key = (sym, t["as_of"], t["close"][-1])
         cache = self.__dict__.setdefault("_analyst_cache", {})
         if key not in cache:
             if not self.ml_enabled():

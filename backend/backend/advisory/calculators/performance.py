@@ -88,7 +88,7 @@ def _momentum(bench_symbols: Dict[str, pd.Series]) -> Dict[str, Any]:
     curves = {"Momentum 20 (backtest)": series(res["momentum_semiannual"].equity),
               "Momentum + risk overlay (backtest)": series(res["momentum_trend_vol_overlay"].equity),
               "Equal-weight same stocks (backtest)": series(res["equal_weight_universe"].equity),
-              "Nifty 500 index (real)": series(bench_symbols["^CRSLDX"])}
+              "Nifty 500 price index, no dividends (real)": series(bench_symbols["^CRSLDX"])}
     # skip the listing week: the first print (19 Aug 2022) is 12% above the next day's close
     etf = bench_symbols["MOMENTUM.NS"].dropna().iloc[5:]
     a, b = etf.index[0], etf.index[-1]
@@ -104,7 +104,7 @@ def _momentum(bench_symbols: Dict[str, pd.Series]) -> Dict[str, Any]:
                            "nifty500": round(float(n_.iloc[-1] / n_.iloc[0] - 1) * 100, 1)})
     live = {"window": f"{a.date()} to {b.date()}", "yearly": yearly,
             "bars": [{"label": "Real momentum ETF", "cagr": cagr(etf), "real": True},
-                     {"label": "Real Nifty 500", "cagr": cagr(bench_symbols["^CRSLDX"]), "real": True},
+                     {"label": "Real Nifty 500 (price only, no dividends)", "cagr": cagr(bench_symbols["^CRSLDX"]), "real": True},
                      {"label": "Backtest momentum", "cagr": cagr(res["momentum_semiannual"].equity), "real": False},
                      {"label": "Backtest equal-weight", "cagr": cagr(res["equal_weight_universe"].equity), "real": False}]}
     from backend.advisory.signals.simulate import metrics
@@ -189,12 +189,17 @@ def evaluate_models(service) -> Dict[str, Any]:
 TIE_SKILL = 0.01
 
 
+def edge_sign(lo: float, hi: float) -> int:
+    """1 when the whole 95% range of a gap is above zero, -1 when it is below, 0 when it spans zero."""
+    return 1 if lo > 0 else -1 if hi < 0 else 0
+
+
 def _vs_base(record: Dict[str, Any]) -> str:
     """Direction against the base rate, from the date-grouped 95% range of the gap when the record has
     one; records written before it existed fall back to a naive binomial range and say so."""
     if "direction_edge_lo" in record:
-        lo, hi = record["direction_edge_lo"], record["direction_edge_hi"]
-        return ("more often than" if lo > 0 else "less often than" if hi < 0 else "about as often as") + " the base rate"
+        sign = edge_sign(record["direction_edge_lo"], record["direction_edge_hi"])
+        return {1: "more often than", -1: "less often than", 0: "about as often as"}[sign] + " the base rate"
     acc = record.get("chronos_direction_acc", record.get("direction_acc"))
     base, se = record["base_rate_acc"], (record["base_rate_acc"] * (1 - record["base_rate_acc"]) / record["n"]) ** 0.5
     word = "more often than" if acc - base > 2 * se else "less often than" if base - acc > 2 * se else "about as often as"
@@ -233,6 +238,10 @@ def track_record() -> Optional[Dict[str, Any]]:
     return load() if PATH.exists() else None
 
 
+# ^CRSLDX is the price index, and Yahoo has no Nifty 500 total-return series, so every claim says what it compares
+NO_DIVIDENDS_NOTE = "The index leaves out the dividends the ETF keeps, so the like-for-like edge is smaller."
+
+
 def live_edge(rec: Dict[str, Any]) -> Dict[str, Any]:
     """The momentum facts every explanation quotes: live ETF edge, its best and worst
     year, and the backtest's worst falls with and without the risk overlay."""
@@ -250,8 +259,8 @@ def momentum_evidence(rec: Optional[Dict[str, Any]]) -> List[str]:
     if rec is None:
         return ["Measured track record not built yet; run `stockintel build-performance`."]
     e = live_edge(rec)
-    return [f"Live Nifty200 Momentum 30 ETF beat the Nifty 500 by {e['gap']:+.1f} pts/yr ({e['window']}): "
-            f"{e['best'][1]:+.0f} pts in {e['best'][0]}, {e['worst'][1]:+.0f} pts in {e['worst'][0]}.",
+    return [f"Live Nifty200 Momentum 30 ETF beat the Nifty 500 price index by {e['gap']:+.1f} pts/yr ({e['window']}): "
+            f"{e['best'][1]:+.0f} pts in {e['best'][0]}, {e['worst'][1]:+.0f} pts in {e['worst'][0]}. {NO_DIVIDENDS_NOTE}",
             f"Backtest on today's index list (survivorship-inflated): worst fall {e['max_dd']:.0f}%, "
             f"{e['overlay_max_dd']:.0f}% with the trend + volatility overlay."]
 
@@ -264,8 +273,8 @@ def evidence_note(rec: Optional[Dict[str, Any]]) -> str:
     e = live_edge(rec)
     edges = sum(abs(p["z"] or 0) >= rec["bonferroni_z"] for p in rec["patterns"])
     beats = sum(h["accuracy"] > h["always_up_accuracy"] for h in rec["forecast"]["horizons"])
-    return (rule + f"Its live ETF beat the Nifty 500 by {e['gap']:+.1f} points a year ({e['window']}), but unevenly: "
-            f"{e['best'][1]:+.0f} points in {e['best'][0]}, {e['worst'][1]:+.0f} in {e['worst'][0]}, "
-            f"and the backtest fell up to {abs(e['max_dd']):.0f}% in bad stretches. {edges} of {len(rec['patterns'])} candle and "
+    return (rule + f"Its live ETF beat the Nifty 500 price index by {e['gap']:+.1f} points a year ({e['window']}), but unevenly: "
+            f"{e['best'][1]:+.0f} points in {e['best'][0]}, {e['worst'][1]:+.0f} in {e['worst'][0]}. {NO_DIVIDENDS_NOTE} "
+            f"The backtest fell up to {abs(e['max_dd']):.0f}% in bad stretches. {edges} of {len(rec['patterns'])} candle and "
             f"chart patterns showed an edge, and the direction forecast beat always-guessing-up at {beats} of "
             f"{len(rec['forecast']['horizons'])} horizons, so they only appear as context.")

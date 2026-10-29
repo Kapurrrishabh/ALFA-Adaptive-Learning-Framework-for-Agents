@@ -12,6 +12,7 @@ import json
 import re
 from typing import Any, Dict, List
 
+from backend.advisory.calculators.performance import edge_sign
 from backend.models.external.llm import verify_numbers
 from backend.models.guardrails import added_claims
 
@@ -43,31 +44,36 @@ def facts(symbol: str, close: float, as_of: str, alfa: Dict[str, Any], gru: Dict
     gd = next(d for d in gt["days"] if d["day"] == days)
     gap = gd["mae_pct"] / gd["no_change_mae_pct"] - 1
     error_words = ("about the same as" if abs(gap) <= SAME_AS_NO_CHANGE else "lower than" if gap < 0 else "higher than")
-    noise = gd["direction_edge_lo"] <= 0 <= gd["direction_edge_hi"]
+    direction = edge_sign(gd["direction_edge_lo"], gd["direction_edge_hi"])
     lo, mid, hi = round(alfa["q10"][-1]), round(alfa["q50"][-1]), round(alfa["q90"][-1])
+    generative = alfa["drawer"]["name"] == "generative"
+    fan_model = "our return model" if generative else "the standard GARCH model"
     return {
-        "stock": symbol, "as_of": as_of, "last_close": f"₹{close:,.2f}", "days_ahead": days,
-        "return_model_range": f"₹{lo:,} to ₹{hi:,}, middle ₹{mid:,} (80% of our return model's paths)",
+        "stock": symbol, "as_of": as_of, "last_close": f"₹{close:,.2f}", "days_ahead": days, "fan_model": fan_model,
+        "return_model_range": f"₹{lo:,} to ₹{hi:,}, middle ₹{mid:,} (80% of {fan_model}'s paths)",
         "volatility_band": f"₹{round(band['lo80']):,} to ₹{round(band['hi80']):,}",
-        "return_model_record": f"beat the standard GARCH model on next-day returns by {-alfa['record']['vs_garch']:.3f} "
-                               f"nats per return; that edge is for one day ahead only",
+        "return_model_record": (f"beat the standard GARCH model on next-day returns by {-alfa['record']['vs_garch']:.3f} "
+                                f"nats per return; that edge is for one day ahead only" if generative
+                                else "is used because our return model has not beaten it on its own record"),
         "gru_line": f"ends at ₹{round(gru['close'][-1]):,}",
         "gru_moves": ("beat the volatility band at forecasting how big each day's move will be" if gt["nll_gain_lo"] > 0
                       else "did not beat the volatility band at forecasting how big each day's move will be"),
         "gru_error": f"{gd['mae_pct']}% on 2024–26, {error_words} the {gd['no_change_mae_pct']}% of assuming no change",
         "gru_direction": f"right {gd['direction_acc'] * 100:.1f}% of the time against {gd['base_rate_acc'] * 100:.1f}% "
-                         f"for the base rate, " + ("which is within noise" if noise else "a real but small edge"),
+                         f"for the base rate, " + {1: "a real but small edge", 0: "which is within noise",
+                                                   -1: "which is worse than the base rate"}[direction],
         "momentum": _momentum_words(verdict["rank"], verdict["universe"]),
         "verdict": verdict["verdict"], "stop_loss": f"₹{round(verdict['stop']):,}",
         # the judgements a rewrite must keep word for word, so it cannot soften or upgrade them
         "_required": [f"₹{lo:,}", f"₹{hi:,}", verdict["verdict"], str(days)]
-                     + ([("within noise", "within the noise")] if noise else [])
+                     + ([("within noise", "within the noise")] if direction == 0 else [])
+                     + ([("worse", "less often")] if direction < 0 else [])
                      + ([("about the same", "similar", "roughly the same")] if error_words == "about the same as" else []),
     }
 
 
 def computed_note(f: Dict[str, Any]) -> str:
-    return (f"Over the next {f['days_ahead']} trading days our return model puts {f['stock']} at {f['return_model_range']}. "
+    return (f"Over the next {f['days_ahead']} trading days {f['fan_model']} puts {f['stock']} at {f['return_model_range']}. "
             f"That model {f['return_model_record']}. The volatility band says {f['volatility_band']}. The GRU line "
             f"{f['gru_line']}; its error was {f['gru_error']}, and its direction was {f['gru_direction']}. In testing the "
             f"GRU {f['gru_moves']}, so its thin lines show how far prices could swing day to day, not which way. "

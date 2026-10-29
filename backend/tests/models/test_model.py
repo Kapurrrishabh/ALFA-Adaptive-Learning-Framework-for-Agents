@@ -940,10 +940,30 @@ def test_path_gru_reads_a_window_and_its_targets_turn_back_into_prices():
 
 
 def test_kupiec_accepts_a_range_that_holds_what_it_says_and_rejects_one_that_does_not():
-    """The Basel backtest the GRU's calibrated range is held to: 80 of 100 inside is exactly right."""
+    """The Basel backtest the ALFA fan backtest reports: 80 of 100 inside is exactly right."""
     from backend.models.training.calibrate_path_gru import kupiec_p
     assert kupiec_p(80, 100) == pytest.approx(1.0)
     assert kupiec_p(83, 100) > 0.05 and kupiec_p(95, 100) < 0.001
+
+
+def test_the_rolling_calibration_scores_a_date_only_once_a_full_year_of_test_outcomes_is_known():
+    """The served weights trained on the validation years, so only test outcomes may refit the range; a test
+    date with less than a year of them behind it is left unscored rather than padded with validation rows."""
+    import pandas as pd
+    from backend.models.training.calibrate_path_gru import KNOWN_AFTER_DAYS, TRAILING_DAYS, rolling_cut
+    months = pd.date_range("2024-01-01", periods=36, freq="MS")
+    origins = pd.DatetimeIndex(np.repeat(months, 5))
+    cut = rolling_cut(np.linspace(0.5, 2.0, len(origins)), origins)
+    full_year = months[0] + pd.Timedelta(days=KNOWN_AFTER_DAYS + TRAILING_DAYS)
+    assert np.isnan(cut[origins < full_year]).all() and not np.isnan(cut[origins >= full_year]).any()
+
+
+def test_the_rolling_calibration_refuses_a_test_period_shorter_than_its_window():
+    import pandas as pd
+    from backend.models.training.calibrate_path_gru import rolling_cut
+    origins = pd.DatetimeIndex(np.repeat(pd.date_range("2024-01-01", periods=12, freq="MS"), 5))
+    with pytest.raises(ValueError, match="score a longer test period"):
+        rolling_cut(np.ones(len(origins)), origins)
 
 
 def test_a_calibrated_gru_spreads_its_paths_by_the_calibrated_multiple(monkeypatch):
