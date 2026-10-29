@@ -26,7 +26,7 @@ def main():
     args = ap.parse_args()
     chunks, _ = load(ARTIFACTS / "reference_index.npz")
     vectors = xp.asarray(vectors_for(chunks), dtype=xp.float32)
-    index = Hybrid(chunks, pretokenize, vectors, lambda text: sentence.embed([text])[0], centre=False)
+    index = Hybrid(chunks, pretokenize, vectors, sentence.embed_query, centre=False)
     asked, sampled = labelled(chunks, DATA / "manifest.jsonl", DATA / "qa", args.questions, default_rng(0), title_only)
     print(f"{len(asked)} of {sampled} sampled questions have their endorsed answer indexed")
     ranked, scores, started = {}, [], time.time()

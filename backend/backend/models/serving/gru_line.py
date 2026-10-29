@@ -16,7 +16,9 @@ SIMULATED = 1000
 SHOWN = ((0.1, "low", "1 in 10 simulated paths ends lower"),
          (0.5, "middle", "half end lower, half higher"),
          (0.9, "high", "1 in 10 simulated paths ends higher"))
-_LOADED = None
+_LOADED = (None, None)
+# the two-sided 80% multiple of a normal, which the calibration replaces with what 80% of known outcomes needed
+NORMAL_Z80 = 1.2816
 
 
 def available() -> bool:
@@ -24,13 +26,15 @@ def available() -> bool:
 
 
 def _loaded():
+    """The model and its record, reloaded when the file changes: the VM recalibrates it every day."""
     global _LOADED
-    if _LOADED is None:
-        if not available():
-            raise DataUnavailable(f"GRU weights not found at {WEIGHTS}; train them with "
-                                  "python -m backend.models.training.train_path_gru")
-        _LOADED = G.load(WEIGHTS)
-    return _LOADED
+    if not available():
+        raise DataUnavailable(f"GRU weights not found at {WEIGHTS}; train them with "
+                              "python -m backend.models.training.train_path_gru")
+    stamp = WEIGHTS.stat().st_mtime_ns
+    if _LOADED[0] != stamp:
+        _LOADED = (stamp, G.load(WEIGHTS))
+    return _LOADED[1]
 
 
 def line(closes, highs, lows, market):
@@ -43,8 +47,14 @@ def line(closes, highs, lows, market):
     ranges = xp.log(xp.asarray(highs, dtype=float) / xp.asarray(lows, dtype=float))[1:]
     window, scale = G.window_at(r, rm, ranges, len(r) - 1)
     mean, log_sd = (t.data[0] for t in model(window[None].astype("float32")))
+    # Trained on likelihood, its 10-day 80% range held 83.0% of test outcomes; scaled by the calibration
+    # (models/training/calibrate_path_gru.py) it held 79.1%, so "1 in 10 ends lower" is true of the low path.
+    z = record.get("interval_z80", {}).get(str(G.HORIZON))
+    if z is None:
+        raise DataUnavailable(f"{WEIGHTS} has no calibration; run python -m backend.models.training.calibrate_path_gru")
+    paths = G.sample_paths(c[-1], mean, log_sd + xp.log(z / NORMAL_Z80), scale, SIMULATED)
     return {"close": [round(float(v), 2) for v in G.median_prices(c[-1], mean, scale)],
-            "paths": labelled_paths(G.sample_paths(c[-1], mean, log_sd, scale, SIMULATED)), "record": record}
+            "paths": labelled_paths(paths), "record": record}
 
 
 def labelled_paths(simulated):

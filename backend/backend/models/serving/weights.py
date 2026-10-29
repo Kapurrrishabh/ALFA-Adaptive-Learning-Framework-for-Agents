@@ -35,9 +35,12 @@ def repo() -> str:
 
 
 def pull(files: Iterable[Path]) -> None:
+    """Fetch the files this host does not have yet. One already here is kept: the VM recalibrates the GRU
+    daily, and the published copy would undo that. Delete a file to take a newly published version."""
     from huggingface_hub import hf_hub_download
     for f in files:
-        hf_hub_download(repo(), f.name, local_dir=f.parent)
+        if not f.exists():
+            hf_hub_download(repo(), f.name, local_dir=f.parent)
 
 
 def agent_files():

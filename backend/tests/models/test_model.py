@@ -937,3 +937,22 @@ def test_path_gru_reads_a_window_and_its_targets_turn_back_into_prices():
     assert mean.data.shape == log_sd.data.shape == (1, G.HORIZON)
     paths = G.sample_paths(100.0, xp.zeros(G.HORIZON), xp.full(G.HORIZON, -50.0), 1.0, 3)
     assert paths.shape == (3, G.HORIZON) and xp.allclose(paths, 100.0)      # no spread: every path is the median
+
+
+def test_kupiec_accepts_a_range_that_holds_what_it_says_and_rejects_one_that_does_not():
+    """The Basel backtest the GRU's calibrated range is held to: 80 of 100 inside is exactly right."""
+    from backend.models.training.calibrate_path_gru import kupiec_p
+    assert kupiec_p(80, 100) == pytest.approx(1.0)
+    assert kupiec_p(83, 100) > 0.05 and kupiec_p(95, 100) < 0.001
+
+
+def test_a_calibrated_gru_spreads_its_paths_by_the_calibrated_multiple(monkeypatch):
+    """A multiple under the normal 1.2816 narrows the simulated paths, so the low and high paths sit closer."""
+    from backend.models.serving import gru_line as gl
+    closes = 100.0 * np.exp(np.cumsum(default_rng(0).normal(0, 0.01, 600)))
+    model, record = gl.G.load(gl.WEIGHTS)
+    wide = gl.line(closes, closes * 1.01, closes * 0.99, closes)
+    monkeypatch.setattr(gl, "_LOADED", (gl.WEIGHTS.stat().st_mtime_ns, (model, {**record, "interval_z80": {str(gl.G.HORIZON): 0.6408}})))
+    narrow = gl.line(closes, closes * 1.01, closes * 0.99, closes)
+    spread = lambda out: out["paths"][2]["close"][-1] - out["paths"][0]["close"][-1]
+    assert spread(narrow) < 0.75 * spread(wide)

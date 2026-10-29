@@ -104,7 +104,7 @@ def ranker_from(chunks):
     from backend.models.external import sentence
     from backend.models.external.embed_index import vectors_for
     vectors = xp.asarray(vectors_for(chunks), dtype=xp.float32)
-    return sentence.reranked(Hybrid(chunks, pretokenize, vectors, lambda text: sentence.embed([text])[0], centre=False))
+    return sentence.reranked(Hybrid(chunks, pretokenize, vectors, sentence.embed_query, centre=False))
 
 
 def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=False, writer=None, dense=False):

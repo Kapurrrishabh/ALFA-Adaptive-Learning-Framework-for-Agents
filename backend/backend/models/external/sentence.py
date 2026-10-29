@@ -35,6 +35,17 @@ def embed(texts):
     return xp.asarray(encoder().encode(list(texts), normalize_embeddings=True, batch_size=64))
 
 
+# what bge v1.5 is told a short question is for when it searches long passages; passages and the router's
+# like-for-like comparisons take no instruction (BAAI's model card)
+QUERY_INSTRUCTION = os.environ.get("STOCKINTEL_QUERY_INSTRUCTION",
+                                   "Represent this sentence for searching relevant passages: ")
+
+
+def embed_query(text):
+    """One question as a search vector, with the instruction the encoder was trained to see on queries."""
+    return embed([QUERY_INSTRUCTION + text])[0]
+
+
 def similarity(texts):
     """A router score function over `texts`: one cosine per known text for each question asked."""
     known = embed(texts)

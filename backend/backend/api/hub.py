@@ -36,6 +36,14 @@ BUY_RANK, KEEP_RANK = 20, 40
 PANEL_TTL_S = 6 * 3600
 
 
+def _calibration_words(record: Dict[str, Any]) -> str:
+    """How the GRU's 80% range held on the test years once calibrated, read from its record."""
+    row = next(r for r in record["calibration"]["test"] if r["day"] == FORECAST_DAYS and r["range"].startswith("rolling"))
+    lo, hi = row["cover80_lo_hi"]
+    return (f"its 80% range, recalibrated on the year to {record['calibration']['fitted_through']}, held "
+            f"{row['cover80']:.1%} of outcomes (95% range {lo:.1%}–{hi:.1%}, Kupiec test p = {row['kupiec_p_one_per_date']:.2f}), ")
+
+
 class Hub:
     def __init__(self, orch: Orchestrator, preload: bool = False):
         self.orch = orch
@@ -462,6 +470,7 @@ class Hub:
                     f"On {t['n']:,} forecasts from {rec['test_from']} its forecast of daily move sizes beat the volatility band "
                     f"(likelihood better by {t['nll_gain_lo']} to {t['nll_gain_hi']} per day, grouped by date). Its "
                     f"{FORECAST_DAYS}-day error was {day['mae_pct']}% against {day['no_change_mae_pct']}% for assuming no change, "
+                    + _calibration_words(rec) +
                     f"and its direction was right {day['direction_acc']:.1%} against {day['base_rate_acc']:.1%} for the base rate: "
                     + ("within noise." if day["direction_edge_lo"] <= 0 <= day["direction_edge_hi"] else "a small edge."))
             return {"symbol": symbol.upper(), "model": model, "as_of": key[2], **cache[key], "note": note}

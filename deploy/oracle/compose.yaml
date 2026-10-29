@@ -27,7 +27,7 @@ services:
 
   prices:
     <<: *alfa
-    command: ["sh", "-c", "while true; do python -m backend.database.dataforge.collect --source yahoo_prices --tier standard; sleep 86400; done"]
+    command: ["sh", "-c", "while true; do python -m backend.database.dataforge.collect --source yahoo_prices --tier standard; python -m backend.models.training.calibrate_path_gru; sleep 86400; done"]
 
   caddy:
     image: caddy:2

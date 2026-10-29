@@ -558,15 +558,18 @@ def test_alfa_runs_on_the_model_space_when_one_is_set_even_with_local_weights(ap
     assert fake.calls[0][0] == "/return_paths"
 
 
-def test_published_weights_land_where_the_server_reads_them(monkeypatch, tmp_path):
+def test_published_weights_land_where_the_server_reads_them_and_a_local_copy_is_kept(monkeypatch, tmp_path):
+    """The VM recalibrates the GRU every day; pulling the published copy over it on restart would undo that."""
     from pathlib import Path
     import huggingface_hub
     from backend.models.serving import gru_line, weights
     got = []
     monkeypatch.setenv("ALFA_MODELS_REPO", "you/alfa-weights")
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda repo, name, local_dir: got.append((repo, Path(local_dir) / name)))
-    weights.pull([gru_line.WEIGHTS])
-    assert got == [("you/alfa-weights", gru_line.WEIGHTS)] and gru_line.WEIGHTS in weights.PUBLISHED
+    missing, held = tmp_path / "path_gru.npz", tmp_path / "returns.npz"
+    held.write_text("recalibrated here")
+    weights.pull([missing, held])
+    assert got == [("you/alfa-weights", missing)] and gru_line.WEIGHTS in weights.PUBLISHED
 
 
 def test_fetching_the_agent_keeps_the_feedback_this_deployment_has_learned(monkeypatch, tmp_path):
@@ -651,7 +654,9 @@ def test_gru_line_note_quotes_its_test_record(app_client, monkeypatch):
     import backend.models.serving.gru_line as gl
     record = {"test_from": "2024-01-01", "test": {"n": 5954, "nll_gain_lo": 0.019, "nll_gain_hi": 0.058, "days": [
         {"day": FORECAST_DAYS, "mae_pct": 6.479, "no_change_mae_pct": 6.54, "direction_acc": 0.5391, "base_rate_acc": 0.5334,
-         "direction_edge_lo": -0.0079, "direction_edge_hi": 0.0199}]}}
+         "direction_edge_lo": -0.0079, "direction_edge_hi": 0.0199}]},
+        "calibration": {"fitted_through": "2026-10-09", "test": [{"day": FORECAST_DAYS, "range": "rolling 12 months",
+                        "cover80": 0.7914, "cover80_lo_hi": [0.76, 0.821], "kupiec_p_one_per_date": 0.863}]}}
     paths = [{"name": n, "percentile": q, "meaning": "", "close": [100.0 + q] * FORECAST_DAYS}
              for n, q in (("low", 10), ("middle", 50), ("high", 90))]
     monkeypatch.setattr(gl, "line", lambda c, h, l, m: {"close": [101.0] * FORECAST_DAYS, "paths": paths, "record": record})
@@ -659,6 +664,7 @@ def test_gru_line_note_quotes_its_test_record(app_client, monkeypatch):
     assert len(r["dates"]) == FORECAST_DAYS and r["close"] == [101.0] * FORECAST_DAYS
     assert r["paths"] == paths and "three of 1,000 simulated paths, picked by where they end" in r["note"]
     assert "beat the volatility band (likelihood better by 0.019 to 0.058 per day" in r["note"]
+    assert "recalibrated on the year to 2026-10-09, held 79.1% of outcomes (95% range 76.0%–82.1%, Kupiec test p = 0.86)" in r["note"]
     assert "error was 6.479% against 6.54% for assuming no change" in r["note"] and r["note"].endswith("within noise.")
 
 
