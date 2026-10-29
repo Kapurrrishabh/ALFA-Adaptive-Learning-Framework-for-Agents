@@ -70,7 +70,7 @@ async function api(path, opts = {}) {
   const res = await fetch(path, { ...opts, headers: { "X-API-Key": key, "Content-Type": "application/json", ...(opts.headers || {}) } });
   const body = await res.json().catch(() => ({}));
   if (res.status === 401) { askKey(); throw new Error("Please log in with your StockIntel key"); }
-  if (!res.ok) throw new Error(body.detail || body.error || `HTTP ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(body.detail || body.error || `HTTP ${res.status}`), { status: res.status });
   return body;
 }
 function askKey() {
@@ -450,14 +450,14 @@ function analyticsSection(sym) {
     macdCard.append(h("div", { class: "chart-note" }, k.hist[k.hist.length - 1] >= 0 ? "Green bars: short-term trend above its average." : "Red bars: short-term trend below its average."));
     miniPanel(ddCard.querySelector(".dd"), k.dates, [{ values: k.drawdown_pct, color: "--down" }], { fill: "--down", zero: true, fmt: (v) => num(v, 1) + "%" });
     ddCard.append(h("div", { class: "chart-note" }, `Deepest fall in the loaded 5 years: ${num(k.max_drawdown_5y_pct, 1)}%.`));
-  }).catch(() => {});
+  }).catch((e) => [rsiCard, macdCard, ddCard].forEach((card) => showCardError(card)(e)));
   api(`/stocks/${encodeURIComponent(sym)}/analysis`).then((a) => {
     const st = a.decision.domain_states, names = { technical: "Technicals", candlestick: "Candles", pattern: "Patterns", fundamental: "Fundamentals", news_sentiment: "News", risk: "Risk", regime: "Regime", forecast: "Forecast", historical: "Analogues" };
     const host = h("div"); votesCard.replaceChildren(h("div", { class: "panel-title" }, "How the engines vote"), host,
       h("div", { class: "chart-note" }, "Research engines, −1 bearish to +1 bullish. Grey = no usable signal. Context only — the buy rule is the momentum rank."));
     requestAnimationFrame(() => barChart(host, Object.entries(names).filter(([k2]) => st[k2]).map(([k2, lab]) => ({ label: lab, value: st[k2].score == null || st[k2].confidence === 0 ? 0 : st[k2].score,
       color: st[k2].score == null || st[k2].confidence === 0 ? css("--muted") : st[k2].score >= 0 ? css("--up") : css("--down") })), { fmt: (v) => (v >= 0 ? "+" : "") + num(v, 2) }));
-  }).catch((e) => votesCard.replaceChildren(h("div", { class: "panel-title" }, "How the engines vote"), h("p", { class: "muted" }, e.message)));
+  }).catch(showCardError(votesCard));
   api(`/ui/stock/${encodeURIComponent(sym)}/technical?bars=21`).then((t) => {
     const c = t.cone[t.cone.length - 1], last = t.close[t.close.length - 1];
     const rows = [["80% high", c.hi80, "--cone"], ["50% high", c.hi50, "--cone"], ["Today", last, "--ink"], ["50% low", c.lo50, "--cone"], ["80% low", c.lo80, "--cone"], [`Stop-loss (−${t.stop_pct}%)`, t.stop, "--down"]];
@@ -466,13 +466,14 @@ function analyticsSection(sym) {
       ...rows.map(([lab, v, col]) => h("div", { class: "spread", style: "margin:6px 0;font-size:13px" }, h("span", { style: "width:120px" }, lab),
         h("div", { style: "flex:1;margin:0 10px;position:relative;height:8px;background:var(--bg-3);border-radius:4px" }, h("i", { style: `position:absolute;left:${(v - lo) / (hi - lo || 1) * 100}%;top:-3px;width:14px;height:14px;border-radius:50%;background:var(${col});transform:translateX(-50%)` })),
         h("b", { class: "num" }, inr(v, 0)))), h("div", { class: "chart-note" }, `From current volatility. ${t.held_note} Up after ${t.horizon} days ${Math.round(t.base_rate_up * 100)}% of the time.`));
-  }).catch(() => {});
+  }).catch(showCardError(ladderCard));
+  root.setGaugeError = showCardError(gaugeCard);
   root.setGauge = (v) => {
     if (!v.momentum_rank) { gaugeCard.replaceChildren(h("div", { class: "panel-title" }, "Signal strength"), h("p", { class: "muted" }, "Not ranked — outside the Nifty 200.")); return; }
     const N = v.universe_size, x = (r) => (1 - (r - 1) / (N - 1)) * 100;
     gaugeCard.replaceChildren(h("div", { class: "panel-title" }, "Signal strength — momentum rank"),
       h("div", { class: "row", style: "align-items:baseline" }, h("span", { class: "big-num" }, `#${v.momentum_rank}`), h("span", { class: "muted" }, `of ${N} in the Nifty 200`)),
-      h("div", { class: "gauge-wrap" }, h("div", { class: "gauge" }, h("span", { style: `width:${100 - x(v.keep_rank)}%;background:var(--down-soft)` }), h("span", { style: `width:${x(v.keep_rank) - x(v.buy_rank)}%;background:var(--warn-soft)` }), h("span", { style: `width:${x(v.buy_rank)}%;background:var(--brand-soft)` })),
+      h("div", { class: "gauge-wrap" }, h("div", { class: "gauge" }, h("span", { style: `width:${x(v.keep_rank)}%;background:var(--down-soft)` }), h("span", { style: `width:${x(v.buy_rank) - x(v.keep_rank)}%;background:var(--warn-soft)` }), h("span", { style: `width:${100 - x(v.buy_rank)}%;background:var(--brand-soft)` })),
         h("div", { class: "gauge-marker", style: `left:${x(v.momentum_rank)}%` })),
       h("div", { class: "gauge-labels" }, h("span", {}, "weakest"), h("span", {}, `keep zone (top ${v.keep_rank})`), h("span", {}, `buy zone (top ${v.buy_rank})`)),
       h("div", { class: "chart-note" }, `Verdict: ${v.verdict}. The rank is re-checked at each rebalance.`));
@@ -658,8 +659,18 @@ function donut(container, parts) {
     ...parts.map((p) => h("div", { style: "font-size:13px" }, h("span", { class: "sw", style: `display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:8px;background:${p.color}` }), `${p.label} `, h("b", { class: "num" }, `${num(p.value, 1)}%`))))));
 }
 
+// one row per stored horizon, shortest first; the median is numpy's, as the stock chart's own note uses
+function bandRecords(coverage) {
+  const by = {};
+  for (const c of coverage) (by[c.horizon] = by[c.horizon] || []).push(c.coverage * 100);
+  return Object.keys(by).map(Number).sort((a, b) => a - b).map((horizon) => {
+    const v = by[horizon].sort((a, b) => a - b), k = v.length >> 1;
+    return { horizon, n: v.length, mid: v.length % 2 ? v[k] : (v[k - 1] + v[k]) / 2, lo: v[0], hi: v[v.length - 1] };
+  });
+}
+
 async function pagePerformance(view) {
-  let d; try { d = await api("/ui/performance"); } catch (e) { view.append(h("div", { class: "card empty" }, h("div", { class: "big" }, "📊"), h("h2", {}, "Performance results not built yet"), h("p", {}, "Run `stockintel build-performance` once (about 30 seconds), then reload."))); return; }
+  let d; try { d = await api("/ui/performance"); } catch (e) { view.append(e.status !== 404 ? errorBox(e) : h("div", { class: "card empty" }, h("div", { class: "big" }, "📊"), h("h2", {}, "Performance results not built yet"), h("p", {}, "Run `stockintel build-performance` once (about 30 seconds), then reload."))); return; }
   view.append(h("div", { class: "card" }, h("h2", {}, "How well does StockIntel actually work?"),
     h("p", { class: "muted", style: "margin-top:-6px" }, `Every number below is out of sample — tested on data the method never saw. Built ${new Date(d.built_at).toLocaleString("en-IN")}.`)));
   // 1. momentum
@@ -686,10 +697,10 @@ async function pagePerformance(view) {
   view.append(h("div", { class: "grid cols-2", style: "margin-top:18px" }, fcCard, calCard));
   // 3. ranges
   // provisional: within 3 points of the 80% target counts as calibrated
-  const cov = h("div"), cv = d.forecast.coverage.filter((c) => c.horizon === 5).map((c) => c.coverage * 100).sort((a, b) => a - b), cvMid = cv[Math.floor(cv.length / 2)];
+  const cov = h("div"), bands = bandRecords(d.forecast.coverage), off = bands.filter((b) => Math.abs(b.mid - 80) > 3).map((b) => `${b.horizon} days`);
   const covCard = h("div", { class: "card" }, h("h3", {}, "3 · Price ranges (the grey band on charts)"), h("p", { class: "sub" }, "Share of real outcomes that landed inside the 80% band. Target: 80%."), cov,
-    h("div", { class: "verdict-line" }, `Verdict: a median ${num(cvMid, 0)}% of outcomes landed inside (${num(cv[0], 0)}–${num(cv[cv.length - 1], 0)}% across stocks) — `
-      + (Math.abs(cvMid - 80) <= 3 ? "close to target, so the band is usable for sizing risk and stops." : "off target, so treat the band with caution.")));
+    h("div", { class: "verdict-line" }, `Verdict: median share inside ${bands.map((b) => `${num(b.mid, 0)}% at ${b.horizon} days (${num(b.lo, 0)}–${num(b.hi, 0)}% across stocks)`).join(", ")} — `
+      + (off.length ? `off target at ${off.join(" and ")}, so treat the band with caution there.` : "close to target, so the band is usable for sizing risk and stops.")));
   // 4. insider
   const ins = h("div");
   const insCard = h("div", { class: "card" }, h("h3", {}, "4 · Promoter buying"), h("p", { class: "sub" }, "Average return over the next 20 trading days versus all other stocks. The placebo uses random dates for the same stocks."), ins,
@@ -717,7 +728,7 @@ async function pagePerformance(view) {
     barChart(yearBars, live.yearly.flatMap((y) => [{ label: `${y.year} momentum ETF`, value: y.etf, color: css("--series-1") }, { label: `${y.year} Nifty 500`, value: y.nifty500, color: css("--series-4") }]));
     barChart(acc, d.forecast.horizons.map((x) => ({ label: `${x.horizon}-day accuracy`, value: x.accuracy * 100, color: css("--series-1") })), { fmt: (v) => num(v, 1) + "%", ref: Math.max(...d.forecast.horizons.map((x) => x.always_up_accuracy)) * 100, refLabel: "always-up guess" });
     calibrationPlot(cal, d.forecast.calibration);
-    barChart(cov, d.forecast.coverage.filter((c) => c.horizon === 5).map((c) => ({ label: `${c.symbol} (5-day)`, value: c.coverage * 100, color: css("--series-3") })), { fmt: (v) => num(v, 0) + "%", ref: 80, refLabel: "target 80%" });
+    barChart(cov, bands.map((b) => ({ label: `${b.horizon}-day, median of ${b.n} stocks`, value: b.mid, color: css("--series-3") })), { fmt: (v) => num(v, 0) + "%", ref: 80, refLabel: "target 80%" });
     barChart(ins, d.insider.map((r, k) => ({ label: r.test, value: r.excess_20d, color: css(k === 1 ? "--muted" : "--series-1") })), { fmt: (v) => pct(v, 2) });
     forestPlot(f1, candles, { threshold: d.bonferroni_z }); forestPlot(f2, chartsP, { threshold: d.bonferroni_z });
     if (om) barChart(omBars, [...om.chronos.horizons.flatMap((x) => [{ label: `Chronos ${x.horizon}-day`, value: x.chronos_direction_acc * 100, color: css("--ai") }, { label: `Base rate ${x.horizon}-day`, value: x.base_rate_acc * 100, color: css("--muted") }]),
@@ -733,6 +744,8 @@ const stockRow = (r, right) => h("a", { href: `#/stock/${encodeURIComponent(r.sy
   h("div", { class: "right" }, right));
 const priceChange = (price, chgPct) => [h("div", { class: "num" }, inr(price)), h("div", { class: `num ${cls(chgPct)}`, style: "font-size:12.5px" }, pct(chgPct))];
 function errorBox(e) { return h("div", { class: "card empty" }, h("div", { class: "big" }, "⚠"), h("p", {}, e.message || String(e))); }
+// keeps the card's title (its first child), so a failed request never leaves a skeleton or a blank chart
+const showCardError = (card) => (e) => card.replaceChildren(card.firstChild, h("p", { class: "muted" }, e.message));
 
 // ---------- pages ----------
 async function pageExplore(view) {
@@ -808,9 +821,9 @@ async function pageStock(view, sym) {
     h("p", { class: "analyst-text" }, a.text),
     h("div", { class: "muted", style: "font-size:12px" }, a.written_by ? `Written by ${a.written_by} from our models' numbers; every number was checked against them.`
       : `Computed note: ${a.draft_rejected.join("; ")}.`)))
-    .catch((e) => analystCard.replaceChildren(h("div", { class: "panel-title" }, "Analyst note"), h("p", { class: "muted" }, e.message)));
+    .catch(showCardError(analystCard));
   try { const v = await api(`/ui/stock/${encodeURIComponent(sym)}/verdict`); renderVerdict(verdictCard, v); analytics.setGauge(v); }
-  catch (e) { verdictCard.replaceChildren(h("h3", {}, "Should I buy?"), h("p", { class: "muted" }, e.message)); }
+  catch (e) { verdictCard.replaceChildren(h("h3", {}, "Should I buy?"), h("p", { class: "muted" }, e.message)); analytics.setGaugeError(e); }
 }
 
 function renderVerdict(card, v) {
@@ -915,7 +928,7 @@ function addTxModal(sym, price) {
 async function pagePortfolio(view) {
   view.append(h("div", { class: "card" }, skel(60)));
   let p, rep = null;
-  try { p = await api("/portfolio"); } catch (e) { p = null; }
+  try { p = await api("/portfolio"); } catch (e) { if (e.status !== 404) { view.replaceChildren(errorBox(e)); return; } }
   if (!p || !p.transactions.length) {
     view.replaceChildren(h("div", { class: "card empty" }, h("div", { class: "big" }, "💼"), h("h2", {}, "Your portfolio is empty"),
       h("p", {}, "Add the stocks you own (quantity, average price, date) to track P&L, risk and get sell signals."),
@@ -1130,16 +1143,16 @@ async function pageHome(view) {
     feature("chart", "Track record", "How well each method did on data it never saw — including the ones that don't work.", "#/performance")));
   view.append(h("p", { class: "footer-note" }, "Decision support, not investment advice. Verify figures against NSE/BSE filings before acting."));
   if (!hasKey) return;
-  let d; try { d = await api("/ui/performance"); } catch (e) { stats.replaceChildren(h("p", { class: "muted", style: "margin-top:14px" }, "Run `stockintel build-performance` once to show the measured track record here.")); return; }
-  const live = d.momentum.live_check, cov5 = d.forecast.coverage.filter((c) => c.horizon === 5), cov = cov5.reduce((a, c) => a + c.coverage, 0) / cov5.length;
+  let d; try { d = await api("/ui/performance"); } catch (e) { stats.replaceChildren(h("p", { class: "muted", style: "margin-top:14px" }, e.status !== 404 ? `Track record unavailable: ${e.message}` : "Run `stockintel build-performance` once to show the measured track record here.")); return; }
+  const live = d.momentum.live_check, band = bandRecords(d.forecast.coverage)[0];
   const edge = d.patterns.filter((r) => Math.abs(r.z || 0) >= d.bonferroni_z).length, ch5 = d.open_models && d.open_models.chronos.horizons.find((x) => x.horizon === 5);
   const gap = live.bars[0].cagr - live.bars[1].cagr, gapText = `${gap > 0 ? "+" : ""}${num(gap, 1)} pts/yr`;
-  floatA.replaceChildren(h("b", { class: cls(gap) }, gapText), "momentum fund vs Nifty 500"); floatB.replaceChildren(h("b", {}, `${num(cov * 100, 0)}%`), "of outcomes inside the 80% range");
+  floatA.replaceChildren(h("b", { class: cls(gap) }, gapText), "momentum fund vs Nifty 500"); floatB.replaceChildren(h("b", {}, `${num(band.mid, 0)}%`), `of outcomes inside the ${band.horizon}-day 80% range`);
   floatA.hidden = floatB.hidden = false;
   const tile = (visual, k, sub) => h("div", { class: "card ring-tile" }, visual, h("div", {}, h("div", { class: "k" }, k), h("div", { class: "muted", style: "font-size:12px" }, sub)));
   stats.replaceChildren(h("h2", { class: "section-title" }, "Measured, not promised"), h("div", { class: "grid cols-4" },
     tile(h("div", { class: `big-num ${cls(gap)}` }, gapText), "Momentum fund vs Nifty 500", `live ETF, ${live.window}`),
-    tile(ring(cov, `${num(cov * 100, 0)}%`, css("--up")), "Outcomes inside the 80% range", "5-day band, out of sample — the target is 80%"),
+    tile(ring(band.mid / 100, `${num(band.mid, 0)}%`, css("--up")), "Outcomes inside the 80% range", `${band.horizon}-day band, out of sample — the target is 80%`),
     tile(ring(edge / d.patterns.length, `${edge}/${d.patterns.length}`, css("--down")), "Patterns with a proven edge", "so patterns are shown, never traded"),
     ch5 ? tile(ring(ch5.chronos_direction_acc, `${num(ch5.chronos_direction_acc * 100, 0)}%`, css("--ai")), `AI (Chronos) ${ch5.horizon}-day direction`, `vs ${num(ch5.base_rate_acc * 100, 1)}% for the base rate, over ${num(ch5.n, 0)} forecasts`)
       : tile(h("div", { class: "big-num" }, "—"), "AI model record", "run `stockintel evaluate-models`")));
