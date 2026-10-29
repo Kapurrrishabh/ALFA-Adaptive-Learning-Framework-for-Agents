@@ -11,7 +11,7 @@ if ! command -v docker >/dev/null; then
 fi
 
 # Oracle's Ubuntu images reject inbound traffic in iptables even when the network's security list allows it
-for port in 80 443; do
+for port in 443; do
   sudo iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null \
     || sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport "$port" -j ACCEPT
 done

@@ -233,7 +233,8 @@ Oracle's Always Free tier includes an Ampere A1 VM with 4 cores and 24 GB of RAM
 agent and the forecasters together. `deploy/oracle/` runs them with Docker Compose: the app, the agent, a
 newswire refresher every 30 minutes, a daily price refresh, and Caddy for HTTPS. Only the language model
 stays on the ZeroGPU Space (`STOCKINTEL_SPACE_MODELS=writer`), because these cores lack fast 16-bit maths.
-Publish the models first (step 1 below; it also uploads the agent to `<you>/alfa-agent`), then on the VM:
+Publish the models first (step 1 below; it also uploads the agent to `<you>/alfa-agent`). In the VM's
+security list, open inbound TCP 443 only: Caddy gets its certificate over 443, so port 80 stays closed. Then on the VM:
 ```bash
 git clone https://github.com/Kapurrrishabh/ALFA-Adaptive-Learning-Framework-for-Agents.git alfa
 bash alfa/deploy/oracle/setup.sh
@@ -281,10 +282,11 @@ Things to know:
 - **Keep the key secret:** it is the only login. One portfolio per copy of the app.
 - **Not investment advice:** the app says this on every verdict; keep that if you publish it.
 
-Any Docker host works too:
+Any Docker host works too. Keep the port on the host's loopback and put HTTPS in front of it, as
+`deploy/oracle/` does with Caddy:
 ```bash
 docker build -t financial-advisor .
-docker run -p 8000:8000 -e STOCKINTEL_API_KEY=$(openssl rand -hex 24) -v advisor-data:/data financial-advisor
+docker run -p 127.0.0.1:8000:8000 -e STOCKINTEL_API_KEY=$(openssl rand -hex 24) -v advisor-data:/data financial-advisor
 ```
 
 ## Tests

@@ -1,5 +1,9 @@
+import re
+from pathlib import Path
+
 import pandas as pd
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from backend.advisory import report as R
@@ -14,6 +18,7 @@ from .conftest import NOW
 from .test_nlu_llm import _Picker
 
 KEY = "k" * 24
+ORACLE = Path(__file__).resolve().parents[3] / "deploy" / "oracle"
 
 
 @pytest.fixture
@@ -136,6 +141,18 @@ def test_api_rejects_missing_or_wrong_keys(orch):
     assert client.get("/health").status_code == 200
     assert client.get("/stocks/TEST/analysis").status_code == 401
     assert client.get("/stocks/TEST/analysis", headers={"X-API-Key": "wrong" * 5}).status_code == 401
+
+
+def test_api_route_map_is_not_served_to_anonymous_callers(orch):
+    client = TestClient(create_app(orch, api_key=KEY))
+    for path in ("/openapi.json", "/docs", "/redoc"):
+        assert client.get(path).status_code == 404, path
+
+
+def test_the_oracle_host_opens_only_https_to_the_internet():
+    compose = yaml.safe_load((ORACLE / "compose.yaml").read_text())
+    assert [p for s in compose["services"].values() for p in s.get("ports", [])] == ["443:443"]
+    assert re.findall(r"^for port in (.*); do$", (ORACLE / "setup.sh").read_text(), re.M) == ["443"]
 
 
 def test_api_analysis_and_domain_endpoints(orch):

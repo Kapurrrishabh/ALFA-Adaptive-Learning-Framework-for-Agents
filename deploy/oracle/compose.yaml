@@ -31,7 +31,7 @@ services:
 
   caddy:
     image: caddy:2
-    ports: ["80:80", "443:443"]
+    ports: ["443:443"]
     environment: {DOMAIN: "${DOMAIN}"}
     volumes: [./Caddyfile:/etc/caddy/Caddyfile:ro, caddy:/data]
     restart: unless-stopped
