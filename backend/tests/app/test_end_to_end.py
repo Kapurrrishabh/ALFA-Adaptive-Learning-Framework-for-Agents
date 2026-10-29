@@ -102,6 +102,60 @@ def test_portfolio_question_without_a_portfolio_says_so(orch):
     assert "No portfolio" in r.text
 
 
+@pytest.fixture
+def signal_inputs(local_provider, monkeypatch, tmp_path):
+    """The signal plan's panel, index list, insider file and track record, from the test frames."""
+    import backend.advisory.calculators.performance as perf
+    import backend.database.sources.panel as panel_mod
+    from backend.database.sources import insider
+    from backend.database.sources.provider import DataUnavailable
+
+    def no_insider():
+        raise DataUnavailable("no insider file in tests")
+    frames = {s.split(".")[0]: local_provider.frames[s] for s in ("TEST.NS", "PEER.NS")}
+    monkeypatch.setattr(panel_mod, "universe_panel", lambda *a, **k: panel_mod.panel_from_frames(frames))
+    monkeypatch.setattr(panel_mod, "index_constituents", lambda *a, **k: pd.DataFrame({"symbol": ["PEER"]}))
+    monkeypatch.setattr(insider, "load", no_insider)
+    monkeypatch.setattr(perf, "PATH", tmp_path / "missing.json")
+    return local_provider.frames["TEST.NS"]["close"]
+
+
+def _days_ago(n):
+    from datetime import date, timedelta
+    return (date.today() - timedelta(days=n)).isoformat()
+
+
+def test_tax_note_dates_a_rebought_holding_from_its_open_lot(orch, signal_inputs):
+    close = signal_inputs
+    px = {d: float(close.loc[:d].iloc[-1]) for d in (_days_ago(1000), _days_ago(700), _days_ago(70))}
+    orch.save_portfolio(0.0, "moderate", "long", [
+        {"symbol": "TEST", "side": side, "quantity": 10, "price": px[d], "trade_date": d}
+        for side, d in (("BUY", _days_ago(1000)), ("SELL", _days_ago(700)), ("BUY", _days_ago(70)))])
+    r = orch.handle("Rebalance my portfolio", "t")
+    test = next(a for a in r.data["payload"]["actions"] if a["symbol"] == "TEST")
+    assert test["tax_note"].startswith("short-term")
+
+
+def test_signal_plan_leaves_out_a_holding_that_looks_split(orch, signal_inputs):
+    d = _days_ago(200)
+    orch.save_portfolio(100_000.0, "moderate", "long", [
+        {"symbol": "TEST", "side": "BUY", "quantity": 10, "price": 10 * float(signal_inputs.loc[:d].iloc[-1]),
+         "trade_date": d}])
+    p = orch.handle("Rebalance my portfolio", "t").data["payload"]
+    assert "TEST" not in [a["symbol"] for a in p["actions"]]
+    assert any(w.startswith("TEST: you paid") and "about 10×" in w and "left out of this plan" in w
+               for w in p["warnings"])
+
+
+def test_stop_check_flags_a_likely_split_instead_of_a_stop_hit(orch, signal_inputs):
+    d = _days_ago(200)
+    orch.save_portfolio(0.0, "moderate", "long", [
+        {"symbol": "TEST", "side": "BUY", "quantity": 10, "price": 10 * float(signal_inputs.loc[:d].iloc[-1]),
+         "trade_date": d}])
+    r = orch.handle("Check my stops", "t")
+    assert "split or bonus issue" in r.text and "STOP HIT" not in r.text
+
+
 def test_knowledge_answer_never_contains_live_data(orch):
     r = orch.handle("What is RSI?", "k")
     assert r.intent == "knowledge" and "Static knowledge" in r.text and "Relative Strength" in r.text

@@ -8,7 +8,7 @@ from backend.database.sources import synthetic
 from backend.database.sources.panel import panel_from_frames
 from backend.advisory.signals import factors as F
 from backend.advisory.signals import strategies as S
-from backend.advisory.signals.advisor import Holding, _tax_note, exposure_for, plan
+from backend.advisory.signals.advisor import Holding, _tax_note, exposure_for, market_state, plan
 from backend.advisory.signals.simulate import metrics, simulate
 
 END = "2026-09-25"
@@ -131,9 +131,73 @@ def test_plan_skips_stocks_whose_single_share_exceeds_the_slot(panel):
 
 def test_tax_note_defers_profitable_exits_near_long_term_status():
     h = Holding("A", 10, 100.0, "2025-11-01")
-    assert _tax_note(h, 150.0, date(2026, 9, 27)).startswith("DEFER")
-    assert "loss" in _tax_note(Holding("A", 10, 100.0, "2026-06-01"), 90.0, date(2026, 9, 27))
-    assert "long-term loss" in _tax_note(Holding("A", 10, 100.0, "2024-01-01"), 90.0, date(2026, 9, 27))
+    assert _tax_note(h, 150.0, date(2026, 9, 27), 10).startswith("DEFER")
+    assert "loss" in _tax_note(Holding("A", 10, 100.0, "2026-06-01"), 90.0, date(2026, 9, 27), 10)
+    assert "long-term loss" in _tax_note(Holding("A", 10, 100.0, "2024-01-01"), 90.0, date(2026, 9, 27), 10)
+
+
+def test_tax_note_counts_only_the_shares_being_sold():
+    h = Holding("A", 100, 100.0, "2026-06-01")
+    assert _tax_note(h, 150.0, date(2026, 9, 27), 15) == "short-term gain of ₹750: 20% tax applies"
+
+
+def test_trim_near_long_term_status_is_deferred_not_sold(panel):
+    px = float(panel.close["WIN"].iloc[-1])
+    p = plan(panel, panel.close["S01"], 100_000, [Holding("WIN", 100, 3000.0, "2025-10-26")], n=4,
+             risk_mode="full", today=date(2026, 9, 27), measured=[])
+    win = next(a for a in p.actions if a.symbol == "WIN")
+    trimmed = 100 - int(p.capital / 4 // px)
+    assert win.action == "HOLD" and win.shares == 0
+    assert win.tax_note.startswith("DEFER") and f"₹{trimmed * (px - 3000) * 0.075:,.0f} tax" in win.tax_note
+
+
+def test_held_pick_already_below_its_stop_is_sold_in_full(panel):
+    px = float(panel.close["WIN"].iloc[-1])
+    p = plan(panel, panel.close["S01"], 100_000, [Holding("WIN", 10, px / 0.8, "2026-01-02")], n=4,
+             today=date(2026, 9, 27), measured=[])
+    win = next(a for a in p.actions if a.symbol == "WIN")
+    assert win.action == "SELL" and win.shares == 10 and win.stop_level > px
+
+
+def test_plan_never_spends_more_cash_than_it_has(panel):
+    # A profitable holding 30 days from long-term status is kept for tax, so it raises no cash.
+    lose = Holding("LOSE", 13_000, 5.0, "2025-10-26")
+    p = plan(panel, panel.close["S01"], 300_000, [lose], n=4, risk_mode="full", today=date(2026, 9, 27), measured=[])
+    assert next(a for a in p.actions if a.symbol == "LOSE").action == "HOLD"
+    assert sum(a.value for a in p.actions if a.action == "BUY") <= 300_000 and p.cash_left >= 0
+    assert any(w.startswith("Buys cut to") for w in p.warnings)
+
+
+def test_plan_prices_a_holding_that_misses_the_last_bar_at_its_last_close(panel):
+    frames = {s: pd.DataFrame({c: getattr(panel, c)[s] for c in ("open", "high", "low", "close", "volume")})
+              for s in panel.symbols}
+    frames["S03"].iloc[-1] = np.nan
+    p2 = panel_from_frames(frames)
+    p = plan(p2, p2.close["S01"], 100_000, [Holding("S03", 100, 100.0, "2026-01-02")], today=date(2026, 9, 27),
+             measured=[])
+    assert p.capital == pytest.approx(100_000 + 100 * float(p2.close["S03"].iloc[-2]))
+    assert any(w.startswith("S03: no price for 2026-09-25") for w in p.warnings)
+
+
+def test_defensive_plan_in_a_downtrend_holds_cash_without_blaming_share_prices(panel):
+    p = plan(panel, panel.close["LOSE"], 100_000, [], n=4, risk_mode="defensive", today=date(2026, 9, 27),
+             measured=[])
+    assert not p.actions and not any("slot" in w for w in p.warnings)
+    assert any("This 'defensive' plan holds cash" in w for w in p.warnings)
+
+
+def test_market_trend_reads_only_finished_months():
+    idx = pd.bdate_range(end="2026-09-25", periods=400)
+    bench = pd.Series(np.linspace(100, 200, 400), index=idx)
+    bench.loc["2026-09-01":] = 120.0          # a dip below the 10-month average before September is over
+    m = market_state(bench, idx[-1])
+    assert m["trend"] == "up" and m["month_end_close"] == pytest.approx(bench.loc["2026-08-31"], abs=0.01)
+
+
+def test_plan_does_not_cite_the_unmeasured_stop_as_evidence(panel):
+    p = plan(panel, panel.close["S01"], 100_000, [], n=4, today=date(2026, 9, 27), measured=[])
+    assert not any("Han–Zhou–Zhu" in e for e in p.evidence)
+    assert any("stop per stock" in e and "measured without it" in e for e in p.evidence)
 
 
 def test_metrics_on_a_known_path():
