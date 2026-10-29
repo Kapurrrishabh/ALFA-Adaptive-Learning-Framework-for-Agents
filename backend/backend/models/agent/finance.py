@@ -21,12 +21,20 @@ from backend.advisory.sentiment.feeds import feed
 # Questions are lowercased by the tokenizer anyway, and a ticker is the one token whose case a user
 # varies freely: "aapl", "Aapl", "AAPL" all name the same file.
 _WORD = re.compile(r"[A-Za-z][A-Za-z.]*")
+# Except a symbol that is also an everyday word: "transaction cost", "a cat", "after 3 pm" and "V-shaped" named
+# Costco, Caterpillar, Philip Morris and Visa. Those need capitals, standing alone and not after a figure ("50-day MA").
+_ALSO_WORDS = frozenset({"BA", "CAT", "COST", "DIS", "GE", "HD", "KO", "LIN", "MA", "PG", "PM", "V"})
+_JOINED = re.compile(r"(\d\S*\s*|-)$")
 
 REFUSAL = advisory.UNSUPPORTED
 
 # The routed intent that means "placed, and the figures do not carry it". Re-exported for the same reason
 # the refusal text is: the core acts on it and has no business knowing which dataset named it.
 UNANSWERABLE = advisory.UNSUPPORTED_INTENT
+
+# The intent that asks how the price moved, which is the one a time word ("lately") hands to the dated sources:
+# the figures say how far it moved and the news may say why. The other intents are asked "right now" too.
+MOVES = "performance"
 
 # Re-exported rather than read from advisory by the core: the core knows about a domain, not about which
 # dataset built it, and a second domain would cap its questions somewhere else.
@@ -39,7 +47,7 @@ UNKNOWN_QUESTION = "i am not sure what you are asking. i can talk about price, m
 
 OFF_TOPIC = "i can only help with money, markets, companies and the economy."
 
-NOT_IN_SOURCES = "i read the recent news and my documents on that, and none of it answers the question."
+NOT_IN_SOURCES = "i read the recent news on that, and none of it answers the question."
 
 UNREACHABLE = "i would have to read something outside my own documents to answer that, and i could not " \
               "reach it just now. ask again in a minute."
@@ -114,8 +122,10 @@ class Market:
         By symbol first, then by an exchange-listed company name as whole words, the longest name winning
         so "hdfc bank" is not read as some shorter name inside it.
         """
-        for word in _WORD.findall(text):
-            symbol = word.upper().strip(".")
+        for found in _WORD.finditer(text):
+            symbol = found.group(0).upper().strip(".")
+            if symbol in _ALSO_WORDS and not _typed_as_symbol(text, found):
+                continue
             if symbol in self.paths:
                 return symbol
             if symbol in self.aliases:
@@ -201,6 +211,11 @@ def without_subject(text, ticker):
 
 def _squeeze(text):
     return " ".join(text.split())
+
+
+def _typed_as_symbol(text, found):
+    return (found.group(0).isupper() and not _JOINED.search(text[: found.start()])
+            and not text[found.end():].startswith("-"))
 
 
 def ask(intent, phrasing, ticker):

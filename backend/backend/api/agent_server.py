@@ -28,6 +28,7 @@ from backend.models.core.backend import default_rng
 from backend.models.data import advisory
 
 from backend.models import serving as models
+from backend.models.agent.reference import REFERENCE
 from backend.database import NotYours
 
 # The frontend is served from somewhere else in development, so the browser will not talk to this at all
@@ -237,6 +238,7 @@ def create_app(agent, store, judge, refit, served, show=lambda turn: turn.served
         scheme, _, token = header.partition(" ")
         if scheme.lower() != "bearer" or not token:
             raise HTTPException(401, "send the session token as 'Authorization: Bearer <token>'")
+        store.user_of(token)
         return token
 
     return app
@@ -261,12 +263,14 @@ def _store_turn(store, token, conversation, turn, judge, refit, agent):
 
     A turn the decoder never reached is remembered but not judged. The log exists to relate confidence
     to correctness, and that turn has no confidence -- storing a 0.0 would put a number the model never
-    reported into the fit. Routing is gated on its own measurement, not on this log.
+    reported into the fit. Routing is gated on its own measurement, not on this log. A reference turn is
+    not judged either: a quote has no confidence, and a paraphrase's is another model's.
     """
-    if turn.answer:
+    if turn.answer and not turn.intent.startswith(REFERENCE):
         is_right, why, labeller = judge(turn.question, turn.evidence, turn.answer)
     else:
-        is_right, why, labeller = None, "nothing was generated to judge", None
+        is_right, why, labeller = None, ("nothing was generated to judge" if not turn.answer
+                                         else "the log holds only the advisory generator's answers"), None
     judged = None
     if is_right is not None:
         judged = store.feedback.append(datetime.now(timezone.utc).isoformat(timespec="seconds"),

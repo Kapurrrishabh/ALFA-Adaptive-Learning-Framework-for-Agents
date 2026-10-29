@@ -15,6 +15,11 @@ import re
 # The separated form is tried first and needs a real group, so "5 ," keeps its comma as punctuation
 # while a plain "1158.70" still matches whole instead of splitting into 115 and 8.70.
 _FIGURE = re.compile(r"[+-]?\d+(?:,\d{3})+(?:\.\d+)?%?|[+-]?\d+(?:\.\d+)?%?")
+# The digits in a key name ("rsi_14", decoded "rsi _ 14") are a window, not a value, so they back only a
+# window in the answer ("14 day", "the last 5"): a wrong rsi of 50 passed on the name "sma_50".
+_WINDOW = re.compile(r"(?<=last |past )(\d+)(?![\w%]|[.,]\d)|"
+                     r"(?<![\w.,])(\d+)(?=(?: and \d+)? ?-? ?(?:trading )?days?\b)", re.I)
+_NAMED_FIGURE = re.compile(r"_\d+|" + _FIGURE.pattern)
 
 
 def figures(text):
@@ -36,10 +41,15 @@ def unsupported_figures(answer, evidence):
     while the evidence states "-5.6%". A *signed* figure still has to match exactly, so an answer that
     flips the sign on a grounded number is still caught.
     """
-    stated = set(figures(evidence))
+    stated = set(_windows_named(evidence))
     magnitudes = {figure.lstrip("+-") for figure in stated}
-    return [figure for figure in figures(answer)
+    return [figure.lstrip("_") for figure in _windows_named(answer)
             if figure not in stated and (figure[:1] in "+-" or figure not in magnitudes)]
+
+
+def _windows_named(text):
+    """The figures `text` states, with every window written "_14", so a window and a value never match."""
+    return _NAMED_FIGURE.findall(_WINDOW.sub(r"_\1\2", re.sub(r"_ (?=\d)", "_", text)))
 
 
 def is_refusal(text, refusal):

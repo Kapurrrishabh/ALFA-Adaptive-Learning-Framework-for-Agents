@@ -250,6 +250,20 @@ def test_an_indian_ticker_resolves_without_its_suffix(market):
     assert market.resolve("what about RELIANCE ?") == "RELIANCE.NS"
 
 
+@pytest.mark.parametrize("question,named", [
+    ("What is the transaction cost of buying shares in India?", None), ("write me a poem about a cat", None),
+    ("what is a V-shaped recovery", None), ("is the price above the 50-day MA", None),
+    ("what happens after 3 pm", None), ("what happens after 3 PM", None),
+    ("how is COST doing ?", "COST"), ("is V a buy ?", "V"), ("is aapl above its 50-day MA ?", "AAPL"),
+    ("how is reliance doing ?", "RELIANCE.NS"),
+])
+def test_a_symbol_that_is_an_everyday_word_names_its_instrument_only_when_typed_as_one(tmp_path, question, named):
+    """"What is the transaction cost of buying shares in India?" was answered about Costco."""
+    for name in ("COST", "CAT", "PM", "MA", "V", "AAPL", "RELIANCE.NS"):
+        price_file(tmp_path, name)
+    assert finance.Market(tmp_path).resolve(question) == named
+
+
 def test_a_snapshot_reads_no_bar_after_the_one_asked_for(market):
     """The leakage rule the training snapshots obey. A snapshot that read one bar past its as-of date
     would quote a price nobody could have known, and every backtest built on it would be worthless."""
@@ -886,6 +900,35 @@ def test_a_lately_question_with_neither_prices_nor_news_says_so(market, router):
     turn = agent(market, router, reference=news_reference(ExplodingWriter(), news=())).answer(
         "what is the stock market doing today ?")
     assert not turn.spoke and turn.served == finance.NOT_IN_SOURCES
+    # only the newswire was read, so the refusal may not say the documents were
+    assert "documents" not in turn.served
+
+
+def test_a_move_word_in_a_question_naming_no_company_does_not_skip_the_lessons(market, router):
+    """"How are capital gains on shares taxed?" says "gains", and was sent to the newswire instead of the
+    lesson on taxes that answers it."""
+    built = news_reference(ExplodingWriter())
+    built.lessons = lambda question: [("Taxes on listed equity", "Gains held over a year are taxed at 12.5%.")]
+    turn = agent(market, router, reference=built).answer("How are capital gains on shares taxed?")
+    assert turn.spoke and turn.intent == "reference lesson"
+
+
+@pytest.mark.parametrize("question,intent", [("is AAPL overbought right now ?", "overbought"),
+                                             ("how far is AAPL off its recent high ?", "drawdown"),
+                                             ("is AAPL a good buy right now ?", "buy")])
+def test_a_time_word_in_an_intents_own_wording_keeps_it_on_that_intent(market, router, question, intent):
+    """"is INFY a good buy right now" lost the buy answer, which says there is no directional signal, to a
+    price-move summary under "What happened lately"."""
+    turn = agent(market, router, written="it is doing fine .", reference=news_reference(ExplodingWriter())).answer(
+        question)
+    assert turn.spoke and turn.intent == intent
+
+
+def test_the_latest_report_is_the_newest_passage_not_the_best_ranked():
+    """Passages arrive ranked by relevance with filings first, so the first is not the latest."""
+    from backend.models.agent import phrase
+    older = Chunk("Mint, 1 Sep 2026: Reliance Industries shares fell.", [], "https://n.test/old", "2026-09-01")
+    assert phrase.recent_plain(None, None, [older, NEWS]) == f"The latest report: {NEWS.text}"
 
 
 def test_the_language_model_reads_the_news_and_our_own_sentence_gives_the_prices(market, router):

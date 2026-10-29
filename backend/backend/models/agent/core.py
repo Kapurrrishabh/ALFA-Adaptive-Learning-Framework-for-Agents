@@ -96,12 +96,12 @@ class Agent:
             return (self._looked_up(question, as_of)
                     or self._quiet(question, self.domain.NO_SUBJECT, "no subject"))
 
-        if self.reference is not None and self.reference.asks_lately(question):
-            looked = self._looked_up(question, as_of, ticker=ticker)
+        route = self.router.route(self.domain.without_subject(question, ticker))
+        if self.reference is not None and self.reference.asks_lately(question, route.label == self.domain.MOVES):
+            looked = self._looked_up(question, as_of, ticker=ticker, margin=route.margin)
             if looked is not None:
                 return looked
 
-        route = self.router.route(self.domain.without_subject(question, ticker))
         if not bool(self.gate.answers([route.margin])[0]):
             return (self._looked_up(question, as_of, ticker=ticker, margin=route.margin)
                     or self._quiet(question, self.domain.UNKNOWN_QUESTION, "unclear question",

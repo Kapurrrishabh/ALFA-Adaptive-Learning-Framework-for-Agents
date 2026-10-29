@@ -60,6 +60,15 @@ def test_a_flipped_sign_is_still_caught():
     assert guardrails.unsupported_figures("it gained +4.8% .", EVIDENCE) == ["+4.8%"]
 
 
+@pytest.mark.parametrize("evidence", ["ticker AAPL ; rsi_14 73 ; sma_50 231.50",
+                                      "ticker aapl ; rsi _ 14 73 ; sma _ 50 231.50"])
+def test_a_window_in_a_key_name_does_not_support_a_value(evidence):
+    """The 14 day window is stated by "rsi_14" and the RSI is 73, so a slipped RSI of 50 must not pass on
+    "sma_50". The spaced form is the decoded evidence the measured gate reads."""
+    answer = "its 14 day rsi is 50 , which is neither overbought nor oversold ."
+    assert guardrails.unsupported_figures(answer, evidence) == ["50"]
+
+
 def test_a_refusal_has_nothing_to_support():
     assert guardrails.unsupported_figures(advisory.UNSUPPORTED, "") == []
 

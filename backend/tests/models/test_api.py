@@ -6,6 +6,7 @@ turn nobody has judged still gets stored, and no route hands one user another us
 """
 
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +14,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.models import serving as models
+from backend.models.agent import PARAPHRASED, QUOTED, REFERENCE
+from backend.models.agent.client import SelfAgentClient
 from backend.models.agent.core import Turn
 from backend.database import BUY, SELL, Store
 from backend.api.agent_server import create_app
@@ -138,6 +141,38 @@ def test_the_conversations_instrument_is_carried_into_the_next_question(tmp_path
     assert [subject for _, subject in agent.asked] == ["", "AAPL", "AAPL"]
 
 
+class _Socket:
+    """The test client's socket behind the two calls the StockIntel client makes on a `websockets` one."""
+
+    def __init__(self, session):
+        self.session = session
+
+    def send(self, text):
+        self.session.send_text(text)
+
+    def recv(self, timeout=None):
+        return self.session.receive_text()
+
+
+def test_the_stockintel_client_keeps_one_conversation_per_session(tmp_path, monkeypatch):
+    """"Analyze RELIANCE" and then "Why?" lost the instrument, because every question opened a new conversation."""
+    client, agent, _ = _app(tmp_path, judge=_verdicts())
+    token, _ = _signed_in(client)
+
+    @contextmanager
+    def connect(url, **_):
+        with client.websocket_connect("/chat") as session:
+            yield _Socket(session)
+
+    monkeypatch.setattr(SelfAgentClient, "_login", lambda self: token)
+    monkeypatch.setattr("websockets.sync.client.connect", connect)
+    asking = SelfAgentClient("http://agent.test")
+    asking.ask("is AAPL overbought ?", session="one")
+    asking.ask("why ?", session="one")
+    asking.ask("why ?")
+    assert [subject for _, subject in agent.asked] == ["", "AAPL", ""]
+
+
 def test_an_unjudged_turn_is_answered_and_stored_and_leaves_the_cut_alone(tmp_path):
     """A miss from the agent-as-teacher is unjudged, not guessed, and a guess here would be a label."""
     client, agent, store = _app(tmp_path, judge=_verdicts())
@@ -172,6 +207,34 @@ def test_a_turn_the_decoder_never_reached_is_stored_but_never_judged(tmp_path):
     assert store.feedback.rows(judged_only=False) == []
     (message,) = store.recent(token, ready["conversation"])
     assert message.served == "i could not understand you" and message.confidence is None
+
+
+class Quoting(Scripted):
+    """A reference turn: an answer the advisory generator never wrote, with its confidence or none."""
+
+    def __init__(self, how, confidence):
+        super().__init__()
+        self.how, self.confidence = how, confidence
+
+    def answer(self, question, as_of=None, subject=""):
+        return super().answer(question, as_of, subject)._replace(intent=f"{REFERENCE} {self.how}",
+                                                                 confidence=self.confidence)
+
+
+@pytest.mark.parametrize("how,confidence", [(QUOTED, float("nan")), (PARAPHRASED, 0.5)])
+def test_a_reference_turn_is_stored_but_never_judged_into_the_advisory_log(tmp_path, how, confidence):
+    """A quote with a verdict waiting crashed the socket on its NaN confidence, and a paraphrase's confidence
+    is another model's, so either one in the log would fit the advisory cut on numbers it never reported."""
+    client, _, store = _app(tmp_path, agent=Quoting(how, confidence), judge=_verdicts(True))
+    token, _ = _signed_in(client)
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": token})
+        ready = socket.receive_json()
+        stored = _ask(socket, "what is a stop loss order ?")[2]
+
+    assert stored["judged"] is None and store.feedback.rows(judged_only=False) == []
+    assert len(store.recent(token, ready["conversation"])) == 1
 
 
 def test_a_guarded_answer_carries_what_the_model_wrote(tmp_path):
@@ -211,6 +274,14 @@ def test_every_read_needs_a_bearer_token(tmp_path):
     client, _, _ = _app(tmp_path)
     assert client.get("/conversations").status_code == 401
     assert client.get("/portfolio", headers={"Authorization": "made-up"}).status_code == 401
+
+
+@pytest.mark.parametrize("route", ["/instruments", "/instruments/aapl", "/instruments/aapl/outlook",
+                                   "/instruments/aapl/scenarios"])
+def test_a_well_formed_token_that_is_no_session_is_refused(tmp_path, route):
+    """The instrument routes checked only the header's shape, so "Bearer x" drew 2,000 paths."""
+    client, _, _ = _app(tmp_path)
+    assert client.get(route, headers={"Authorization": "Bearer made-up"}).status_code == 403
 
 
 def test_holdings_come_back_from_the_trades_and_an_over_sell_is_refused(tmp_path):

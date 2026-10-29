@@ -52,9 +52,10 @@ LESSON_HOW = "lesson"
 UNANSWERED = "unanswered"
 
 # Words that say the answer is about what happened lately, so the live sources -- the newswire among them --
-# are read before a corpus that holds no news at all.
-RECENT = re.compile(r"\b(today|yesterday|this (week|month|quarter)|latest|lately|recent(ly)?|news|now|currently|"
-                    r"announc\w*|results?)\b", re.I)
+# are read before a corpus that holds no news at all. `NEWS` leaves out the time words the trained intents
+# are asked with too ("is it overbought right now", "how far is it off its recent high").
+NEWS = re.compile(r"\b(today|yesterday|this (week|month|quarter)|latest|news|announc\w*|results?)\b", re.I)
+RECENT = re.compile(NEWS.pattern + r"|\b(lately|recent(ly)?|now|currently)\b", re.I)
 # A question about a price move or what a company is up to asks what happened lately, and the newswire is
 # read before anything else: "any news on tata steel" ranked over Wikipedia and the newswire together was
 # answered from its 2007 acquisition, because a long article repeats the name more often than a headline.
@@ -130,13 +131,15 @@ class Reference:
         `finance.Market.snapshot`, given by the caller that holds the price files.
         """
         query = f"{question} {' '.join(subject.names)}" if subject else question
-        if subject is None and self.lessons is not None and not LATELY.search(question):
+        # A move word with no instrument is a concept question ("how are capital gains taxed"), not news
+        news_first = self.news is not None and (LATELY if subject else RECENT).search(question)
+        if subject is None and self.lessons is not None and not news_first:
             taught = self.lessons(question)
             if taught:
                 title, text = taught[0]
                 return Looked(text, f"document lesson:{title} ; published undated ; passage_1 {text}", LESSON_HOW,
                               [], float("nan"), text, "")
-        if self.news is not None and LATELY.search(question):
+        if news_first:
             return self._recent(question, query, as_of, subject, prices)
         for arm in self._arms(subject, question):
             chunks = arm(query, as_of, subject)
@@ -144,11 +147,12 @@ class Reference:
                 return self._read(question, chunks, subject)
         return None
 
-    def asks_lately(self, question):
+    def asks_lately(self, question, moves):
         """Whether a question says it is about now ("lately", "today", "news"), so prices, filings and headlines
         answer it before the advisory path: "how is AAPL doing lately" was refused at ALFA's confidence cut,
-        while the price files and the newswire held its answer."""
-        return self.news is not None and RECENT.search(question) is not None
+        while the price files and the newswire held its answer. A time word counts only when the question asks
+        how the price `moves`; for any other intent it takes a news word."""
+        return self.news is not None and (RECENT if moves else NEWS).search(question) is not None
 
     def _recent(self, question, query, as_of, subject, prices):
         """What happened lately, from everything dated: the price snapshot, SEC filings and headlines.

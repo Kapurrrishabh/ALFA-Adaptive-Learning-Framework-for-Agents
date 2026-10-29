@@ -27,6 +27,8 @@ class SelfAgentClient:
     def __init__(self, url: Optional[str] = None):
         self.url = (url or os.environ.get("SELFAGENT_URL", DEFAULT_URL)).rstrip("/")
         self._token: Optional[str] = None
+        # one agent conversation per caller session, so a follow-up like "why?" keeps the last instrument
+        self._conversations: Dict[str, int] = {}
         self._lock = threading.Lock()
 
     def status(self) -> Dict[str, Any]:
@@ -60,8 +62,10 @@ class SelfAgentClient:
                 raise AgentUnavailable(f"could not log in to the self-learning agent: HTTP {r.status_code} {r.text[:120]}")
             return r.json()["token"]
 
-    def ask(self, question: str, subject: str = "") -> Dict[str, Any]:
-        """One question over one socket; returns the agent's 'turn' frame."""
+    def ask(self, question: str, subject: str = "", session: str = "") -> Dict[str, Any]:
+        """One question over one socket; returns the agent's 'turn' frame.
+
+        An empty `session` starts a new conversation each time."""
         import httpx
         from websockets.exceptions import WebSocketException
         from websockets.sync.client import connect
@@ -70,11 +74,15 @@ class SelfAgentClient:
                 self._token = self._token or self._login()
                 ws_url = self.url.replace("http", "ws", 1) + "/chat"
                 with connect(ws_url, open_timeout=10, close_timeout=2, max_size=2 ** 24) as ws:
-                    ws.send(json.dumps({"token": self._token, "subject": subject}))
+                    ws.send(json.dumps({"token": self._token, "subject": subject,
+                                        "conversation": self._conversations.get(session)}))
                     first = json.loads(ws.recv(timeout=TIMEOUT_S))
                     if first.get("stage") == "refused":
                         self._token = None
+                        self._conversations.clear()
                         raise AgentUnavailable(f"agent refused the session: {first.get('because')}")
+                    if session:
+                        self._conversations[session] = first["conversation"]
                     ws.send(json.dumps({"question": question}))
                     while True:
                         frame = json.loads(ws.recv(timeout=TIMEOUT_S))

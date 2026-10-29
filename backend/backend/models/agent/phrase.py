@@ -102,7 +102,8 @@ def price_move(subject, prices):
 def recent_plain(subject, prices, chunks):
     """The same answer without a language model: the price sentence, then the newest report or the lack of one."""
     said = [price_move(subject, prices)] if prices else []
-    said.append(f"The latest report: {chunks[0].text}" if chunks
+    # the passages arrive ranked by relevance, with filings ahead of headlines, so the newest is picked by date
+    said.append(f"The latest report: {max(chunks, key=lambda chunk: chunk.day).text}" if chunks
                 else "I found no news or filing about it in the archive, so I cannot say why.")
     return " ".join(said)
 
