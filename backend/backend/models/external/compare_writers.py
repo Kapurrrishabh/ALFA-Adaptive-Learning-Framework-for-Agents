@@ -31,20 +31,20 @@ def build_facts(n: int):
     p = hub.panel()
     traded = (p.close * p.volume).iloc[-250:].mean()
     names = [s for s in hub.names().query("nifty200")["symbol"] if s in traded.index]
-    sheets = []
+    sheets, refused = [], []
     for sym in sorted(names, key=lambda s: -traded[s]):
         if len(sheets) == n:
             break
         try:
-            t, v = hub.technical(sym, bars=21), hub.verdict(sym)
-            sheets.append({"symbol": sym, "close": t["close"][-1], "as_of": t["as_of"], "alfa": hub.ai_forecast(sym, "alfa"),
-                           "gru": hub.ai_forecast(sym, "gru"), "band": t["cone"][-1],
-                           "verdict": {"stop": t["stop"], "rank": v["momentum_rank"], "universe": v["universe_size"],
-                                       "verdict": v["verdict"]}})
+            sheets.append(hub.analyst_inputs(sym))
         except DataUnavailable as exc:      # e.g. a recent listing has too little history for the models
             logging.info("skip %s: %s", sym, exc)
+            refused.append(f"{sym}: {exc}")
             continue
         logging.info("facts for %s", sym)
+    if len(sheets) < n:
+        # a refusal every stock gets (missing weights, a stale GRU calibration) must stop the run, not save an empty file
+        raise DataUnavailable(f"only {len(sheets)} of {n} stocks gave fact sheets; last refusals: {refused[-3:]}")
     INPUTS.write_text(json.dumps(sheets, ensure_ascii=False, default=float))
     return sheets
 
@@ -57,7 +57,7 @@ def main():
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     raw = json.loads(INPUTS.read_text()) if INPUTS.exists() else build_facts(args.stocks)
-    sheets = [analyst.facts(r["symbol"], r["close"], r["as_of"], r["alfa"], r["gru"], r["band"], r["verdict"]) for r in raw]
+    sheets = [analyst.facts(**r) for r in raw]
     results = json.loads(OUT.read_text()) if OUT.exists() else {}
     if args.rescore:
         by_stock = {f["stock"]: f for f in sheets}

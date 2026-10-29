@@ -960,9 +960,9 @@ def test_the_rolling_calibration_scores_a_date_only_once_a_full_year_of_test_out
 
 def test_the_rolling_calibration_fits_each_date_on_the_year_of_outcomes_known_before_it_and_nothing_else():
     """An outcome not yet known on a date, the date's own included, must not move its multiple; nor may one
-    older than the trailing year. One inside that year must."""
+    older than the trailing year. Every one inside that year must count."""
     import pandas as pd
-    from backend.models.training.calibrate_path_gru import KNOWN_AFTER_DAYS, TRAILING_DAYS, rolling_cut
+    from backend.models.training.calibrate_path_gru import KNOWN_AFTER_DAYS, LEVEL, TRAILING_DAYS, rolling_cut
     months = pd.date_range("2024-01-01", periods=36, freq="MS")
     origins = pd.DatetimeIndex(np.repeat(months, 5))
     distance = default_rng(0).uniform(0.5, 2.0, len(origins))
@@ -971,7 +971,9 @@ def test_the_rolling_calibration_fits_each_date_on_the_year_of_outcomes_known_be
     in_year = known & (origins > months[24] - pd.Timedelta(days=KNOWN_AFTER_DAYS + TRAILING_DAYS))
     cut = rolling_cut(distance, origins)[day][0]
     assert rolling_cut(np.where(in_year, distance, 100.0), origins)[day][0] == cut
-    assert rolling_cut(np.where(in_year, 100.0, distance), origins)[day][0] != cut
+    # the year's oldest outcomes, which a window not pushed back by the lag would drop, are in the data
+    assert (in_year & (origins <= months[24] - pd.Timedelta(days=TRAILING_DAYS))).any()
+    assert cut == pytest.approx(np.quantile(distance[in_year], LEVEL))
 
 
 def _calibration_inputs(validation_scale=1.0):

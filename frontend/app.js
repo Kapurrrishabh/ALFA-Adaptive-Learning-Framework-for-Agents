@@ -227,7 +227,7 @@ function candleChart(container, t, layers, selected, onPick) {
   if (layers.stop && t.stop) {
     const sx = X(Math.max(0, n - Math.round(n * 0.35)));
     svg.append(s("line", { x1: sx, x2: X(total - 1), y1: Y(t.stop), y2: Y(t.stop), stroke: css("--down"), "stroke-width": 1.5 }));
-    txt(sx + 2, Y(t.stop) + 13, `Stop-loss ${inr(t.stop, 0)} (−${t.stop_pct}%)`, { fill: css("--down"), "font-size": 10.5, "font-weight": 600 });
+    txt(sx + 2, Y(t.stop) + 13, `Stop-loss ${inr(t.stop, 0)} (−${t.stop_pct}% from the last close)`, { fill: css("--down"), "font-size": 10.5, "font-weight": 600 });
   }
   if (layers.cone) {
     const pts = (key) => t.cone.map((c, k) => `${X(n + k)},${Y(c[key])}`);
@@ -461,7 +461,7 @@ function analyticsSection(sym) {
   }).catch(showCardError(votesCard));
   api(`/ui/stock/${encodeURIComponent(sym)}/technical?bars=21`).then((t) => {
     const c = t.cone[t.cone.length - 1], last = t.close[t.close.length - 1];
-    const rows = [["80% high", c.hi80, "--cone"], ["50% high", c.hi50, "--cone"], ["Today", last, "--ink"], ["50% low", c.lo50, "--cone"], ["80% low", c.lo80, "--cone"], [`Stop-loss (−${t.stop_pct}%)`, t.stop, "--down"]];
+    const rows = [["80% high", c.hi80, "--cone"], ["50% high", c.hi50, "--cone"], ["Today", last, "--ink"], ["50% low", c.lo50, "--cone"], ["80% low", c.lo80, "--cone"], [`Stop-loss (−${t.stop_pct}% from last close)`, t.stop, "--down"]];
     const lo = Math.min(...rows.map((r) => r[1])), hi = Math.max(...rows.map((r) => r[1]));
     ladderCard.replaceChildren(h("div", { class: "panel-title" }, `Next ${t.horizon} trading days — plausible range`),
       ...rows.map(([lab, v, col]) => h("div", { class: "spread", style: "margin:6px 0;font-size:13px" }, h("span", { style: "width:120px" }, lab),
@@ -839,7 +839,7 @@ function renderVerdict(card, v) {
     h("div", { class: "kv", style: "margin-bottom:12px" },
       h("span", { class: "k" }, "Momentum rank"), h("span", {}, v.momentum_rank ? `${v.momentum_rank} of ${v.universe_size} (Nifty 200)` : "not ranked (outside Nifty 200)"),
       h("span", { class: "k" }, "Research view"), h("span", {}, `${v.research_label} · score ${num(v.research_score)} · confidence ${num(v.research_confidence)}${v.conflict ? " · engines disagree" : ""}`),
-      v.plan.stop_loss ? [h("span", { class: "k" }, "Stop-loss"), h("span", {}, `${inr(v.plan.stop_loss)} (10% below today)`)] : null,
+      v.plan.stop_loss ? [h("span", { class: "k" }, "Stop-loss"), h("span", {}, `${inr(v.plan.stop_loss)} (10% below the last close)`)] : null,
       v.plan.position_size ? [h("span", { class: "k" }, "Position size"), h("span", {}, v.plan.position_size)] : null,
       h("span", { class: "k" }, "Next review"), h("span", {}, v.plan.next_review)),
     h("div", { class: "note" }, v.evidence_note),

@@ -815,10 +815,32 @@ def test_the_analyst_note_quotes_the_closed_bar_its_forecasts_start_from(app_cli
     monkeypatch.setenv("STOCKINTEL_ML", "0")
     monkeypatch.setattr(hubmod.Hub, "ai_forecast", lambda self, sym, model: {})
     f, quoted = _analyst_facts(), []
-    monkeypatch.setattr(an, "facts", lambda sym, close, as_of, *rest: quoted.append((close, as_of)) or f)
+    monkeypatch.setattr(an, "facts", lambda close, as_of, **rest: quoted.append((close, as_of)) or f)
     history = _at_exchange_time(orch, monkeypatch, time(11, 0))
     app_client.get("/ui/stock/TEST/analyst", headers={"X-API-Key": KEY})
     assert quoted == [(round(float(history["close"].iloc[-2]), 2), str(history.index[-2].date()))]
+
+
+def test_every_stop_on_the_stock_page_is_the_one_below_the_last_close(app_client, orch, monkeypatch):
+    """In market hours the chart and verdict took the stop off the moving price and the analyst note off the last
+    close, so one page showed two stop-losses."""
+    import backend.advisory.analyst as an
+    import backend.api.hub as hubmod
+    from backend.advisory.signals.advisor import STOP_PCT
+    from tests.app.test_nlu_llm import _analyst_facts
+    monkeypatch.setenv("STOCKINTEL_ML", "0")
+    monkeypatch.setattr(hubmod.Hub, "ai_forecast", lambda self, sym, model: {})
+    f, noted = _analyst_facts(), []
+    monkeypatch.setattr(an, "facts", lambda verdict, **rest: noted.append(verdict["stop"]) or f)
+    history = _at_exchange_time(orch, monkeypatch, time(11, 0))
+    minute = history.iloc[-1:].set_axis(history.index[-1:] + pd.Timedelta(hours=11))
+    monkeypatch.setattr(orch.provider, "intraday", lambda sym, period, interval: minute)
+    h = {"X-API-Key": KEY}
+    app_client.get("/ui/stock/TEST/analyst", headers=h)
+    shown = [app_client.get("/ui/stock/TEST/technical", headers=h).json()["stop"],
+             app_client.get("/ui/stock/TEST/verdict", headers=h).json()["plan"]["stop_loss"],
+             app_client.get("/ui/stock/TEST/intraday?range=1D", headers=h).json()["levels"]["stop_10pct"], *noted]
+    assert shown == [round(float(history["close"].iloc[-2]) * (1 - STOP_PCT), 2)] * 4
 
 
 def test_the_gru_refuses_a_newest_bar_it_cannot_read(app_client, orch, monkeypatch):

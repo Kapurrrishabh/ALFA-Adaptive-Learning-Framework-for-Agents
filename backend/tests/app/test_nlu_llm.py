@@ -223,25 +223,40 @@ def test_analyst_note_credits_garch_when_garch_drew_the_fan():
     note = analyst.computed_note(f)
     assert note.startswith(f"Over the next {f['days_ahead']} trading days the standard GARCH model puts HDFCBANK at")
     assert "beat the standard GARCH" not in note and "our return model has not beaten it" in note
-    assert analyst.check(note, f) == []
+    assert analyst.check(analyst.note_to_reword(f), f) == []
     credits_ours = (f"Over the next {f['days_ahead']} trading days our return model puts HDFCBANK at ₹663 to ₹766, middle "
                     "₹714. The GRU's error was about the same as assuming no change, and its direction was within noise. "
                     "Verdict: DON'T BUY, stop-loss ₹638.")
-    assert any("leaves out GARCH" in r for r in analyst.check(credits_ours, f))
+    # the required words can be met with the wrong subject, so naming our model at all is refused
+    for draft in (credits_ours, credits_ours + " The standard GARCH model has not beaten it.",
+                  credits_ours.replace("our return model", "our model") + " GARCH has not beaten it."):
+        assert any("names our return model" in r for r in analyst.check(draft, f))
+
+
+@pytest.mark.parametrize("drawer, other", [("garch", "return model"), ("generative", "GARCH")])
+def test_the_writer_never_sees_how_the_two_models_compare_and_the_note_says_it_as_written(drawer, other):
+    from backend.advisory import analyst
+    f = _analyst_facts(drawer=drawer)
+    draft = (f"Over {f['days_ahead']} days the range is ₹663 to ₹766. The GRU's error is about the same as no change "
+             "and its direction is within noise. The verdict is DON'T BUY.")
+    writer = _Picker(draft)
+    out = analyst.write(f, writer)
+    assert other not in writer.prompts[0] and f["return_model_record"] not in writer.prompts[0]
+    assert out["text"] == f"{draft} {f['return_model_record']}" and out["written_by"] == "test-lm"
 
 
 def test_analyst_check_refuses_a_rewrite_that_says_the_gru_beat_the_band_when_it_did_not():
     from backend.advisory import analyst
     f = _analyst_facts(nll_gain_lo=-0.01)
-    note = analyst.computed_note(f)
+    note = analyst.note_to_reword(f)
     assert analyst.check(note, f) == []
     assert any("leaves out did not beat" in r for r in analyst.check(note.replace("did not beat", "beat"), f))
 
 
-def test_analyst_check_passes_the_computed_note_and_refuses_bad_drafts():
+def test_analyst_check_passes_the_note_it_rewords_and_refuses_bad_drafts():
     from backend.advisory import analyst
     f = _analyst_facts()
-    assert analyst.check(analyst.computed_note(f), f) == []
+    assert analyst.check(analyst.note_to_reword(f), f) == []
     good = (f"Over {f['days_ahead']} days the range is ₹663 to ₹766. The GRU's error is similar to assuming no change, and its "
             "direction is within noise. The verdict is DON'T BUY.")
     assert any("adds terms" in r for r in analyst.check(good + " A Granger test agrees.", f))
@@ -276,6 +291,39 @@ def test_analyst_shows_the_writers_note_only_when_it_passes():
     assert ok["written_by"] == "test-writer" and ok["draft_rejected"] == []
     bad = analyst.write(f, Writer("It will rise to ₹900."))
     assert bad["written_by"] is None and bad["text"] == analyst.computed_note(f) and bad["draft_rejected"]
+
+
+def _writer_comparison_inputs(monkeypatch, tmp_path, analyst_inputs, n):
+    """compare_writers' fact sheets for `n` of three stocks, from a hub whose analyst inputs are `analyst_inputs`."""
+    import pandas as pd
+    import backend.api.hub as hubmod
+    import backend.cli as cli
+    from backend.models.external import compare_writers
+    traded = pd.DataFrame(1.0, index=pd.bdate_range(end="2026-09-25", periods=5), columns=["AAA", "BBB", "CCC"])
+    hub = NS(panel=lambda: NS(close=traded, volume=traded), analyst_inputs=analyst_inputs,
+             names=lambda: pd.DataFrame({"symbol": list(traded.columns), "nifty200": [True] * 3}))
+    monkeypatch.setattr(cli, "_orchestrator", lambda args: None)
+    monkeypatch.setattr(hubmod, "Hub", lambda orch: hub)
+    monkeypatch.setattr(compare_writers, "INPUTS", tmp_path / "analyst_inputs.json")
+    return compare_writers.build_facts(n)
+
+
+def test_the_writer_comparison_scores_the_inputs_the_analyst_note_is_written_from(monkeypatch, tmp_path):
+    import json
+    sheets = _writer_comparison_inputs(monkeypatch, tmp_path, lambda sym: {"symbol": sym}, 2)
+    assert sheets == [{"symbol": "AAA"}, {"symbol": "BBB"}]
+    assert json.loads((tmp_path / "analyst_inputs.json").read_text()) == sheets
+
+
+def test_the_writer_comparison_stops_when_every_stock_is_refused(monkeypatch, tmp_path):
+    """A GRU record calibrated the old way refuses every stock; skipping them all saved an empty input file."""
+    from backend.database.sources.provider import DataUnavailable
+
+    def refuse(sym):
+        raise DataUnavailable("the GRU record carries an old calibration")
+    with pytest.raises(DataUnavailable, match="only 0 of 2 stocks gave fact sheets"):
+        _writer_comparison_inputs(monkeypatch, tmp_path, refuse, 2)
+    assert not (tmp_path / "analyst_inputs.json").exists()
 
 
 class _Picker:

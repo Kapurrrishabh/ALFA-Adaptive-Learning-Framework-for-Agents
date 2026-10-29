@@ -239,8 +239,13 @@ class Hub:
                                         f"historically this stock was up after {horizon} days {base_up:.0%} of the time, "
                                         "and no model we tested predicted direction better than that."),
             "base_rate_up": round(base_up, 3), "horizon": horizon, "held_note": held,
-            "stop": round(last * (1 - STOP_PCT), 2), "stop_pct": round(STOP_PCT * 100, 1),
+            "stop": self.stop_loss(symbol), "stop_pct": round(STOP_PCT * 100, 1),
         }
+
+    def stop_loss(self, symbol: str) -> float:
+        """The stop every part of the stock page quotes. It is taken off the last closed bar, so it holds still through
+        the session and matches the analyst note, which is cached on that bar."""
+        return round(float(self.orch.service().closed_history(symbol)["close"].iloc[-1]) * (1 - STOP_PCT), 2)
 
     INTRADAY = {"1D": ("1d", "5m"), "5D": ("5d", "15m"), "1M": ("1mo", "60m")}
 
@@ -274,7 +279,7 @@ class Hub:
                 "levels": {"prev_close": None if prev_close is None else round(prev_close, 2),
                            "support": tech.details.get("support_levels", [])[:2],
                            "resistance": tech.details.get("resistance_levels", [])[:2],
-                           "stop_10pct": round(last * 0.9, 2),
+                           "stop_10pct": self.stop_loss(symbol),
                            "range5_lo": round(last * float(np.exp(-z * sigma * np.sqrt(5))), 2),
                            "range5_hi": round(last * float(np.exp(z * sigma * np.sqrt(5))), 2)},
                 "note": "Intraday bars from Yahoo, may lag ~15 minutes."}
@@ -382,13 +387,12 @@ class Hub:
             # plan() sizes the portfolio from the capital and owns that rule, so the verdict names the size it assumes
             headline += (f" These bands are for a {N_DEFAULT}-stock portfolio; your rebalance plan sizes the portfolio "
                          "to your capital, and with fewer stocks it buys and keeps only higher ranks.")
-        price = a.price
         return {
             "symbol": sym, "verdict": verdict, "tone": tone, "headline": headline, "held": held,
             "momentum_rank": rank, "universe_size": total, "buy_rank": BUY_RANK, "keep_rank": KEEP_RANK, "research_label": d.decision_support_label,
             "research_score": d.score, "research_confidence": d.confidence, "conflict": d.conflict,
             "why_buy": why_buy[:7], "why_not": why_not[:7],
-            "plan": {"stop_loss": round(price * (1 - STOP_PCT), 2) if tone == "positive" else None,
+            "plan": {"stop_loss": self.stop_loss(sym) if tone == "positive" else None,
                      "next_review": next_rebalance(date.today()),
                      "position_size": f"equal slice of your momentum portfolio "
                                       f"(≈{100 * exposure_for('balanced', m) / N_DEFAULT:.1f}% with {N_DEFAULT} stocks)"
@@ -538,17 +542,24 @@ class Hub:
             self._writer = remote_models.writer()
         return self._writer
 
+    def analyst_inputs(self, symbol: str) -> Dict[str, Any]:
+        """What the analyst note is written from, as analyst.facts takes it; models/external/compare_writers.py
+        scores the writers on the same inputs."""
+        sym = symbol.upper()
+        t = self.technical(sym, bars=21, closed=True)
+        v = self.verdict(sym)
+        return {"symbol": sym, "close": t["close"][-1], "as_of": t["as_of"], "alfa": self.ai_forecast(sym, "alfa"),
+                "gru": self.ai_forecast(sym, "gru"), "band": t["cone"][-1],
+                "verdict": {"stop": t["stop"], "rank": v["momentum_rank"], "universe": v["universe_size"],
+                            "verdict": v["verdict"]}}
+
     def analyst_note(self, symbol: str) -> Dict[str, Any]:
         """Our models' numbers for one stock, written up by the language model and checked (advisory/analyst.py)."""
         from backend.advisory import analyst
         from backend.models.external.llm import LLMUnavailable
-        sym = symbol.upper()
-        t = self.technical(sym, bars=21, closed=True)
-        v = self.verdict(sym)
-        f = analyst.facts(sym, t["close"][-1], t["as_of"], self.ai_forecast(sym, "alfa"), self.ai_forecast(sym, "gru"),
-                          t["cone"][-1], {"stop": t["stop"], "rank": v["momentum_rank"], "universe": v["universe_size"],
-                                          "verdict": v["verdict"]})
-        key = (sym, t["as_of"], t["close"][-1])
+        inputs = self.analyst_inputs(symbol)
+        f = analyst.facts(**inputs)
+        key = (inputs["symbol"], inputs["as_of"], inputs["close"])
         cache = self.__dict__.setdefault("_analyst_cache", {})
         if key not in cache:
             if not self.ml_enabled():

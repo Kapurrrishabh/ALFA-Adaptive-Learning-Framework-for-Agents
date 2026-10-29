@@ -2,7 +2,9 @@
 
 `facts` gathers what the models measured for one stock and states each judgement in words
 ("about the same as no change", "within noise"); `computed_note` puts them in sentences. The writer
-only rewrites that note. A rewrite is shown only if `check` passes it: no figure, term or claim the
+only rewrites `note_to_reword`, the note less the sentence on which model drew the range: shown both models
+and how they compare, a writer credited the wrong one, so that sentence is added back as written. A rewrite
+is shown only if `check` passes it: no figure, term, claim or model the
 note does not carry, and nothing it leaves out that matters. Otherwise the computed note is shown,
 with the reason, because a 1.5B model composing from raw fields misattributed figures in testing.
 """
@@ -24,6 +26,8 @@ reliable or trustworthy. No lists or headings."""
 
 # the one-day limit belongs to the return model; the GRU was scored on every day it forecasts
 ONE_DAY = re.compile(r"\b(one|next)[- ]day\b", re.I)
+# the words a draft can credit the range with; ALFA, "our model" and "return model" all mean ours
+CREDITS = re.compile(r"\b(garch|alfa|return model|our model)\b", re.I)
 # provisional: within 2% of no-change's own error we call it "about the same"; there is no confidence
 # range on that gap yet, so a closer call would claim more than the record shows
 SAME_AS_NO_CHANGE = 0.02
@@ -52,9 +56,11 @@ def facts(symbol: str, close: float, as_of: str, alfa: Dict[str, Any], gru: Dict
         "stock": symbol, "as_of": as_of, "last_close": f"₹{close:,.2f}", "days_ahead": days, "fan_model": fan_model,
         "return_model_range": f"₹{lo:,} to ₹{hi:,}, middle ₹{mid:,} (80% of {fan_model}'s paths)",
         "volatility_band": f"₹{round(band['lo80']):,} to ₹{round(band['hi80']):,}",
-        "return_model_record": (f"beat the standard GARCH model on next-day returns by {-alfa['record']['vs_garch']:.3f} "
-                                f"nats per return; that edge is for one day ahead only" if generative
-                                else "is used because our return model has not beaten it on its own record"),
+        "return_model_record": (f"Our return model, which drew the ₹{lo:,} to ₹{hi:,} range, beat the standard GARCH model "
+                                f"on next-day returns by {-alfa['record']['vs_garch']:.3f} nats per return; that edge is "
+                                f"for one day ahead only." if generative
+                                else f"The standard GARCH model drew the ₹{lo:,} to ₹{hi:,} range because our return model "
+                                     f"has not beaten it on its own record."),
         "gru_line": f"ends at ₹{round(gru['close'][-1]):,}",
         "gru_moves": ("beat the volatility band at forecasting how big each day's move will be" if gt["nll_gain_lo"] > 0
                       else "did not beat the volatility band at forecasting how big each day's move will be"),
@@ -69,23 +75,32 @@ def facts(symbol: str, close: float, as_of: str, alfa: Dict[str, Any], gru: Dict
                      + ([("within noise", "within the noise")] if direction == 0 else [])
                      + ([("worse", "less often")] if direction < 0 else [])
                      + ([("did not beat", "didn't beat")] if gt["nll_gain_lo"] <= 0 else [])
-                     + ([("GARCH",), ("not beaten", "hasn't beaten")] if not generative else [])
                      + ([("about the same", "similar", "roughly the same")] if error_words == "about the same as" else []),
     }
 
 
-def computed_note(f: Dict[str, Any]) -> str:
+def note_to_reword(f: Dict[str, Any]) -> str:
     return (f"Over the next {f['days_ahead']} trading days {f['fan_model']} puts {f['stock']} at {f['return_model_range']}. "
-            f"That model {f['return_model_record']}. The volatility band says {f['volatility_band']}. The GRU line "
+            f"The volatility band says {f['volatility_band']}. The GRU line "
             f"{f['gru_line']}; its error was {f['gru_error']}, and its direction was {f['gru_direction']}. In testing the "
             f"GRU {f['gru_moves']}, so its thin lines show how far prices could swing day to day, not which way. "
             f"Verdict: {f['verdict']}, with a stop-loss at {f['stop_loss']} ({f['momentum']}).")
 
 
+def computed_note(f: Dict[str, Any]) -> str:
+    return f"{note_to_reword(f)} {f['return_model_record']}"
+
+
+def _credited(text: str) -> set:
+    return {"GARCH" if m.lower() == "garch" else "our return model" for m in CREDITS.findall(text)}
+
+
 def check(text: str, f: Dict[str, Any]) -> List[str]:
-    """Why a draft cannot be shown; empty when it can."""
+    """Why a draft of `note_to_reword` cannot be shown; empty when it can."""
     reasons = [f"figure {x} is not in the facts" for x in verify_numbers(text, [f, computed_note(f)])]
-    reasons += added_claims(text, computed_note(f))
+    reasons += added_claims(text, note_to_reword(f))
+    if wrong := _credited(text) - _credited(note_to_reword(f)):
+        reasons.append(f"it names {' and '.join(sorted(wrong))}, which its note does not")
     if any("GRU" in s and "return model" not in s and ONE_DAY.search(s) for s in re.split(r"(?<=\.)\s+", text)):
         reasons.append("it gives the return model's one-day limit to the GRU")
     if "$" in text:
@@ -98,9 +113,10 @@ def check(text: str, f: Dict[str, Any]) -> List[str]:
 
 
 def write(f: Dict[str, Any], writer) -> Dict[str, Any]:
-    """The writer's note when it passes `check`, else the computed note with the reason."""
-    resp = writer.create(SYSTEM, [{"role": "user", "content": "NOTE:\n" + computed_note(f)}])
+    """The writer's note with the record sentence it never saw when it passes `check`, else the computed note."""
+    resp = writer.create(SYSTEM, [{"role": "user", "content": "NOTE:\n" + note_to_reword(f)}])
     draft = writer.text(resp)
     reasons = check(draft, f)
-    return {"text": draft if not reasons else computed_note(f), "written_by": resp.model if not reasons else None,
+    return {"text": f"{draft.strip()} {f['return_model_record']}" if not reasons else computed_note(f),
+            "written_by": resp.model if not reasons else None,
             "draft_rejected": reasons, "draft": draft}

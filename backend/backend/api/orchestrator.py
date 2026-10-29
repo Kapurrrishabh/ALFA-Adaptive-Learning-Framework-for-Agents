@@ -599,7 +599,7 @@ class Orchestrator:
             lines.append("Why you might not:")
             lines += [f"  ✕ {x}" for x in v["why_not"]]
         if v["plan"]["stop_loss"]:
-            lines.append(f"\nIf you buy: stop-loss ₹{v['plan']['stop_loss']:,.2f} (10% below today), "
+            lines.append(f"\nIf you buy: stop-loss ₹{v['plan']['stop_loss']:,.2f} (10% below the last close), "
                          f"{v['plan']['position_size']}.")
         lines.append(f"Next review: {v['plan']['next_review']}.")
         lines.append(f"Research engines: {v['research_label']} (score {v['research_score']:+.2f}"
