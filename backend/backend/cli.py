@@ -511,7 +511,7 @@ def cmd_serve(args) -> int:
     from backend.models.external import remote_models
     from backend.models.serving import alfa_fan, gru_line, weights
     if weights.repo():                  # only what runs here: on a 0.1-CPU host the return model is on the Space
-        weights.pull([gru_line.WEIGHTS] + ([] if remote_models.on_space("alfa") else [alfa_fan.WEIGHTS]))
+        weights.pull([gru_line.WEIGHTS, alfa_fan.BACKTEST] + ([] if remote_models.on_space("alfa") else [alfa_fan.WEIGHTS]))
     saver = None
     if hfstate.repo():                  # restore before the database is opened
         logging.getLogger("stockintel.state").setLevel(logging.INFO)

@@ -756,6 +756,25 @@ def test_alfa_forecast_quotes_its_own_saved_record(app_client, monkeypatch):
     assert "beat GARCH(1,1)-t by 0.032 ± 0.003 nats per return over 80,576 returns" in r["note"] and r["note"].endswith("No direction.")
 
 
+@pytest.mark.parametrize("days,said", [(None, "80% range held 77.0% of outcomes (95% range 72.2%–81.8%) against 78.5% for "
+                                               "the volatility band, and was narrower"),
+                                       (5, "No backtest has scored the 10-day fan drawn here")])
+def test_alfa_forecast_quotes_the_backtest_of_the_fan_it_draws_and_no_other(app_client, monkeypatch, tmp_path, days, said):
+    import json as _json
+    import backend.models.serving.alfa_fan as am
+    tested = tmp_path / "alfa_fan_backtest.json"
+    tested.write_text(_json.dumps({"days": days or am.STEPS, "rows": 396, "dates": 33, "from": "2024-01-01",
+                                   "alfa": {"cover80": 0.7702, "cover80_lo_hi": [0.7222, 0.8182], "mean_log_width": 0.1045},
+                                   "band": {"cover80": 0.7854, "cover80_lo_hi": [0.7398, 0.8308], "mean_log_width": 0.112}}))
+    drawer = {"name": "generative", "test_from": "2023-01-02",
+              "measured": {"vs_garch": -0.0323, "vs_garch_error": 0.0032, "scored": 80576}}
+    monkeypatch.setattr(am, "BACKTEST", tested)
+    monkeypatch.setattr(am, "available", lambda: True)
+    monkeypatch.setattr(am, "fan", lambda close: {**{f"q{q}": [100.0] * am.STEPS for q in (10, 25, 50, 75, 90)},
+                                                   "drawer": drawer, "direction_note": "No direction."})
+    assert said in app_client.get("/ui/stock/TEST/ai?model=alfa", headers={"X-API-Key": KEY}).json()["note"]
+
+
 def test_alfa_runs_on_the_model_space_when_one_is_set_even_with_local_weights(app_client, monkeypatch):
     import json as _json
     import backend.models.external.remote_models as rm

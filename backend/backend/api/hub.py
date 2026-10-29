@@ -45,6 +45,20 @@ def _calibration_words(record: Dict[str, Any]) -> str:
             f"when whole dates are resampled), ")
 
 
+def _fan_test_words(days: int) -> str:
+    """How ALFA's chained fan held when backtested at the length drawn, or that nothing has tested it."""
+    import json
+    from backend.models.serving import alfa_fan
+    tested = json.loads(alfa_fan.BACKTEST.read_text()) if alfa_fan.BACKTEST.exists() else None
+    if tested is None or tested["days"] != days:
+        return f"No backtest has scored the {days}-day fan drawn here. "
+    ours, band = tested["alfa"], tested["band"]
+    lo, hi = ours["cover80_lo_hi"]
+    return (f"Backtested on {tested['rows']} past {days}-day fans over {tested['dates']} dates from {tested['from']}, its "
+            f"80% range held {ours['cover80']:.1%} of outcomes (95% range {lo:.1%}–{hi:.1%}) against {band['cover80']:.1%} "
+            f"for the volatility band, and was {'narrower' if ours['mean_log_width'] < band['mean_log_width'] else 'wider'}. ")
+
+
 class Hub:
     def __init__(self, orch: Orchestrator, preload: bool = False):
         self.orch = orch
@@ -501,8 +515,7 @@ class Hub:
             m = d["measured"]
             note = ((f"Our return model (ALFA project, {d['name']}): on next-day returns from {d['test_from']} it beat "
                      f"GARCH(1,1)-t by {-m['vs_garch']:.3f} ± {m['vs_garch_error']:.3f} nats per return over {m['scored']:,} returns. "
-                     f"That score is for one day ahead; the record saved with the model does not score the "
-                     f"{len(cache[key]['dates'])}-day fan drawn here. ")
+                     f"That score is for one day ahead. " + _fan_test_words(len(cache[key]["dates"])))
                     if d["name"] == "generative" else "GARCH(1,1)-t draws these paths: ALFA's return model has not beaten it on its own record. ")
             return {"symbol": symbol.upper(), "model": model, "as_of": key[2], **cache[key], "record": m,
                     "note": note + cache[key]["direction_note"]}

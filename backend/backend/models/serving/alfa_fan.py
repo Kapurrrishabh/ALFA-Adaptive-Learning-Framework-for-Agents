@@ -12,6 +12,8 @@ from backend.models.core.backend import default_rng, xp
 from backend.paths import ARTIFACTS
 
 WEIGHTS = ARTIFACTS / "returns.npz"
+# the chained fan's own test (models/training/backtest_alfa_fan.py); the weights' record scores one day ahead
+BACKTEST = ARTIFACTS / "alfa_fan_backtest.json"
 STEPS, PATHS = FORECAST_DAYS, 500
 _LOADED = None
 

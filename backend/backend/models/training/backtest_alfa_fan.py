@@ -19,9 +19,8 @@ from backend.models.learning.protocol import SCORE_STRIDE, TEST_START
 from backend.models.serving import alfa_fan
 from backend.models.training import train_path_gru as T
 from backend.models.training.calibrate_path_gru import date_range, kupiec_p, one_per_date
-from backend.paths import ARTIFACTS
 
-OUT = ARTIFACTS / "alfa_fan_backtest.json"
+OUT = alfa_fan.BACKTEST
 DAYS = alfa_fan.STEPS
 
 

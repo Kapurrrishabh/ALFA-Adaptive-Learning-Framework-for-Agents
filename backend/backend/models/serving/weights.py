@@ -17,7 +17,7 @@ from typing import Iterable
 from backend.models.serving import alfa_fan, gru_line
 from backend.paths import ARTIFACTS, DATA
 
-PUBLISHED = (alfa_fan.WEIGHTS, gru_line.WEIGHTS)
+PUBLISHED = (alfa_fan.WEIGHTS, alfa_fan.BACKTEST, gru_line.WEIGHTS)
 
 # What the agent server reads on start, traced from models/agent/run/serve.py: its two generators and their
 # tokenizer and registry, the routing cut, the week-ahead head, the return model, the retrieval index, and
