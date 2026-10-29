@@ -136,6 +136,10 @@ class AnalysisService:
         sym = resolve_symbol(symbol, self.market.code)
         return self._cached(("info", sym), lambda: self.provider.info(sym))
 
+    def splits(self, symbol: str) -> pd.DataFrame:
+        sym = resolve_symbol(symbol, self.market.code)
+        return self._cached(("splits", sym), lambda: self.provider.splits(sym))
+
     def financials(self, symbol: str) -> Dict[str, pd.DataFrame]:
         sym = resolve_symbol(symbol, self.market.code)
         return self._cached(("stmt", sym), lambda: self.provider.financials(sym))

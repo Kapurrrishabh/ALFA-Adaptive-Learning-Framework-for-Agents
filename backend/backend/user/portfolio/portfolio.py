@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import asdict, dataclass, field
-from typing import Deque, Dict, List, Optional, Sequence
+from typing import Deque, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -46,6 +46,7 @@ class Position:
     cost_basis: float
     realized_pl: float
     sector: Optional[str]
+    lots: List[Tuple[str, float, float]] = field(default_factory=list)  # open (date, shares, cost each), oldest first
 
     @property
     def avg_cost(self) -> float:
@@ -53,7 +54,7 @@ class Position:
 
 
 def build_positions(transactions: Sequence[Transaction]) -> Dict[str, Position]:
-    lots: Dict[str, Deque[List[float]]] = {}
+    lots: Dict[str, Deque[list]] = {}
     realized: Dict[str, float] = {}
     sectors: Dict[str, Optional[str]] = {}
     for tx in sorted(transactions, key=lambda t: t.trade_date):
@@ -62,7 +63,7 @@ def build_positions(transactions: Sequence[Transaction]) -> Dict[str, Position]:
         if tx.sector:
             sectors[tx.symbol] = tx.sector
         if tx.side == "BUY":
-            q.append([tx.quantity, tx.price + tx.fees / tx.quantity])
+            q.append([tx.quantity, tx.price + tx.fees / tx.quantity, tx.trade_date])
             continue
         held = sum(l[0] for l in q)
         if tx.quantity > held + 1e-9:
@@ -82,7 +83,7 @@ def build_positions(transactions: Sequence[Transaction]) -> Dict[str, Position]:
     for sym, q in lots.items():
         qty = sum(l[0] for l in q)
         out[sym] = Position(symbol=sym, quantity=qty, cost_basis=sum(l[0] * l[1] for l in q),
-                            realized_pl=realized[sym], sector=sectors.get(sym))
+                            realized_pl=realized[sym], sector=sectors.get(sym), lots=[(l[2], l[0], l[1]) for l in q])
     return out
 
 

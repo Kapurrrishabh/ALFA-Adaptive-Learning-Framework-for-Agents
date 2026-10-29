@@ -27,6 +27,7 @@ class LocalProvider(Provider):
         self.infos: Dict[str, Dict[str, Any]] = {}
         self.news_items: Dict[str, List[NewsItem]] = {}
         self.statements: Dict[str, Dict[str, pd.DataFrame]] = {}
+        self.split_histories: Dict[str, pd.DataFrame] = {}
 
     def _key(self, symbol: str) -> str:
         return symbol.upper()
@@ -62,6 +63,11 @@ class LocalProvider(Provider):
         if not out:
             raise DataUnavailable(f"no local financial statements for {symbol}")
         return out
+
+    def splits(self, symbol: str) -> pd.DataFrame:
+        if self._key(symbol) not in self.split_histories:
+            raise DataUnavailable(f"no local split history for {symbol}")
+        return self.split_histories[self._key(symbol)]
 
     def news(self, symbol: str, limit: int = 25) -> List[NewsItem]:
         key = self._key(symbol)

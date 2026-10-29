@@ -136,24 +136,59 @@ def test_tax_note_dates_a_rebought_holding_from_its_open_lot(orch, signal_inputs
     assert test["tax_note"].startswith("short-term")
 
 
-def test_signal_plan_leaves_out_a_holding_that_looks_split(orch, signal_inputs):
-    d = _days_ago(200)
-    orch.save_portfolio(100_000.0, "moderate", "long", [
-        {"symbol": "TEST", "side": "BUY", "quantity": 10, "price": 10 * float(signal_inputs.loc[:d].iloc[-1]),
-         "trade_date": d}])
+def _split_history(close, split_day=None):
+    """Provider.splits for TEST: `close` in today's shares, and a 2-for-1 split on `split_day`."""
+    ratio = pd.Series(1.0, index=close.index)
+    if split_day is not None:
+        ratio[split_day] = 2.0
+    return pd.DataFrame({"close": close, "ratio": ratio})
+
+
+def _store_test_buy(orch, cash, price, day):
+    orch.save_portfolio(cash, "moderate", "long", [
+        {"symbol": "TEST", "side": "BUY", "quantity": 10, "price": price, "trade_date": day}])
+
+
+def test_signal_plan_refuses_a_buy_stored_in_pre_split_shares(orch, local_provider, signal_inputs):
+    close, d = signal_inputs, _days_ago(200)
+    local_provider.split_histories["TEST.NS"] = _split_history(close, close.index[-50])
+    _store_test_buy(orch, 100_000.0, 2 * float(close.loc[:d].iloc[-1]), d)
+    r = orch.handle("Rebalance my portfolio", "t")
+    assert r.text.startswith(f"I couldn't complete that: TEST: since your buy on {d}, each share has become 2")
+    assert "Re-enter it as 2× the shares" in r.text
+
+
+def test_signal_plan_keeps_a_buy_already_in_post_split_shares(orch, local_provider, signal_inputs):
+    close, d = signal_inputs, _days_ago(200)
+    local_provider.split_histories["TEST.NS"] = _split_history(close, close.index[-50])
+    _store_test_buy(orch, 100_000.0, float(close.loc[:d].iloc[-1]), d)
     p = orch.handle("Rebalance my portfolio", "t").data["payload"]
-    assert "TEST" not in [a["symbol"] for a in p["actions"]]
-    assert any(w.startswith("TEST: you paid") and "about 10×" in w and "left out of this plan" in w
-               for w in p["warnings"])
+    assert "TEST" in [a["symbol"] for a in p["actions"]]
 
 
-def test_stop_check_flags_a_likely_split_instead_of_a_stop_hit(orch, signal_inputs):
+def test_signal_plan_does_not_mistake_dividends_for_a_split(orch, local_provider, signal_inputs):
+    # Dividends lower the adjusted close but not the split-only one, so a high-yield stock's price
+    # paid drifts to 2x the adjusted close (COALINDIA 2017) with no split at all.
+    close, d = signal_inputs, _days_ago(200)
+    local_provider.split_histories["TEST.NS"] = _split_history(2 * close)
+    _store_test_buy(orch, 100_000.0, 2 * float(close.loc[:d].iloc[-1]), d)
+    p = orch.handle("Rebalance my portfolio", "t").data["payload"]
+    assert "TEST" in [a["symbol"] for a in p["actions"]] and not any("split" in w for w in p["warnings"])
+
+
+def test_signal_plan_says_when_it_could_not_check_for_splits(orch, signal_inputs):
     d = _days_ago(200)
-    orch.save_portfolio(0.0, "moderate", "long", [
-        {"symbol": "TEST", "side": "BUY", "quantity": 10, "price": 10 * float(signal_inputs.loc[:d].iloc[-1]),
-         "trade_date": d}])
+    _store_test_buy(orch, 100_000.0, float(signal_inputs.loc[:d].iloc[-1]), d)
+    p = orch.handle("Rebalance my portfolio", "t").data["payload"]
+    assert any(w.startswith("Could not check TEST (no local split history") for w in p["warnings"])
+
+
+def test_stop_check_flags_a_split_instead_of_a_stop_hit(orch, local_provider, signal_inputs):
+    close, d = signal_inputs, _days_ago(200)
+    local_provider.split_histories["TEST.NS"] = _split_history(close, close.index[-50])
+    _store_test_buy(orch, 0.0, 2 * float(close.loc[:d].iloc[-1]), d)
     r = orch.handle("Check my stops", "t")
-    assert "split or bonus issue" in r.text and "STOP HIT" not in r.text
+    assert "through splits or bonus issues" in r.text and "STOP HIT" not in r.text
 
 
 def test_knowledge_answer_never_contains_live_data(orch):

@@ -21,6 +21,13 @@ def test_fifo_realized_pl_and_remaining_cost_basis():
     assert pos.quantity == 5 and pos.avg_cost == pytest.approx(120)
 
 
+def test_open_lots_keep_the_dates_of_the_shares_still_held():
+    pos = build_positions([tx("A", "BUY", 10, 100, "2024-01-01"), tx("A", "SELL", 10, 110, "2024-08-01"),
+                           tx("A", "BUY", 10, 120, "2026-08-20"), tx("A", "BUY", 5, 130, "2026-09-01"),
+                           tx("A", "SELL", 3, 125, "2026-09-10")])["A"]
+    assert pos.lots == [("2026-08-20", 7, 120), ("2026-09-01", 5, 130)]
+
+
 def test_fees_reduce_realized_pl():
     pos = build_positions([tx("A", "BUY", 10, 100, "2024-01-01", fees=10),
                            tx("A", "SELL", 10, 110, "2024-02-01", fees=10)])["A"]

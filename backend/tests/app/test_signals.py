@@ -23,6 +23,11 @@ def panel():
     return panel_from_frames(frames)
 
 
+def _frames(panel):
+    return {s: pd.DataFrame({c: getattr(panel, c)[s] for c in ("open", "high", "low", "close", "volume")})
+            for s in panel.symbols}
+
+
 def test_nse_momentum_formula_matches_hand_computation(panel):
     asof = panel.close.index[-1]
     m = F.momentum_score(panel.close, asof)
@@ -109,7 +114,7 @@ def test_exposure_modes():
 
 def test_plan_buys_top_ranked_sells_dropouts_and_sizes_to_capital(panel):
     bench = panel.close["S01"]
-    holdings = [Holding("LOSE", 100, 100.0, "2026-01-02")]
+    holdings = [Holding("LOSE", [("2026-01-02", 100, 100.0)])]
     p = plan(panel, bench, 100_000, holdings, n=4, today=date(2026, 9, 27), measured=[])
     buys = [a for a in p.actions if a.action == "BUY"]
     assert "WIN" in [a.symbol for a in buys]
@@ -120,8 +125,7 @@ def test_plan_buys_top_ranked_sells_dropouts_and_sizes_to_capital(panel):
 
 
 def test_plan_skips_stocks_whose_single_share_exceeds_the_slot(panel):
-    frames = {s: pd.DataFrame({c: getattr(panel, c)[s] for c in ("open", "high", "low", "close", "volume")})
-              for s in panel.symbols}
+    frames = _frames(panel)
     frames["WIN"] = frames["WIN"] * [100, 100, 100, 100, 1]
     p2 = panel_from_frames(frames)
     p = plan(p2, p2.close["S01"], 40_000, [], n=2, today=date(2026, 9, 27), measured=[])
@@ -130,20 +134,28 @@ def test_plan_skips_stocks_whose_single_share_exceeds_the_slot(panel):
 
 
 def test_tax_note_defers_profitable_exits_near_long_term_status():
-    h = Holding("A", 10, 100.0, "2025-11-01")
+    h = Holding("A", [("2025-11-01", 10, 100.0)])
     assert _tax_note(h, 150.0, date(2026, 9, 27), 10).startswith("DEFER")
-    assert "loss" in _tax_note(Holding("A", 10, 100.0, "2026-06-01"), 90.0, date(2026, 9, 27), 10)
-    assert "long-term loss" in _tax_note(Holding("A", 10, 100.0, "2024-01-01"), 90.0, date(2026, 9, 27), 10)
+    assert "loss" in _tax_note(Holding("A", [("2026-06-01", 10, 100.0)]), 90.0, date(2026, 9, 27), 10)
+    assert "long-term loss" in _tax_note(Holding("A", [("2024-01-01", 10, 100.0)]), 90.0, date(2026, 9, 27), 10)
 
 
 def test_tax_note_counts_only_the_shares_being_sold():
-    h = Holding("A", 100, 100.0, "2026-06-01")
+    h = Holding("A", [("2026-06-01", 100, 100.0)])
     assert _tax_note(h, 150.0, date(2026, 9, 27), 15) == "short-term gain of ₹750: 20% tax applies"
+
+
+def test_tax_note_splits_a_sale_across_old_and_new_lots():
+    h = Holding("A", [("2024-01-01", 10, 100.0), ("2026-08-01", 10, 140.0)])
+    assert _tax_note(h, 150.0, date(2026, 9, 27), 10).startswith("long-term gain of ₹500 (held 1000 days)")
+    assert _tax_note(h, 150.0, date(2026, 9, 27), 20) == (
+        "long-term gain of ₹500 on 10 shares (held 1000 days): 12.5% tax on gains above ₹1.25 lakh per year; "
+        "short-term gain of ₹100 on 10 shares: 20% tax applies")
 
 
 def test_trim_near_long_term_status_is_deferred_not_sold(panel):
     px = float(panel.close["WIN"].iloc[-1])
-    p = plan(panel, panel.close["S01"], 100_000, [Holding("WIN", 100, 3000.0, "2025-10-26")], n=4,
+    p = plan(panel, panel.close["S01"], 100_000, [Holding("WIN", [("2025-10-26", 100, 3000.0)])], n=4,
              risk_mode="full", today=date(2026, 9, 27), measured=[])
     win = next(a for a in p.actions if a.symbol == "WIN")
     trimmed = 100 - int(p.capital / 4 // px)
@@ -153,30 +165,58 @@ def test_trim_near_long_term_status_is_deferred_not_sold(panel):
 
 def test_held_pick_already_below_its_stop_is_sold_in_full(panel):
     px = float(panel.close["WIN"].iloc[-1])
-    p = plan(panel, panel.close["S01"], 100_000, [Holding("WIN", 10, px / 0.8, "2026-01-02")], n=4,
+    p = plan(panel, panel.close["S01"], 100_000, [Holding("WIN", [("2026-01-02", 10, px / 0.8)])], n=4,
              today=date(2026, 9, 27), measured=[])
     win = next(a for a in p.actions if a.symbol == "WIN")
     assert win.action == "SELL" and win.shares == 10 and win.stop_level > px
 
 
+def test_held_pick_whose_low_touched_its_stop_is_sold(panel):
+    px = float(panel.close["WIN"].iloc[-1])
+    frames = _frames(panel)
+    frames["WIN"].loc[frames["WIN"].index[-1], "low"] = 0.85 * px
+    p2 = panel_from_frames(frames)
+    p = plan(p2, p2.close["S01"], 100_000, [Holding("WIN", [("2026-01-02", 10, px)])], n=4,
+             today=date(2026, 9, 27), measured=[])
+    win = next(a for a in p.actions if a.symbol == "WIN")
+    assert win.action == "SELL" and win.stop_level == pytest.approx(round(px * 0.9, 2))
+
+
+def test_plan_counts_only_the_stocks_it_holds_after_the_orders(panel):
+    px = float(panel.close["WIN"].iloc[-1])
+    p = plan(panel, panel.close["S01"], 100_000, [Holding("WIN", [("2026-01-02", 10, px / 0.8)])], n=4,
+             today=date(2026, 9, 27), measured=[])
+    assert [a.action for a in p.actions].count("SELL") == 1 and p.positions == 3
+
+
 def test_plan_never_spends_more_cash_than_it_has(panel):
     # A profitable holding 30 days from long-term status is kept for tax, so it raises no cash.
-    lose = Holding("LOSE", 13_000, 5.0, "2025-10-26")
+    lose = Holding("LOSE", [("2025-10-26", 13_000, 5.0)])
     p = plan(panel, panel.close["S01"], 300_000, [lose], n=4, risk_mode="full", today=date(2026, 9, 27), measured=[])
     assert next(a for a in p.actions if a.symbol == "LOSE").action == "HOLD"
     assert sum(a.value for a in p.actions if a.action == "BUY") <= 300_000 and p.cash_left >= 0
-    assert any(w.startswith("Buys cut to") for w in p.warnings)
+    spent = sum(a.value for a in p.actions if a.action == "BUY")
+    assert any(w.startswith("Buys cut from") and f"to ₹{spent:,.0f}:" in w for w in p.warnings)
 
 
 def test_plan_prices_a_holding_that_misses_the_last_bar_at_its_last_close(panel):
-    frames = {s: pd.DataFrame({c: getattr(panel, c)[s] for c in ("open", "high", "low", "close", "volume")})
-              for s in panel.symbols}
+    frames = _frames(panel)
     frames["S03"].iloc[-1] = np.nan
     p2 = panel_from_frames(frames)
-    p = plan(p2, p2.close["S01"], 100_000, [Holding("S03", 100, 100.0, "2026-01-02")], today=date(2026, 9, 27),
+    p = plan(p2, p2.close["S01"], 100_000, [Holding("S03", [("2026-01-02", 100, 100.0)])], today=date(2026, 9, 27),
              measured=[])
     assert p.capital == pytest.approx(100_000 + 100 * float(p2.close["S03"].iloc[-2]))
     assert any(w.startswith("S03: no price for 2026-09-25") for w in p.warnings)
+
+
+def test_held_stock_without_todays_price_is_held_not_sold(panel):
+    frames = _frames(panel)
+    frames["WIN"].iloc[-1] = np.nan
+    p2 = panel_from_frames(frames)
+    p = plan(p2, p2.close["S01"], 100_000, [Holding("WIN", [("2026-01-02", 10, 100.0)])], n=4,
+             today=date(2026, 9, 27), measured=[])
+    win = next(a for a in p.actions if a.symbol == "WIN")
+    assert win.action == "HOLD" and win.reasons[0].startswith("no price for 2026-09-25") and not win.tax_note
 
 
 def test_defensive_plan_in_a_downtrend_holds_cash_without_blaming_share_prices(panel):
@@ -194,10 +234,11 @@ def test_market_trend_reads_only_finished_months():
     assert m["trend"] == "up" and m["month_end_close"] == pytest.approx(bench.loc["2026-08-31"], abs=0.01)
 
 
-def test_plan_does_not_cite_the_unmeasured_stop_as_evidence(panel):
+def test_plan_says_the_stop_was_measured_cutting_return(panel):
     p = plan(panel, panel.close["S01"], 100_000, [], n=4, today=date(2026, 9, 27), measured=[])
     assert not any("Han–Zhou–Zhu" in e for e in p.evidence)
-    assert any("stop per stock" in e and "measured without it" in e for e in p.evidence)
+    assert any("stop per stock" in e and "measured without it" in e and "also cut the return" in e
+               for e in p.evidence)
 
 
 def test_metrics_on_a_known_path():

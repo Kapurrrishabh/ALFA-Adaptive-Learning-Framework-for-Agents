@@ -57,6 +57,11 @@ class Provider(abc.ABC):
         """Intraday bars, exchange-local time, oldest first."""
         raise DataUnavailable(f"{self.name} provider has no intraday data")
 
+    def splits(self, symbol: str) -> pd.DataFrame:
+        """Daily `close` adjusted for splits and bonus issues but not dividends, and `ratio`:
+        shares per old share on each split or bonus ex-date, 1.0 on other days."""
+        raise DataUnavailable(f"{self.name} provider has no split history")
+
     def upcoming_events(self, symbol: str) -> List[str]:
         """Scheduled events (earnings, ex-dividend) after today, as sentences."""
         raise DataUnavailable(f"{self.name} provider has no event calendar")

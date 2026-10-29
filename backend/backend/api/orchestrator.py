@@ -38,35 +38,22 @@ SESSION_REUSE_S = 900
 SYMBOL_RE = re.compile(r"^\^?[A-Z0-9&\-]{1,20}(\.(NS|BO))?$")
 DOMAINS = ("technical", "candlestick", "pattern", "fundamental", "news_sentiment", "risk",
            "regime", "forecast", "historical")
-SPLIT_TOLERANCE = 0.10   # PROVISIONAL: not yet checked against NSE's list of past splits and bonus issues
 
 
-def _open_buys(transactions: List[Dict[str, Any]], symbol: str, quantity: float) -> List[Dict[str, Any]]:
-    """The BUYs still open, newest first. FIFO sells take the oldest shares, so the open ones are the newest bought."""
-    out, left = [], quantity
-    for t in reversed(sorted((t for t in transactions if t["symbol"] == symbol and t["side"] == "BUY"),
-                             key=lambda t: t["trade_date"])):
-        if left <= 1e-9:
-            break
-        out.append(t)
-        left -= t["quantity"]
-    return out
-
-
-def _split_note(symbol: str, buys: List[Dict[str, Any]], close: pd.Series) -> Optional[str]:
-    """Prices are split-adjusted and stored trades are not, so paying a whole multiple
-    of that day's close points to a split or bonus issue since."""
-    for t in buys:
-        day = close.loc[:t["trade_date"]]
-        if day.empty:
+def _split_note(symbol: str, lots: List[Tuple[str, float, float]], history: pd.DataFrame) -> Optional[str]:
+    """Stored buys are in the shares of their day; `history` (Provider.splits) is in today's shares."""
+    for day, _, cost in lots:
+        ratio = float(history["ratio"].loc[history.index > day].prod())
+        before = history["close"].loc[:day]
+        if ratio == 1 or before.empty:
             continue
-        ratio = t["price"] / float(day.iloc[-1])
-        k = round(ratio)
-        if k >= 2 and abs(ratio / k - 1) <= SPLIT_TOLERANCE:
-            return (f"{symbol}: you paid ₹{t['price']:,.2f} on {t['trade_date']}, about {k}× that day's "
-                    f"split-adjusted close of ₹{float(day.iloc[-1]):,.2f}, so a split or bonus issue has likely "
-                    f"happened since. Your stored shares and cost are from before it; if so, re-enter that buy "
-                    f"as {k}× the shares at 1/{k} of the price.")
+        close = float(before.iloc[-1])
+        # A buy kept in old shares cost about ratio× that day's close, so ask which of 1× and ratio× is nearer.
+        if cost / close > ratio ** 0.5:
+            return (f"{symbol}: since your buy on {day}, each share has become {ratio:g} through splits or bonus "
+                    f"issues, and that buy is stored in the old shares: it cost ₹{cost:,.2f} a share, "
+                    f"{cost / close:.1f}× that day's close of ₹{close:,.2f} in today's shares. "
+                    f"Re-enter it as {ratio:g}× the shares at ₹{cost / ratio:,.2f} each.")
     return None
 
 
@@ -537,27 +524,25 @@ class Orchestrator:
         from backend.advisory.signals.advisor import Holding, plan
         panel = universe_panel("nifty500", "10y")
         bench = self.service().history("^NSEI")["close"]
-        positions, cash, meta = self.holdings()
-        holdings, split_notes = [], []
-        for k, p in positions.items():
-            if p.quantity <= 0:
-                continue
-            buys = _open_buys(meta["transactions"], k, p.quantity)
-            note = _split_note(k, buys, panel.close[k].dropna()) if k in panel.close.columns else None
-            if note:
-                split_notes.append(note + " It is left out of this plan until then.")
-            else:
-                holdings.append(Holding(k, p.quantity, p.avg_cost, buys[-1]["trade_date"]))
+        positions, cash, _ = self.holdings()
+        holdings = [Holding(k, p.lots) for k, p in positions.items() if p.quantity > 0]
+        split_notes, unchecked = [], []
+        for h in holdings:
+            try:
+                split_notes.append(_split_note(h.symbol, h.lots, self.service().splits(h.symbol)))
+            except DataUnavailable as exc:
+                unchecked.append(f"{h.symbol} ({exc})")
+        if any(split_notes):
+            raise ValueError(" ".join(filter(None, split_notes)) + " Then ask for the plan again.")
         capital = i.amount if i.amount else cash
         if not capital and not holdings:
-            raise ValueError(" ".join(split_notes) or "Tell me how much you want to invest (e.g. 'what should I "
-                             "buy with ₹1 lakh?') or import your portfolio first.")
+            raise ValueError("Tell me how much you want to invest (e.g. 'what should I buy with ₹1 lakh?') "
+                             "or import your portfolio first.")
         t = i.raw.lower()
         strategy = "lowvol" if re.search(r"low[- ]?vol|safe|defensive stocks|stable", t) else \
             "blend" if re.search(r"blend|mix|balanced portfolio", t) else "momentum"
         risk = {"conservative": "defensive", "aggressive": "full"}.get(s.risk_profile, "balanced")
         from backend.database.sources import insider
-        from backend.database.sources.provider import DataUnavailable
         try:
             trades = insider.load()
         except DataUnavailable:
@@ -565,7 +550,9 @@ class Orchestrator:
         p = plan(panel, bench, float(capital or 0.0) or 1.0, holdings, strategy=strategy, risk_mode=risk,
                  universe=list(index_constituents("nifty200")["symbol"]), insider_trades=trades,
                  measured=performance.momentum_evidence(performance.track_record()))
-        p.warnings += split_notes
+        if unchecked:
+            p.warnings.append(f"Could not check {', '.join(unchecked)} for a split or bonus issue since you bought; "
+                              "if there was one, the shares and cost used here are from before it.")
         return p
 
     def _h_signals(self, s: Session, i: Intent) -> Reply:
@@ -600,7 +587,7 @@ class Orchestrator:
 
     def _h_stops(self, s: Session, i: Intent) -> Reply:
         from backend.advisory.signals.advisor import STOP_PCT
-        positions, _, meta = self.holdings()
+        positions, _, _ = self.holdings()
         if not positions:
             raise ValueError("No stored portfolio to check stops on.")
         planned = {a["symbol"]: a["stop_level"] for a in (self.store.latest_plan() or {}).get("actions", [])
@@ -610,14 +597,19 @@ class Orchestrator:
             if p.quantity <= 0:
                 continue
             df = self.service().history(sym)
-            split = _split_note(sym, _open_buys(meta["transactions"], sym, p.quantity), df["close"])
+            unchecked = ""
+            try:
+                split = _split_note(sym, p.lots, self.service().splits(sym))
+            except DataUnavailable as exc:
+                split, unchecked = None, f" (could not check for a split or bonus issue since you bought: {exc})"
             if split:
                 lines.append(f"- {split} Its stop is not checked until then.")
                 continue
             level = planned.get(sym, round(p.avg_cost * (1 - STOP_PCT), 2))
             low, px = float(df["low"].iloc[-1]), float(df["close"].iloc[-1])
             lines.append(f"- {sym}: close ₹{px:,.2f}, stop ₹{level:,.2f} — "
-                         + ("STOP HIT, sell at next open" if low <= level else f"{(px / level - 1) * 100:+.1f}% above"))
+                         + ("STOP HIT, sell at next open" if low <= level else f"{(px / level - 1) * 100:+.1f}% above")
+                         + unchecked)
         return Reply("\n".join(lines), "stops", {}, ["stops"])
 
     @property

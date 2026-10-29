@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -29,7 +29,7 @@ from backend.advisory.signals import strategies as S
 N_DEFAULT = 20
 DP_CHARGE = 15.34            # ₹ per scrip per sell day (CDSL/NSDL + broker), Zerodha 2026
 MIN_POSITION = 20_000.0      # below this the DP charge alone costs > 0.08% per exit
-STOP_PCT = 0.10              # Han–Zhou–Zhu stop inside momentum
+STOP_PCT = 0.10              # on by default; our backtest measured it cutting return as well as drawdown
 LTCG_DAYS = 365
 TAX_WINDOW_DAYS = 60         # PROVISIONAL: defer profitable exits this close to long-term status
 REBALANCE_MONTHS = (6, 12)   # NSE semi-annual, executed in June and December
@@ -38,9 +38,15 @@ REBALANCE_MONTHS = (6, 12)   # NSE semi-annual, executed in June and December
 @dataclass
 class Holding:
     symbol: str
-    quantity: float
-    avg_cost: float
-    buy_date: Optional[str] = None
+    lots: List[Tuple[str, float, float]]      # open (buy date, shares, cost each), oldest first
+
+    @property
+    def quantity(self) -> float:
+        return sum(q for _, q, _ in self.lots)
+
+    @property
+    def avg_cost(self) -> float:
+        return sum(q * c for _, q, c in self.lots) / self.quantity
 
 
 @dataclass
@@ -208,9 +214,10 @@ def plan(panel: Panel, bench: pd.Series, capital: float, holdings: List[Holding]
             kind = "HOLD" if abs(delta) * px < 0.25 * budget * weights[sym] else ("ADD" if delta > 0 else "TRIM")
             reasons.append(f"still ranks within the keep band (top {2 * n})")
             stop = round(max(by_sym[sym].avg_cost, px) * (1 - STOP_PCT), 2) if strategy != "lowvol" else None
-            if stop and px <= stop:
+            if stop and panel.low[sym].iloc[-1] <= stop:
                 kind, delta = "SELL", -have
-                reasons.append(f"at or below its {STOP_PCT:.0%} stop of ₹{stop:,.2f}, so the stop rule sells it")
+                reasons.append(f"traded at or below its {STOP_PCT:.0%} stop of ₹{stop:,.2f} on {asof.date()}, "
+                               "so the stop rule sells it")
             note = _tax_note(by_sym[sym], px, today, -delta) if kind in ("TRIM", "SELL") else None
             if kind == "TRIM" and note and note.startswith("DEFER"):
                 kind = "HOLD"
@@ -224,6 +231,10 @@ def plan(panel: Panel, bench: pd.Series, capital: float, holdings: List[Holding]
             continue
         px = float(prices[h.symbol]) if h.symbol in prices.index and not np.isnan(prices[h.symbol]) else float("nan")
         rk = rank_of.get(h.symbol)
+        if h.symbol in close.columns and np.isnan(close[h.symbol].iloc[-1]):
+            actions.append(Action(h.symbol, "HOLD", 0, px, 0.0, rk, [f"no price for {asof.date()}, so it cannot "
+                                  "be ranked today; kept until it has one"]))
+            continue
         why = [f"ranked {rk} of {len(ranked)}, outside the keep band (top {2 * n})" if rk
                else "no longer in the ranked universe"]
         note = _tax_note(h, px, today, h.quantity)
@@ -236,19 +247,19 @@ def plan(panel: Panel, bench: pd.Series, capital: float, holdings: List[Holding]
     buys = [a for a in actions if a.action in ("BUY", "ADD")]
     spend = sum(a.value for a in buys)
     if spend > raised:
-        f = raised / spend
         for a in buys:
-            a.shares = int(a.shares * f)
+            a.shares = int(a.shares * raised / spend)
             a.value = round(a.shares * a.price, 2)
             if a.action == "ADD" and not a.shares:
                 a.action = "HOLD"
         actions = [a for a in actions if a.shares or a.action != "BUY"]
-        warnings.append(f"Buys cut to {f:.0%} of their targets: cash plus sale proceeds come to ₹{raised:,.0f}, "
-                        "because some holdings stay above target (kept for tax, or close enough to it)")
+        warnings.append(f"Buys cut from ₹{spend:,.0f} to ₹{sum(a.value for a in buys):,.0f}: cash plus sale proceeds "
+                        f"come to ₹{raised:,.0f}, because some holdings stay above target (kept for tax, or close "
+                        "enough to it)")
     stale = [a.symbol for a in actions if a.symbol in close.columns and np.isnan(close[a.symbol].iloc[-1])]
     if stale:
-        warnings.append(f"{', '.join(stale)}: no price for {asof.date()}, so priced at the last close and possibly "
-                        "missing from today's ranking; re-run the plan before acting on these lines")
+        warnings.append(f"{', '.join(stale)}: no price for {asof.date()}, so priced at the last close; re-run the "
+                        "plan once it has one before acting on these lines")
     if insider_trades is not None and len(insider_trades):
         _attach_insider_flags(actions, insider_trades, asof)
     ranking = [{"rank": i + 1, "symbol": s, "score": round(float(ranked.loc[s, "score"]), 3),
@@ -261,13 +272,14 @@ def plan(panel: Panel, bench: pd.Series, capital: float, holdings: List[Holding]
         *measured,
         "Momentum crashes happen in sharp rebounds after bear markets; "
         f"'balanced' mode cuts exposure to {CRASH_EXPOSURE:.0%} in that regime.",
-        f"The {STOP_PCT:.0%} stop per stock is a risk rule added to NSE's method: the live ETF and the backtest "
-        "figures here were measured without it, so they do not show what the stop costs or saves.",
+        f"The {STOP_PCT:.0%} stop per stock is a risk rule added to NSE's method, and the figures above were "
+        "measured without it. In our backtest it cut the worst fall but also cut the return, and left no edge "
+        "over holding the same stocks in equal weights (docs/DESIGN.md §28.2).",
         "Expect to trail the market in some years. Stick to the schedule.",
     ]
     return Plan(as_of=str(asof.date()), generated_at=utcnow_iso(), strategy=strategy, capital=total,
-                invest_fraction=round(invest, 2), positions=len(picks), market=m, actions=actions,
-                ranking=ranking, cash_left=round(capital + _net_cash(actions), 2),
+                invest_fraction=round(invest, 2), positions=sum(a.action != "SELL" for a in actions), market=m,
+                actions=actions, ranking=ranking, cash_left=round(capital + _net_cash(actions), 2),
                 next_rebalance=next_rebalance(today), evidence=evidence, warnings=warnings)
 
 
@@ -312,22 +324,35 @@ def _reasons(sym: str, mom: pd.DataFrame, low: pd.DataFrame, rank_of: Dict[str, 
 
 
 def _tax_note(h: Holding, px: float, today: date, shares: float) -> Optional[str]:
-    if not h.buy_date or np.isnan(px):
+    if np.isnan(px):
         return None
-    held = (today - datetime.fromisoformat(h.buy_date).date()).days
-    gain = (px - h.avg_cost) * shares
-    if held > LTCG_DAYS:
-        if gain < 0:
-            return f"long-term loss of ₹{-gain:,.0f} (held {held} days): offsets only long-term gains"
-        return f"long-term gain of ₹{gain:,.0f} (held {held} days): 12.5% tax on gains above ₹1.25 lakh per year"
-    to_lt = LTCG_DAYS + 1 - held
-    if gain > 0 and to_lt <= TAX_WINDOW_DAYS:
-        saved = gain * (0.20 - 0.125)
+    sold, left = [], shares
+    for day, q, cost in h.lots:          # Indian tax treats a sale as the oldest shares first
+        take = min(q, left)
+        if take > 0:
+            sold.append(((today - datetime.fromisoformat(day).date()).days, take, (px - cost) * take))
+        left -= take
+    long = [x for x in sold if x[0] > LTCG_DAYS]
+    short = [x for x in sold if x[0] <= LTCG_DAYS]
+    gain_l, gain_s = sum(g for *_, g in long), sum(g for *_, g in short)
+    to_lt = LTCG_DAYS + 1 - min(d for d, *_ in short) if short else None
+    if gain_s > 0 and to_lt <= TAX_WINDOW_DAYS:
+        saved = gain_s * (0.20 - 0.125)
         return (f"DEFER: becomes long-term in {to_lt} days; waiting saves about ₹{saved:,.0f} tax "
                 f"(20% → 12.5%) — exit early only if it falls below its stop")
-    if gain < 0:
-        return f"short-term loss of ₹{-gain:,.0f}: selling now books it to offset other gains"
-    return f"short-term gain of ₹{gain:,.0f}: 20% tax applies"
+
+    def on(group: list) -> str:
+        return f" on {sum(q for _, q, _ in group):g} shares" if long and short else ""
+    parts = []
+    if long:
+        held = min(d for d, *_ in long)
+        parts.append(f"long-term loss of ₹{-gain_l:,.0f}{on(long)} (held {held} days): offsets only long-term gains"
+                     if gain_l < 0 else f"long-term gain of ₹{gain_l:,.0f}{on(long)} (held {held} days): 12.5% tax "
+                     "on gains above ₹1.25 lakh per year")
+    if short:
+        parts.append(f"short-term loss of ₹{-gain_s:,.0f}{on(short)}: selling now books it to offset other gains"
+                     if gain_s < 0 else f"short-term gain of ₹{gain_s:,.0f}{on(short)}: 20% tax applies")
+    return "; ".join(parts) or None
 
 
 def render(p: Plan) -> str:

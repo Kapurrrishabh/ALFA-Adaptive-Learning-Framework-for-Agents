@@ -362,14 +362,8 @@ def cmd_insider_fetch(args) -> int:
 
 def _stored_holdings(orch):
     from backend.advisory.signals.advisor import Holding
-    positions, cash, meta = orch.holdings()
-    txs = (meta or {}).get("transactions", [])
-    first_buy = {}
-    for t in txs:
-        if t["side"] == "BUY":
-            first_buy.setdefault(t["symbol"], t["trade_date"])
-    return [Holding(s, p.quantity, p.avg_cost, first_buy.get(s)) for s, p in positions.items()
-            if p.quantity > 0], cash
+    positions, cash, _ = orch.holdings()
+    return [Holding(s, p.lots) for s, p in positions.items() if p.quantity > 0], cash
 
 
 def cmd_signals(args) -> int:

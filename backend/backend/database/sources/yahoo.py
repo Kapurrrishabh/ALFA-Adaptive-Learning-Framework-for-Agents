@@ -62,6 +62,13 @@ class YahooProvider(Provider):
         df.index = df.index.tz_convert("Asia/Kolkata").tz_localize(None)
         return normalize_ohlcv(df)
 
+    def splits(self, symbol: str) -> pd.DataFrame:
+        df = _yf().Ticker(symbol).history(period="max", auto_adjust=False)
+        if df is None or df.empty:
+            raise DataUnavailable(f"yahoo returned no split history for {symbol}")
+        df.index = df.index.tz_localize(None)
+        return pd.DataFrame({"close": df["Close"], "ratio": df["Stock Splits"].replace(0.0, 1.0)})
+
     def upcoming_events(self, symbol: str) -> List[str]:
         try:
             cal = _yf().Ticker(symbol).calendar or {}
