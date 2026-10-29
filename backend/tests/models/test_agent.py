@@ -257,10 +257,11 @@ def test_an_indian_ticker_resolves_without_its_suffix(market):
     ("how is COST doing ?", "COST"), ("is V a buy ?", "V"), ("is aapl above its 50-day MA ?", "AAPL"),
     ("how is reliance doing ?", "RELIANCE.NS"), ("Q3 COST results", "COST"), ("FY24 KO", "KO"),
     ("what did PM Modi say about the budget ?", None), ("give me a pep talk", None),
+    ("Is GE Aerospace a buy ?", "GE"), ("is BA Boeing a buy ?", "BA"), ("what did the PM say about the budget ?", None),
 ])
 def test_a_symbol_that_is_an_everyday_word_names_its_instrument_only_when_typed_as_one(tmp_path, question, named):
     """"What is the transaction cost of buying shares in India?" was answered about Costco."""
-    for name in ("COST", "CAT", "PM", "MA", "V", "KO", "PEP", "AAPL", "RELIANCE.NS"):
+    for name in ("COST", "CAT", "PM", "MA", "V", "KO", "PEP", "GE", "BA", "AAPL", "RELIANCE.NS"):
         price_file(tmp_path, name)
     assert finance.Market(tmp_path).resolve(question) == named
 
@@ -922,6 +923,17 @@ def test_a_move_word_in_a_question_naming_no_company_and_no_lesson_reads_the_new
     built.lessons = lambda question: []
     turn = agent(market, router, reference=built).answer("why did the sensex crash ?")
     assert turn.intent == "reference recent" and crash.text in turn.served
+
+
+@pytest.mark.parametrize("question", ["why are bond yields rising ?", "what is the nifty doing ?"])
+def test_a_move_question_naming_no_company_reads_the_news_before_a_lesson_sharing_a_word(market, router, question):
+    """"Why are bond yields rising" was served the lesson on free cash flow yield, because its heading says "yield"."""
+    moved = Chunk("Mint, 28 Oct 2026: The Nifty slipped as bond yields kept rising.", [], "https://n.test/yields",
+                  "2026-10-28")
+    built = news_reference(None, news=(moved,))
+    built.lessons = lambda asked: [("Free cash flow and FCF yield", "FCF yield is free cash flow over market value.")]
+    turn = agent(market, router, reference=built).answer(question)
+    assert turn.intent == "reference recent" and moved.text in turn.served
 
 
 @pytest.mark.parametrize("question,intent", [("is AAPL overbought right now ?", "overbought"),

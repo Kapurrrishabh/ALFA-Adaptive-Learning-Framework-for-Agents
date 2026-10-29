@@ -22,11 +22,13 @@ from backend.advisory.sentiment.feeds import feed
 # varies freely: "aapl", "Aapl", "AAPL" all name the same file.
 _WORD = re.compile(r"[A-Za-z][A-Za-z.]*")
 # Except a symbol that is also an everyday word: "transaction cost", "a cat", "after 3 pm" and "V-shaped" named
-# Costco, Caterpillar, Philip Morris and Visa. Those need capitals, and not after a number ("50-day MA"; "Q3 COST"
-# is fine) nor before a hyphen or a name ("PM Modi"). Hand-kept: the tokenizer's vocabulary cannot tell "pep" from "aapl".
-_ALSO_WORDS = frozenset({"BA", "CAT", "COST", "DIS", "GE", "HD", "KO", "LIN", "MA", "PEP", "PG", "PM", "V"})
-_AFTER_NUMBER = re.compile(r"((?<![A-Za-z0-9])\d\S*\s*|-)$")
-_BEFORE_NAME = re.compile(r"-|\s+[A-Z][a-z]")
+# Costco, Caterpillar, Philip Morris and Visa. Those need capitals, not after a number or an article ("50-day MA",
+# "the PM said"; "Q3 COST" is fine) nor before a hyphen. Hand-kept: the tokenizer's vocabulary cannot tell "pep" from "aapl".
+# The titles also stand before a person's name ("PM Modi", "V Anantha Nageswaran"), where "GE Aerospace" is GE.
+_TITLES = frozenset({"HD", "PM", "V"})
+_ALSO_WORDS = _TITLES | {"BA", "CAT", "COST", "DIS", "GE", "KO", "LIN", "MA", "PEP", "PG"}
+_AFTER_NUMBER_OR_ARTICLE = re.compile(r"((?<![A-Za-z0-9])\d\S*\s*|-|\b(the|an?)\s+)$", re.I)
+_BEFORE_NAME = re.compile(r"\s+[A-Z][a-z]")
 
 REFUSAL = advisory.UNSUPPORTED
 
@@ -216,8 +218,9 @@ def _squeeze(text):
 
 
 def _typed_as_symbol(text, found):
-    return (found.group(0).isupper() and not _AFTER_NUMBER.search(text[: found.start()])
-            and not _BEFORE_NAME.match(text, found.end()))
+    return (found.group(0).isupper() and not _AFTER_NUMBER_OR_ARTICLE.search(text[: found.start()])
+            and not text.startswith("-", found.end())
+            and not (found.group(0).strip(".") in _TITLES and _BEFORE_NAME.match(text, found.end())))
 
 
 def ask(intent, phrasing, ticker):

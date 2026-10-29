@@ -61,6 +61,9 @@ RECENT = re.compile(NEWS.pattern + r"|\b(lately|recent(ly)?|now|currently)\b", r
 # answered from its 2007 acquisition, because a long article repeats the name more often than a headline.
 LATELY = re.compile(RECENT.pattern + r"|\b(fall(s|ing)?|fell|drop(s|ped|ping)?|rise[sn]?|rising|rose|jump(s|ed)?|"
                     r"surge[sd]?|slump(s|ed)?|crash(es|ed|ing)?|rall(y|ies|ied)|gain(s|ed)?|doing)\b", re.I)
+# Asks what a thing is or how it works, which a lesson answers even with a move word in it ("how are capital
+# gains taxed"). "Why are bond yields rising" and "what is nifty doing" ask what happened, so the news goes first.
+CONCEPT = re.compile(r"^\W*(what('s| is| are| does)|how (do|does|are)|explain|define)\b(?!.*\bdoing\b)", re.I)
 
 
 class SearchFailed(RuntimeError):
@@ -132,9 +135,8 @@ class Reference:
         """
         query = f"{question} {' '.join(subject.names)}" if subject else question
         news_first = self.news is not None and LATELY.search(question)
-        # A move word with no instrument can be a concept ("how are capital gains taxed"), so the lessons go
-        # first; they match nothing for "why did the sensex crash", which still reads the news, not the corpus.
-        if subject is None and self.lessons is not None and not (news_first and RECENT.search(question)):
+        asks_concept = CONCEPT.match(question) and not RECENT.search(question)
+        if subject is None and self.lessons is not None and (not news_first or asks_concept):
             taught = self.lessons(question)
             if taught:
                 title, text = taught[0]
