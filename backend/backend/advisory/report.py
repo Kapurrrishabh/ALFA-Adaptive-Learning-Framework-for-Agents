@@ -5,12 +5,14 @@ pass a numeric faithfulness check against these same payloads.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Sequence
 
 from backend.advisory.service import StockAnalysis
 
 CURRENCY = {"INR": "₹", "USD": "$"}
 UNAVAILABLE = "Data unavailable"
+SCORE_SCALE = "from −1 (all negative) to +1 (all positive)"
 
 
 def _money(v: Optional[float], ccy: str = "INR") -> str:
@@ -57,39 +59,43 @@ def render_analysis(a: StockAnalysis, full: bool = False) -> str:
     d = a.decision
     ccy = a.currency
     out = [f"### {a.name} ({a.provider_symbol})",
-           f"Last close **{_money(a.price, ccy)}** · Price data as of {a.quality['last_date']} · "
-           f"source {a.quality['source']} · Analysis timestamp {a.analysis_timestamp}"]
+           f"Last close **{_money(a.price, ccy)}**. Price data as of {a.quality['last_date']}, from "
+           f"{a.quality['source']}. Analysis timestamp {a.analysis_timestamp}."]
     if a.quality.get("source") == "synthetic":
         out.append("⚠ SYNTHETIC DEMO DATA — not real market prices.")
 
     out.append(_section(1, "Executive summary"))
-    out.append(f"Current state: **{d.overall_state}**")
-    out.append(f"Decision-support classification: **{d.decision_support_label}** "
-               f"(horizon {d.time_horizon})")
-    out.append(f"Fused score {d.score:+.2f} on −1..+1 · confidence {d.confidence:.2f} · "
-               f"uncertainty {d.uncertainty:.2f}")
+    out.append(f"Label: **{d.decision_support_label}**, looking {d.time_horizon} ahead.")
+    out.append(f"Overall view: **{d.overall_state}**.")
+    out.append(f"Combined score {d.score:+.2f}, on a scale {SCORE_SCALE}.")
+    out.append(f"Confidence {d.confidence:.2f} and uncertainty {d.uncertainty:.2f}, each out of 1. "
+               "Uncertainty goes up when data is missing, old, weak or in conflict.")
     for g in d.gates_applied:
-        out.append(f"Gate: {g}")
+        out.append(f"Rule applied: {g}")
     if d.conflict:
-        out.append("\nEvidence conflict detected.")
-    out.append("\n**Key positive evidence**" if d.score >= 0 else "\n**Key negative evidence**")
+        out.append("\nParts of the evidence disagree.")
+    out.append("\n**Main positives**" if d.score >= 0 else "\n**Main negatives**")
     out += [f"- {e['claim']}" for e in d.supporting_evidence[:4]] or ["- none"]
-    out.append("\n**Key opposing evidence**")
+    out.append("\n**Main points the other way**")
     out += [f"- {e['claim']}" for e in d.contradicting_evidence[:4]] or ["- none"]
-    out.append("Primary uncertainty: " + (d.key_uncertainties[0] if d.key_uncertainties else "none flagged"))
+    out.append("Main doubt: " + (d.key_uncertainties[0] if d.key_uncertainties else "none flagged"))
 
     tech = a.results["technical"]
     out.append(_section(2, "Technical analysis"))
     if tech.available:
         t = tech.details
-        out.append(f"Trend state: {tech.state} (swing structure: {t.get('trend_structure')}; "
-                   f"moving averages: {t.get('ma_structure', UNAVAILABLE)})")
-        out.append(f"RSI(14): {t.get('rsi_14')} | MACD histogram: {t.get('macd_histogram')} | "
-                   f"20-day return: {t.get('return_20d_pct')}%")
-        out.append(f"Volume vs 20-day average: {t.get('volume_vs_20d_avg', UNAVAILABLE)}x | "
-                   f"Breakout status: {t.get('breakout_status')}")
-        out.append("Support: " + (", ".join(_money(s, ccy) for s in t.get("support_levels", [])) or "none identified"))
-        out.append("Resistance: " + (", ".join(_money(s, ccy) for s in t.get("resistance_levels", [])) or "none identified"))
+        out.append(f"Trend (bullish means rising, bearish falling): {tech.state}.")
+        out.append(f"Swing structure (the run of recent highs and lows): {t.get('trend_structure')}.")
+        out.append(f"Moving averages (average prices over recent days): {t.get('ma_structure', UNAVAILABLE)}.")
+        out.append(f"RSI(14), a gauge of recent gains against losses: {t.get('rsi_14')}.")
+        out.append(f"MACD histogram, positive when momentum is picking up: {t.get('macd_histogram')}.")
+        out.append(f"20-day return: {t.get('return_20d_pct')}%.")
+        out.append(f"Volume: {t.get('volume_vs_20d_avg', UNAVAILABLE)}x its 20-day average.")
+        out.append(f"Breakout status (has the price left its recent range?): {t.get('breakout_status')}.")
+        out.append("Support, where falls have stopped before: "
+                   + (", ".join(_money(s, ccy) for s in t.get("support_levels", [])) or "none identified") + ".")
+        out.append("Resistance, where rises have stalled before: "
+                   + (", ".join(_money(s, ccy) for s in t.get("resistance_levels", [])) or "none identified") + ".")
     out += _evidence_lines(a, "technical")
 
     out.append(_section(3, "Candlestick analysis"))
@@ -101,33 +107,42 @@ def render_analysis(a: StockAnalysis, full: bool = False) -> str:
     out.append(f"State: {pat.state}")
     out += _evidence_lines(a, "pattern", 5)
     if pat.available and pat.details.get("structure_events"):
-        out.append("Structure events: " + "; ".join(
-            f"{e['event']} ({e['date']})" for e in pat.details["structure_events"]))
+        out.append("Recent price events: " + "; ".join(
+            f"{e['event'].replace('_', ' ')} ({e['date']})" for e in pat.details["structure_events"]) + ".")
 
     out.append(_section(5, "Fundamental analysis"))
     f = a.results["fundamental"]
     if f.available:
         m = f.details["metrics"]
-        out.append(f"Sector: {f.details['sector']} | Industry: {f.details['industry']} | "
-                   f"Fundamental trend: {f.details['trend']}")
-        out.append(f"Revenue growth: {_metric(m, 'revenue_growth')} | EPS growth: {_metric(m, 'eps_growth')}")
-        out.append(f"Net margin: {_metric(m, 'net_margin')} | Operating margin: {_metric(m, 'operating_margin')}")
-        out.append(f"ROE: {_metric(m, 'roe')} | ROIC: {_metric(m, 'roic')}")
-        out.append(f"Debt/equity: {_metric(m, 'debt_to_equity')} | Interest coverage: {_metric(m, 'interest_coverage')}")
-        out.append(f"Free cash flow: {_metric(m, 'free_cash_flow')}")
-        out.append(f"Valuation — P/E: {_metric(m, 'pe')} | P/B: {_metric(m, 'price_to_book')} | "
-                   f"EV/EBITDA: {_metric(m, 'ev_to_ebitda')} | FCF yield: {_metric(m, 'fcf_yield')}")
+        out.append(f"Sector: {f.details['sector']}. Industry: {f.details['industry']}.")
+        out.append(f"Trend in the company's results: {f.details['trend']}.")
+        out.append(f"Revenue growth: {_metric(m, 'revenue_growth')}.")
+        out.append(f"EPS growth (profit per share): {_metric(m, 'eps_growth')}.")
+        out.append(f"Net margin (the share of revenue kept as profit): {_metric(m, 'net_margin')}.")
+        out.append(f"Operating margin (the share of revenue left after running costs): {_metric(m, 'operating_margin')}.")
+        out.append(f"ROE (profit on the owners' money): {_metric(m, 'roe')}.")
+        out.append(f"ROIC (profit on all the money put in): {_metric(m, 'roic')}.")
+        out.append(f"Debt/equity (debt against the owners' money): {_metric(m, 'debt_to_equity')}.")
+        out.append(f"Interest coverage (how many times profit pays the interest): {_metric(m, 'interest_coverage')}.")
+        out.append(f"Free cash flow (cash left after running and investing in the business): "
+                   f"{_metric(m, 'free_cash_flow')}.")
+        out.append(f"P/E (price against yearly profit per share): {_metric(m, 'pe')}.")
+        out.append(f"P/B (price against what the company owns minus what it owes, per share): "
+                   f"{_metric(m, 'price_to_book')}.")
+        out.append(f"EV/EBITDA (company value including debt, against profit before interest, tax and depreciation): "
+                   f"{_metric(m, 'ev_to_ebitda')}.")
+        out.append(f"FCF yield (free cash flow against market value): {_metric(m, 'fcf_yield')}.")
         if f.details["unavailable"]:
-            out.append(f"Not computable from available data: {', '.join(f.details['unavailable'])}")
+            out.append(f"Could not work out from the data: {', '.join(f.details['unavailable'])}.")
     else:
         out.append(f"{UNAVAILABLE}: {f.error}")
 
     out.append(_section(6, "News & sentiment"))
     n = a.results["news_sentiment"]
     if n.available:
-        out.append(f"Sentiment: {n.state} (weighted {n.details['weighted_sentiment']}, "
-                   f"{n.details['unique_events']} unique events from {n.details['article_count']} articles; "
-                   f"last 7d {n.details['recent_sentiment']}, prior {n.details['prior_sentiment']})")
+        out.append(f"News tone (sentiment): {n.state}. Weighted score {n.details['weighted_sentiment']}, from "
+                   f"{n.details['unique_events']} separate events in {n.details['article_count']} articles. "
+                   f"Last 7d {n.details['recent_sentiment']}, before that {n.details['prior_sentiment']}.")
         for ev in n.details["events"][:5]:
             out.append(f"  · {ev['timestamp'][:10]} [{ev['event_type']}/{ev['scope']}] {ev['headline']} "
                        f"— {ev['source']} (sentiment {ev['sentiment']:+.2f}, MODEL OUTPUT)")
@@ -140,21 +155,29 @@ def render_analysis(a: StockAnalysis, full: bool = False) -> str:
     if r.available:
         s = r.details
         b = s.get("benchmark") if isinstance(s.get("benchmark"), dict) else {}
-        out.append(f"Risk state: {r.state} | Period: {s['period']}")
-        out.append(f"Volatility: {s['annualized_vol_pct']}% | Max drawdown: {s['max_drawdown_pct']}% | "
-                   f"Current drawdown: {s['current_drawdown_pct']}%")
-        out.append(f"Sharpe: {s['sharpe']} | Sortino: {s['sortino']} | Beta: {b.get('beta', UNAVAILABLE)} | "
-                   f"Correlation to benchmark: {b.get('correlation', UNAVAILABLE)}")
-        out.append(f"1-day 95% VaR: {s['var_95_1d_pct']}% | CVaR: {s['cvar_95_1d_pct']}%")
+        out.append(f"Risk level: {r.state}, measured over {s['period']}.")
+        out.append(f"Volatility (how much the price swings in a year): {s['annualized_vol_pct']}%.")
+        out.append(f"Max drawdown (the biggest fall from a peak): {s['max_drawdown_pct']}%.")
+        out.append(f"Current drawdown (how far it is below its peak now): {s['current_drawdown_pct']}%.")
+        out.append(f"Sharpe ratio (return for the risk taken): {s['sharpe']}.")
+        out.append(f"Sortino ratio (the same, counting only falls): {s['sortino']}.")
+        out.append(f"Beta (how far it tends to move when the benchmark index moves): {b.get('beta', UNAVAILABLE)}.")
+        out.append(f"Correlation to benchmark (how closely the two move together): "
+                   f"{b.get('correlation', UNAVAILABLE)}.")
+        out.append(f"1-day 95% VaR: {s['var_95_1d_pct']}%. On 95% of days the loss was smaller than this.")
+        out.append(f"CVaR: {s['cvar_95_1d_pct']}%, the average loss on the days worse than that.")
         out.append("Returns: " + ", ".join(f"{k.replace('_pct', '')} {v}%" for k, v in s["returns"].items()
-                                          if v is not None))
+                                          if v is not None) + ".")
     else:
         out.append(f"{UNAVAILABLE}: {r.error}")
     reg = a.results["regime"]
     if reg.available:
         mk = reg.details.get("market")
-        out.append(f"Regime: {reg.state}; dependence {reg.details['dependence'].get('state')}"
-                   + (f"; market {mk['state']}" if isinstance(mk, dict) else ""))
+        out.append(f"Regime (the stock's current phase): {reg.state}.")
+        out.append("Pattern in its moves (trending: they carry on; mean-reverting: they reverse): "
+                   f"{reg.details['dependence'].get('state')}.")
+        if isinstance(mk, dict):
+            out.append(f"Whole market: {mk['state']}.")
 
     out.append(_section(8, "Forecast / scenarios"))
     fc = a.results["forecast"]
@@ -164,10 +187,10 @@ def render_analysis(a: StockAnalysis, full: bool = False) -> str:
                 out.append(f"{h}: {UNAVAILABLE} ({e['error']})")
                 continue
             rng = e["expected_range"]
-            out.append(f"{h}: P(up) {e['probability_up']:.2f} [{e['model']}; skill "
-                       f"{'demonstrated' if e['skill_demonstrated'] else 'NOT demonstrated'}] | "
-                       f"80% range {_money(rng['low'], ccy)}–{_money(rng['high'], ccy)} "
-                       f"(historical coverage {rng['oos_coverage']:.0%}) — MODEL OUTPUT")
+            out.append(f"{h}: chance of a rise {e['probability_up']:.2f} (model {e['model']}; skill "
+                       f"{'demonstrated' if e['skill_demonstrated'] else 'NOT demonstrated'}). "
+                       f"{rng['probability']:.0%} range {_money(rng['low'], ccy)}–{_money(rng['high'], ccy)}; in past "
+                       f"tests the price ended inside it {rng['oos_coverage']:.0%} of the time. MODEL OUTPUT.")
     else:
         out.append(f"{UNAVAILABLE}: {fc.error}")
     out += _evidence_lines(a, "historical", 2)
@@ -184,7 +207,7 @@ def render_analysis(a: StockAnalysis, full: bool = False) -> str:
 
     out.append(_section(12, "Final evidence-based summary"))
     out.append(_summary_sentence(a))
-    out.append("Key uncertainties:")
+    out.append("Main doubts:")
     out += [f"  • {u}" for u in d.key_uncertainties] or ["  • none flagged"]
     out.append(f"\n{d.note}")
     if full:
@@ -199,23 +222,46 @@ def _summary_sentence(a: StockAnalysis) -> str:
     lean = {"BUY": "favourable", "WATCH": "leaning but not decisive", "HOLD": "balanced",
             "SELL": "unfavourable", "AVOID": "unfavourable for a new position",
             "INSUFFICIENT_EVIDENCE": "too thin to judge"}[d.decision_support_label]
-    return (f"Across {len(avail)} domains with usable signal ({', '.join(avail)}), the evidence is "
-            f"{lean}: classification {d.decision_support_label}, confidence {d.confidence:.2f}"
-            + (", with the domains in conflict." if d.conflict else "."))
+    return (f"Overall, the evidence is {lean}: label {d.decision_support_label}, confidence {d.confidence:.2f}. "
+            f"It draws on {len(avail)} areas with usable data: "
+            f"{', '.join(DOMAIN_TITLES[k].lower() for k in avail)}."
+            + (" These areas disagree." if d.conflict else ""))
 
 
 DOMAIN_TITLES = {"technical": "Technicals", "candlestick": "Candlesticks", "pattern": "Chart patterns",
                  "fundamental": "Fundamentals", "news_sentiment": "News & sentiment", "risk": "Risk",
                  "regime": "Market regime", "forecast": "Forecast", "historical": "Similar past setups"}
+# What a jargon word in an evidence line means; a drill-down explains the ones its lines use.
+TERM_MEANINGS = {
+    "Swing structure": "Swing structure is the run of recent highs and lows.",
+    "RSI": "RSI compares recent gains with recent losses; it is high after strong rises.",
+    "MACD": "The MACD histogram is positive when short-term momentum is rising.",
+    "Bollinger": "Bollinger bands mark how far the price usually strays from its recent average.",
+    "ATRs": "An ATR is the stock's average daily price range.",
+    "volatility": "Volatility is how much the price swings.",
+    "drawdown": "A drawdown is a fall from a peak.",
+    "loaded history": "The loaded history is the run of past prices we hold.",
+    "Beta": "Beta compares the stock's moves with the market's; above 1 means it moves more.",
+    "EPS": "EPS is profit per share.",
+    "margin": "A margin is the share of sales kept as profit.",
+    "equity": "Equity is the owners' money in the business.",
+    "invested capital": "Invested capital is all the money put in by owners and lenders.",
+    "EBIT": "EBIT is profit before interest and tax.",
+    "Current ratio": "The current ratio is short-term assets against short-term debts.",
+    "P/E": "P/E is the price against a year's profit per share.",
+    "PEG": "PEG is the P/E divided by profit growth.",
+    "free cash flow": "Free cash flow is cash left after running and investing in the business.",
+    "statistically significant": "Not statistically significant means it could easily be chance.",
+}
 
 
 def render_domain(a: StockAnalysis, domain: str) -> str:
     r = a.results.get(domain)
     if r is None:
         return f"No domain named {domain!r}. Available: {', '.join(a.results)}"
-    score = "no score" if r.score is None else f"score {r.score:+.2f}"
+    score = "No score" if r.score is None else f"Score {r.score:+.2f}, {SCORE_SCALE}"
     head = [f"### {a.name} · {DOMAIN_TITLES.get(domain, domain.replace('_', ' '))}",
-            f"Overall **{r.state}** · {score} · confidence {r.confidence} · as of {str(r.as_of)[:10]}", ""]
+            f"Overall: **{r.state}**. {score}. Confidence {r.confidence} out of 1. Data as of {str(r.as_of)[:10]}.", ""]
     if not r.available:
         return "\n".join(head + [f"{UNAVAILABLE}: {r.error}"])
     events = r.details.get("events") if domain == "news_sentiment" else None
@@ -227,7 +273,10 @@ def render_domain(a: StockAnalysis, domain: str) -> str:
                  for e in ranked]
     else:
         head += [f"- {_mark(e.direction)} [{e.kind()}] {e.claim}" for e in r.evidence]
-    weight_note = ("This domain carried zero weight in the decision (confidence 0)."
+        shown = " ".join(e.claim for e in r.evidence)
+        meanings = [m for t, m in TERM_MEANINGS.items() if re.search(rf"\b{re.escape(t)}\b", shown, re.I)]
+        head += ["", " ".join(meanings)] if meanings else []
+    weight_note = ("This part did not count toward the overall label (confidence 0)."
                    if r.confidence == 0 else "")
     return "\n".join(head + (["", weight_note] if weight_note else []))
 
@@ -296,21 +345,21 @@ def render_compare(analyses: Sequence[StockAnalysis]) -> str:
 
     rows += [
         ("Label", *[a.decision.decision_support_label for a in analyses]),
-        ("Fused score", *[f"{a.decision.score:+.2f}" for a in analyses]),
-        ("Confidence", *[f"{a.decision.confidence:.2f}" for a in analyses]),
+        ("Score, −1 to +1", *[f"{a.decision.score:+.2f}" for a in analyses]),
+        ("Confidence, 0 to 1", *[f"{a.decision.confidence:.2f}" for a in analyses]),
         ("Technical", *[a.results["technical"].state for a in analyses]),
         ("Fundamental", *[a.results["fundamental"].state for a in analyses]),
         ("News", *[a.results["news_sentiment"].state for a in analyses]),
         ("Risk", *[a.results["risk"].state for a in analyses]),
         ("Revenue growth %", *[m(a, "revenue_growth") for a in analyses]),
         ("Net margin %", *[m(a, "net_margin") for a in analyses]),
-        ("ROE %", *[m(a, "roe") for a in analyses]),
-        ("P/E", *[m(a, "pe") for a in analyses]),
-        ("Volatility %", *[risk(a, "annualized_vol_pct") for a in analyses]),
-        ("Max drawdown %", *[risk(a, "max_drawdown_pct") for a in analyses]),
-        ("Sharpe", *[risk(a, "sharpe") for a in analyses]),
-        ("1y return %", *[str(a.results["risk"].details["returns"].get("1y_pct"))
-                          if a.results["risk"].available else "n/a" for a in analyses]),
+        ("ROE % (profit on owners' money)", *[m(a, "roe") for a in analyses]),
+        ("P/E (price to yearly profit)", *[m(a, "pe") for a in analyses]),
+        ("Volatility % (yearly swings)", *[risk(a, "annualized_vol_pct") for a in analyses]),
+        ("Max drawdown % (worst fall)", *[risk(a, "max_drawdown_pct") for a in analyses]),
+        ("Sharpe (return for risk)", *[risk(a, "sharpe") for a in analyses]),
+        ("1-year return %", *[str(a.results["risk"].details["returns"].get("1y_pct"))
+                              if a.results["risk"].available else "n/a" for a in analyses]),
     ]
     widths = [max(len(str(r[i])) for r in rows) for i in range(len(rows[0]))]
     lines = [" | ".join(str(c).ljust(w) for c, w in zip(r, widths)) for r in rows]

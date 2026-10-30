@@ -282,19 +282,22 @@ class Orchestrator:
         sym, mkt = self._target(s, i)
         a = self.analysis(s, sym, mkt)
         d = a.decision
-        lines = [f"Why {a.symbol} is classified {d.decision_support_label} (score {d.score:+.2f}, "
-                 f"confidence {d.confidence:.2f}, uncertainty {d.uncertainty:.2f}):",
-                 "\nHow each domain voted:"]
+        lines = [f"Why {a.symbol} is labelled {d.decision_support_label}:",
+                 f"Its combined score is {d.score:+.2f}, on a scale {R.SCORE_SCALE}. "
+                 f"Confidence {d.confidence:.2f} and uncertainty {d.uncertainty:.2f}, each out of 1.",
+                 "\nHow each area voted:"]
         for dom, st in d.domain_states.items():
-            lines.append(f"  {dom:<15} {st['state']:<32} score {st['score']}  confidence {st['confidence']}")
-        lines.append("\nSupporting evidence:")
-        lines += [f"  + [{e['kind']}] {e['claim']}" for e in d.supporting_evidence] or ["  none"]
-        lines.append("Contradicting evidence:")
-        lines += [f"  - [{e['kind']}] {e['claim']}" for e in d.contradicting_evidence] or ["  none"]
+            lines.append(f"- {R.DOMAIN_TITLES.get(dom, dom)}: {st['state']}. Score {st['score']}, "
+                         f"confidence {st['confidence']}.")
+        lines.append("\nMain positives:" if d.score >= 0 else "\nMain negatives:")
+        lines += [f"- [{e['kind']}] {e['claim']}" for e in d.supporting_evidence] or ["- none"]
+        lines.append("Main points the other way:")
+        lines += [f"- [{e['kind']}] {e['claim']}" for e in d.contradicting_evidence] or ["- none"]
         if d.gates_applied:
-            lines.append("Gates: " + "; ".join(d.gates_applied))
-        lines.append("Key uncertainties: " + ("; ".join(d.key_uncertainties) or "none"))
-        lines.append("Ask 'why technical?', 'why fundamentals?' etc. to see any domain's raw evidence.")
+            lines.append("Rules applied: " + "; ".join(d.gates_applied))
+        lines.append("Main doubts:")
+        lines += [f"- {u}" for u in d.key_uncertainties] or ["- none flagged"]
+        lines.append("Ask 'why technical?', 'why fundamentals?' and so on to see the evidence for one area.")
         return Reply("\n".join(lines), "explain_decision", {"payload": {"decision": d.to_dict()}},
                      ["analyze_stock"])
 
@@ -445,9 +448,9 @@ class Orchestrator:
     def _h_knowledge(self, s: Session, i: Intent) -> Reply:
         hits = knowledge_base().search(i.raw)
         if not hits:
-            return Reply("I don't have a reference entry for that. I can explain indicators, ratios, risk "
-                         "metrics, patterns, methodology and Indian market basics.", "knowledge",
-                         {"no_answer": True})
+            return Reply("I don't have a lesson on that. I can explain terms like RSI, P/E and beta, chart and "
+                         "candle patterns, mutual funds, how this app decides, and how India's market works.",
+                         "knowledge", {"no_answer": True})
         best = hits[0][0]
         body = re.sub(r"(?<!\n)\n(?!\n)", " ", best.text)   # unwrap hard-wrapped source lines
         text = f"### {best.title}\n\n{body}\n\n**Source** · StockIntel lessons ({best.citation}) · Static knowledge, no live market data."
@@ -582,25 +585,30 @@ class Orchestrator:
         return Reply(render(p), "signals", {"payload": payload}, ["signal_plan"])
 
     def _h_market_regime(self, s: Session, i: Intent) -> Reply:
-        from backend.advisory.signals.advisor import CRASH_EXPOSURE, market_state
+        from backend.advisory.signals.advisor import VOL_TARGET, exposure_for, market_state
         bench = self.service().history("^NSEI")["close"]
         m = market_state(bench, bench.index[-1])
-        lines = [f"Nifty market state as of {bench.index[-1].date()}:",
-                 f"- Trend: {m['trend'].upper()} — month-end {m['month_end_close']:,.0f} vs 10-month average "
-                 f"{m['sma_10m']:,.0f} (Faber rule: invested above, cash below).",
-                 f"- Volatility: {m['ewma_vol_pct']}% (EWMA); a 15% volatility target suggests "
-                 f"{m['vol_target_exposure']:.0%} exposure.",
-                 f"- 24-month return {m['return_24m_pct']}%; volatility percentile {m['vol_percentile']}; "
-                 f"momentum crash risk: {'YES' if m['momentum_crash_risk'] else 'no'}."]
-        defensive = (1.0 if m["trend"] == "up" else 0.0) * m["vol_target_exposure"]
-        lines.append(f"- Suggested equity exposure: defensive {defensive:.0%}, balanced "
-                     f"{CRASH_EXPOSURE if m['momentum_crash_risk'] else 1:.0%}, full 100%.")
+        lines = [f"Nifty market state as of {bench.index[-1].date()}: the trend is {m['trend'].upper()}.",
+                 f"- At the last month-end the Nifty closed at {m['month_end_close']:,.0f}, "
+                 f"{'above' if m['trend'] == 'up' else 'below'} its 10-month average of {m['sma_10m']:,.0f}.",
+                 "- Our trend rule (the Faber rule) holds stocks above that average and cash below it.",
+                 f"- Volatility, how much prices swing in a year, is {m['ewma_vol_pct']}%. Recent days count more (EWMA).",
+                 f"- To aim for {VOL_TARGET:.0%} volatility, you would hold {m['vol_target_exposure']:.0%} in stocks.",
+                 f"- The 24-month return is {m['return_24m_pct']}%. "
+                 f"Volatility is above {m['vol_percentile']}% of its past readings.",
+                 f"- Momentum crash risk: {'YES' if m['momentum_crash_risk'] else 'no'}. Recent winners have crashed "
+                 "in sharp rebounds after a fall. We flag it when the 24-month return is negative and swings are "
+                 "unusually wide.",
+                 "- How much to hold in stocks, by risk setting: "
+                 + ", ".join(f"{mode} {exposure_for(mode, m):.0%}" for mode in ("defensive", "balanced", "full")) + "."]
         rec = performance.track_record()
-        cut = (f"cut our NSE momentum backtest's worst fall from {performance.live_edge(rec)['max_dd']:.0f}% to "
-               f"{performance.live_edge(rec)['overlay_max_dd']:.0f}%" if rec else "is measured once `stockintel build-performance` has run")
-        lines.append("Evidence: the 10-month trend filter halved the worst drawdown on US stocks over a century "
-                     f"(Faber); combined with a volatility target it {cut}, but it also "
-                     "lowered returns and whipsaws in sideways markets. It is a risk control, not a forecast.")
+        cut = (f"it cut the worst fall in our NSE momentum backtest from {performance.live_edge(rec)['max_dd']:.0f}% "
+               f"to {performance.live_edge(rec)['overlay_max_dd']:.0f}%" if rec
+               else "its effect is measured once `stockintel build-performance` has run")
+        lines.append("Evidence: in Faber's test on a century of US stocks, the 10-month trend rule halved the worst "
+                     f"fall. With a volatility target, {cut}. But it also lowered returns. In sideways markets it "
+                     "whipsaws: the price crosses the average back and forth, so the rule sells and buys too often. "
+                     "It is a risk control, not a forecast.")
         return Reply("\n".join(lines), "market_regime", {"payload": m}, ["market_state"])
 
     def _h_stops(self, s: Session, i: Intent) -> Reply:
@@ -671,13 +679,16 @@ class Orchestrator:
                      "Every number I give comes from our tested models.", "greeting")
 
     def _h_help(self, s: Session, i: Intent) -> Reply:
-        return Reply("I can help with: 'What should I buy with ₹1 lakh?', 'Rebalance my portfolio', "
-                     "'Is the market in a downtrend?', 'Check my stops', 'Analyze RELIANCE', 'Why is the technical state positive?', "
-                     "'What about fundamentals?', 'Compare it with HDFC Bank', 'I have ₹50,000 — which "
-                     "stocks are worth researching?', 'How is my portfolio performing?', 'Which holding "
-                     "contributes most to my risk?', 'If I add ₹20,000 to TCS and INFY how does risk change?', "
-                     "'Find fundamentally strong companies with positive momentum', 'What is a Sharpe ratio?', "
-                     "'Why did INFY fall this week?', 'Generate a report on TCS'.", "help", {"no_answer": True})
+        examples = ("What should I buy with ₹1 lakh?", "Rebalance my portfolio", "Is the market in a downtrend?",
+                    "Check my stops", "Analyze RELIANCE", "Why is the technical state positive?",
+                    "What about fundamentals?", "Compare it with HDFC Bank",
+                    "I have ₹50,000 — which stocks are worth researching?", "How is my portfolio performing?",
+                    "Which holding contributes most to my risk?",
+                    "If I add ₹20,000 to TCS and INFY how does risk change?",
+                    "Find fundamentally strong companies with positive momentum", "What is a Sharpe ratio?",
+                    "Why did INFY fall this week?", "Generate a report on TCS")
+        return Reply("Here are some things you can ask me:\n" + "\n".join(f"- {q}" for q in examples),
+                     "help", {"no_answer": True})
 
     # --- LLM modes --------------------------------------------------------------------
     def _narrate(self, question: str, reply: Reply) -> Reply:

@@ -33,6 +33,7 @@ STOP_PCT = 0.10              # on every buy except low-vol; measured to cut retu
 LTCG_DAYS = 365
 TAX_WINDOW_DAYS = 60         # PROVISIONAL: defer profitable exits this close to long-term status
 REBALANCE_MONTHS = (6, 12)   # NSE semi-annual, executed in June and December
+VOL_TARGET = 0.15            # yearly volatility the defensive setting scales exposure to
 STOP_EVIDENCE = (f"The {STOP_PCT:.0%} stop-loss is our own risk rule, not part of NSE's method, and the track record "
                  f"figures were measured without it. In our backtest, a stop {STOP_PCT:.0%} below the buy price made "
                  "the worst fall smaller but also cut the return, enough that the strategy no longer beat simply "
@@ -96,7 +97,7 @@ def market_state(bench: pd.Series, asof: pd.Timestamp) -> Dict[str, object]:
     trend_up = last_me > sma10
     r = np.log(bench / bench.shift(1)).loc[:asof]
     ewma_vol = float(np.sqrt((r ** 2).ewm(halflife=20).mean().iloc[-1] * F.YEAR))
-    vol_expo = min(1.0, 0.15 / ewma_vol) if ewma_vol > 0 else 1.0
+    vol_expo = min(1.0, VOL_TARGET / ewma_vol) if ewma_vol > 0 else 1.0
     r24 = float(b.iloc[-1] / b.iloc[-2 * F.YEAR] - 1) if len(b) > 2 * F.YEAR else None
     roll = (r.rolling(126).std() * np.sqrt(F.YEAR)).dropna()
     vol_q = float((roll < roll.iloc[-1]).mean()) if len(roll) else None

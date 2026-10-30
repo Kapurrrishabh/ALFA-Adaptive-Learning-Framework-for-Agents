@@ -54,6 +54,33 @@ def test_rendered_analysis_states_timestamps_and_labels_model_outputs(service):
     assert "### 12. Final evidence-based summary" in text
 
 
+def test_rendered_forecast_range_states_the_interval_it_was_built_for(service):
+    a = service.analyze("TEST")
+    for e in a.results["forecast"].details["horizons"].values():
+        e["expected_range"]["probability"] = 0.9
+    assert "90% range" in R.render_analysis(a)
+
+
+def test_a_drill_down_explains_the_jargon_its_own_lines_use(service):
+    risk = R.render_domain(service.analyze("TEST"), "risk")
+    assert "A drawdown is a fall from a peak." in risk and "EBIT is" not in risk
+
+
+@pytest.mark.parametrize("question, most", [("help", 8), ("Is the market in a downtrend?", 8),
+                                            ("Analyze TEST", 9), ("how risky is TEST?", 9)])
+def test_chat_replies_read_at_plain_language_grade(orch, monkeypatch, question, most):
+    from backend.models.external.eval_user_questions import grade, plain
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    assert grade(plain(orch.handle(question, "plain").text)) <= most
+
+
+def test_the_market_reply_quotes_the_volatility_target_it_sizes_to(orch, monkeypatch):
+    import backend.advisory.signals.advisor as advisor
+    monkeypatch.setattr(advisor, "VOL_TARGET", 0.25)
+    reply = orch.handle("Is the market in a downtrend?", "vol")
+    assert f"To aim for 25% volatility, you would hold {reply.data['payload']['vol_target_exposure']:.0%}" in reply.text
+
+
 def test_full_report_has_all_18_sections(service):
     body = R.render_report(service.analyze("TEST"))
     for n in range(1, 19):
@@ -1043,7 +1070,7 @@ def test_an_unrecognised_question_is_routed_by_the_language_model(orch, monkeypa
 def test_a_question_the_language_model_cannot_place_says_so_instead_of_guessing(orch, monkeypatch):
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
     reply = orch.handle("what is the weather in Mumbai?", "route2")
-    assert reply.data["no_answer"] and "don't have a reference entry" in reply.text
+    assert reply.data["no_answer"] and "don't have a lesson" in reply.text
 
 
 def test_chat_works_without_a_language_model(orch, monkeypatch):
