@@ -1,8 +1,6 @@
-"""Daily caps on language-model calls, per user and for all users together, so the free model
-time is shared out. One 'lm' kind covers every Space or Claude call, so the user sees one number."""
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from backend.config import MARKETS
@@ -10,17 +8,23 @@ from backend.database.storage import Store
 
 # PROVISIONAL: about 50 answers a day fit the Space's 5 free ZeroGPU minutes at ~6 s each, and 40 leaves
 # headroom. Confirm on the Space's usage page after a day of traffic.
-LIMITS = {"lm": 10}             # per user per day
-EVERYONE_LIMITS = {"lm": 40}    # all users together per day
+USER_LIMITS = {"lm": 10}
+EVERYONE_LIMITS = {"lm": 40}
 IST = ZoneInfo(MARKETS["NSE"].timezone)
 
 
+def _india_date(now: datetime) -> date:
+    if now.tzinfo is None:
+        raise ValueError(f"now={now!r} has no time zone, so its India day is unknown; pass an aware time.")
+    return now.astimezone(IST).date()
+
+
 def day_ist(now: datetime) -> str:
-    return now.astimezone(IST).date().isoformat()
+    return _india_date(now).isoformat()
 
 
 def resets_at(now: datetime) -> datetime:
-    return datetime.combine(now.astimezone(IST).date() + timedelta(days=1), time(0), tzinfo=IST)
+    return datetime.combine(_india_date(now) + timedelta(days=1), time(0), tzinfo=IST)
 
 
 class QuotaExceeded(Exception):
@@ -32,9 +36,9 @@ class QuotaExceeded(Exception):
 
 
 def charge(store: Store, who: str, kind: str, now: datetime) -> None:
-    stopped = store.spend(who, kind, day_ist(now), LIMITS[kind], EVERYONE_LIMITS[kind])
+    stopped = store.spend(who, kind, day_ist(now), USER_LIMITS[kind], EVERYONE_LIMITS[kind])
     if stopped:
-        limit = LIMITS[kind] if stopped == "you" else EVERYONE_LIMITS[kind]
+        limit = USER_LIMITS[kind] if stopped == "you" else EVERYONE_LIMITS[kind]
         raise QuotaExceeded(kind, limit, stopped, resets_at(now))
 
 

@@ -89,7 +89,12 @@ CREATE TABLE IF NOT EXISTS usage (
     PRIMARY KEY (who, day, kind)
 );
 """
-EVERYONE = "*"      # the usage row that counts every user's calls together
+EVERYONE = "*"
+
+
+def _refuse_everyone(who: str) -> None:
+    if who == EVERYONE:
+        raise ValueError(f"User id {who!r} is the all-users usage row; charge or refund a real user id.")
 
 
 def _serialized(cls):
@@ -285,8 +290,8 @@ class Store:
 
     # --- usage counters ------------------------------------------------------
     def spend(self, who: str, kind: str, day: str, limit: int, everyone_limit: int) -> Optional[str]:
-        """Count one call against who's limit and everyone's in one transaction. Returns None when
-        counted, or the cap that stopped it ('you' or 'everyone'), leaving both counts unchanged."""
+        """None when counted, else the cap that stopped it ('you' or 'everyone'), with both counts unchanged."""
+        _refuse_everyone(who)
         with self.conn:
             if not self._count_one(who, kind, day, limit):
                 return "you"
@@ -302,9 +307,14 @@ class Store:
             " RETURNING count", (who, day, kind, limit, limit)).fetchone() is not None
 
     def refund(self, who: str, kind: str, day: str) -> None:
+        _refuse_everyone(who)
         with self.conn:
-            self.conn.execute("UPDATE usage SET count = count - 1 WHERE who IN (?, ?) AND day = ? AND kind = ?"
-                              " AND count > 0", (who, EVERYONE, day, kind))
+            if self._lower_one(who, kind, day):
+                self._lower_one(EVERYONE, kind, day)
+
+    def _lower_one(self, who: str, kind: str, day: str) -> bool:
+        return self.conn.execute("UPDATE usage SET count = count - 1 WHERE who = ? AND day = ? AND kind = ?"
+                                 " AND count > 0", (who, day, kind)).rowcount > 0
 
     def usage(self, who: str, day: str) -> Dict[str, int]:
         return {r["kind"]: r["count"] for r in self.conn.execute(
