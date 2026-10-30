@@ -68,9 +68,9 @@ LATELY = re.compile(RECENT.pattern + r"|\b(fall(s|ing|en)?|fell|drop(s|ped|ping)
 # provisional, on `judge`'s scale (bge cosine) and from 32 questions with a move word: lessons beside the point
 # ("FCF yield" for bond yields) scored 0.53-0.62 and lessons that answered 0.66-0.84
 LESSON_FLOOR = 0.63
-# provisional: the lesson on taxes that answers "how is short term tax charged on shares that rose" is BM25's third
-# section, after one sharing no word with its heading and the ELSS lesson
-LESSONS_JUDGED = 3
+# provisional: on 26 lesson and tax wordings with a move word, the judge chose the right lesson 21 times from BM25's
+# first 3 sections and 24 from 4 or 5; from 5 it also took "what is ltcg on shares" from the lesson on taxes
+LESSONS_JUDGED = 4
 
 
 class SearchFailed(RuntimeError):
@@ -115,8 +115,11 @@ class Reference:
         # Asked first for a question that names no company: the corpus is mostly US forums, and "how does a SIP work"
         # read from it was answered with Wikipedia's sales incentive plan.
         self.lessons = lessons
-        # (question, texts) -> closeness of each, deciding a lesson against the news when a question has a move word
-        # in it: word rules sent "are bond yields going to rise" to the lesson on FCF yield
+        # (question, texts) -> closeness of each, choosing among the lessons and deciding a lesson against the news when
+        # a question has a move word in it: word rules sent "are bond yields going to rise" to the lesson on FCF yield
+        if lessons is not None and news is not None and judge is None:
+            raise ValueError("a Reference given both lessons and news needs a judge to choose between them; "
+                             "pass judge=, as ask.reference_from does with judge_from()")
         self.judge = judge
         self.index = index
         # Optional, and left out the path makes no network call, which is how the offline gate is still met
@@ -147,9 +150,7 @@ class Reference:
         """
         query = f"{question} {' '.join(subject.names)}" if subject else question
         news_first = self.news is not None and (lately or LATELY.search(question))
-        taught = None
-        if subject is None and self.lessons is not None:
-            taught = self._lesson(question, query, as_of) if news_first else next(iter(self.lessons(question, 1)), None)
+        taught = None if subject is not None or self.lessons is None else self._lesson(question, query, as_of, news_first)
         if taught:
             title, text = taught
             return Looked(text, f"document lesson:{title} ; published undated ; passage_1 {text}", LESSON_HOW,
@@ -162,18 +163,23 @@ class Reference:
                 return self._read(question, chunks, subject)
         return None
 
-    def _lesson(self, question, query, as_of):
-        """For a move-word question, the lesson the judge rates best, if over the floor and above every headline. BM25's
-        next few are judged only when its best section's heading shares no word with the question: a rejected best
-        lesson was replaced by fund categories for "how is ICICI Prudential Multicap Fund doing"."""
-        lessons = [] if RECENT.search(question) else self.lessons(question, 1) or self.lessons(question, LESSONS_JUDGED)
+    def _lesson(self, question, query, as_of, news_first):
+        """The lesson the judge rates best of BM25's first few: BM25's order alone taught ELSS for "what is the tax on
+        short term profit when shares rise". For a move-word question it must clear the floor and beat every headline;
+        any other needs BM25's best section to name a lesson, as before, since right ones scored as low as 0.55 there."""
+        if news_first and RECENT.search(question):
+            return None
+        first = self.lessons(question, 1)
+        if self.judge is None or not news_first and not first:
+            return next(iter(first), None)
+        lessons = self.lessons(question, LESSONS_JUDGED)
         if not lessons:
             return None
-        headlines = self._newswire(query, as_of, None) or []
+        headlines = (self._newswire(query, as_of, None) or []) if news_first else []
         scores = self.judge(question, [f"{title}. {text}" for title, text in lessons] + [chunk.text for chunk in headlines])
         best = max(range(len(lessons)), key=lambda at: scores[at])
         beats_the_news = all(scores[best] > score for score in scores[len(lessons):])
-        return lessons[best] if scores[best] >= LESSON_FLOOR and beats_the_news else None
+        return lessons[best] if not news_first or scores[best] >= LESSON_FLOOR and beats_the_news else None
 
     def asks_lately(self, question, moves, sure):
         """Whether prices, filings and headlines answer a question before the advisory path. Always when the router
