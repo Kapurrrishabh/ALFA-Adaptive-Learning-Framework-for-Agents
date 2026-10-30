@@ -17,9 +17,12 @@ from backend.models.guardrails import added_claims, figures, unsupported_figures
 Phrased = namedtuple("Phrased", "text by because")
 NOT_ANSWERED = "the language model read the passages and found no answer in them"
 
-ANSWER_SYSTEM = """Rewrite the ANSWER for an Indian retail investor in two or three short, plain sentences. \
-Keep every number exactly as written. Keep every judgement as it is. Add nothing: no new facts, no reasons, \
-no advice, no predictions. Never say a price will rise or fall. No lists or headings."""
+# No glosses of terms: asked to explain volatility or RSI, the writer added sizes the draft never gives ("has moved a
+# lot", "not very risky") and HHEM fell from 0.89 to as low as 0.15 on 16 advisory answers.
+ANSWER_SYSTEM = """Rewrite the ANSWER for an Indian retail investor in two or three short sentences, in everyday \
+words. Keep each sentence under 15 words. Keep every number exactly as written, with its sign. Keep every judgement \
+as it is, and do not call a figure high, low, a lot or a little. Add nothing else: no new facts, no reasons, no \
+advice, no predictions. Never say a price will rise or fall. No lists or headings."""
 
 PASSAGE_SYSTEM = """Answer the QUESTION for an Indian retail investor in two or three short sentences, using \
 only the PASSAGES. Use everyday words. Say what the passages report happened, and what it happened after or \
@@ -44,6 +47,9 @@ _VERDICT_WORDS = frozenset("is are was were be been being do does did has have h
                            "a an not no yes isn't aren't wasn't weren't doesn't don't didn't hasn't haven't".split())
 # provisional: "NO" was one word, and the shortest reply HHEM judged supported six ("Nifty has fallen 13% this year.")
 MIN_WORDS = 4
+# a size the draft never gives: "Infosys is quite volatile" for a draft that gave the figure alone
+_SIZES = re.compile(r"\b(a lot|quite|very|highly|extremely|fairly|significant(ly)?|moderate(ly)?|sharp(ly)?|little)\b",
+                    re.I)
 
 
 def currency(ticker):
@@ -62,6 +68,9 @@ def rewrite(question, draft, evidence, writer, money):
     dropped = sorted(kept - set(figures(_plain(text))))
     if dropped:
         reasons.append(f"it leaves out {', '.join(dropped)}")
+    sized = {m.group(0).lower() for m in _SIZES.finditer(text)} - {m.group(0).lower() for m in _SIZES.finditer(draft)}
+    if sized:
+        reasons.append(f"it sizes a figure the draft does not: “{sorted(sized)[0]}”")
     return Phrased("", "", "; ".join(reasons)) if reasons else Phrased(text, by, "")
 
 

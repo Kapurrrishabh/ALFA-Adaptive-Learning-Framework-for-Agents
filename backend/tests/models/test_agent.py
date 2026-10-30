@@ -850,6 +850,7 @@ def test_a_rewrite_that_keeps_every_figure_is_served_and_names_its_writer(market
     ("Up 13.8% in 20 days, closed at 165.00, and it will rise further.", "claims a direction"),  # adds a call
     ("Up 13.8% in 20 days, closed at ₹165.00.", "writes ₹"),                                   # swaps currency
     ("Up:\n- 13.8% in 20 days\n- closed at 165.00", "breaks into lines"),                     # a list
+    ("Up a lot, 13.8% in 20 days, and closed at 165.00.", "sizes a figure"),                    # adds a size
 ])
 def test_a_rewrite_that_changes_the_facts_serves_alfas_words_and_says_why(market, router, reply, reason):
     turn = phrased_agent(market, router, DRAFT, FakeWriter(reply)).answer(ASKED)

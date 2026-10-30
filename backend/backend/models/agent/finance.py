@@ -45,12 +45,12 @@ MOVES = "performance"
 # dataset built it, and a second domain would cap its questions somewhere else.
 QUESTION_TOKENS = advisory.QUESTION_TOKENS
 
-NO_SUBJECT = "i need to know which instrument you are asking about."
+NO_SUBJECT = "i need to know which stock or index you are asking about."
 
-UNKNOWN_QUESTION = "i am not sure what you are asking. i can talk about price, momentum, volatility, " \
-                   "drawdown and week-ahead risk for one instrument."
+UNKNOWN_QUESTION = "i am not sure what you are asking. ask me about one stock or index: how its price has moved, " \
+                   "if it looks overbought, how much it swings, how far it is below its high, or how risky next week looks."
 
-OFF_TOPIC = "i can only help with money, markets, companies and the economy."
+OFF_TOPIC = "i can only help with money and markets. that means shares, companies and the economy."
 
 NOT_IN_SOURCES = "i read the recent news on that, and none of it answers the question."
 
