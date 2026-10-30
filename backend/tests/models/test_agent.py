@@ -972,15 +972,16 @@ def test_a_move_word_question_is_taught_by_a_lesson_below_bm25s_best_when_the_ju
     assert turn.intent == "reference lesson" and turn.served == lessons[1][1]
 
 
-def test_of_two_lessons_the_judge_accepts_the_one_bm25_ranks_higher_is_served(market, router):
-    """The judge rated "Rounding bottom and top" above "Double top and double bottom" for a question on a double bottom."""
-    lessons = [("Double top and double bottom", "Two troughs at about the same level."),
-               ("Rounding bottom and top", "A slow, curved turn in price.")]
+def test_of_the_lessons_judged_the_one_the_judge_rates_best_is_served(market, router):
+    """The ELSS lesson scored 0.626 and the lesson on taxes 0.746 for the short term tax question: a floor at 0.62 would
+    have served ELSS had the first lesson over it been taken."""
+    lessons = [("ELSS (tax-saving funds)", "ELSS funds lock your money in for three years."),
+               ("Taxes on listed equity", "Short-term gains on shares are taxed at 20%.")]
     built = news_reference(None)
     built.lessons = headless(lessons)
-    built.judge = lambda question, texts: [LESSON_FLOOR + 0.07, LESSON_FLOOR + 0.1] + [0.0] * (len(texts) - 2)
-    turn = agent(market, router, reference=built).answer("what does a double bottom look like before prices rise ?")
-    assert turn.served == lessons[0][1]
+    built.judge = lambda question, texts: [LESSON_FLOOR + 0.001, LESSON_FLOOR + 0.1] + [0.0] * (len(texts) - 2)
+    turn = agent(market, router, reference=built).answer("how is short term tax charged on shares that rose ?")
+    assert turn.served == lessons[1][1]
 
 
 @pytest.mark.parametrize("question", ["what does it mean if a stock fell over the last few weeks on low volume ?",

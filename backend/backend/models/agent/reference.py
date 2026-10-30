@@ -163,18 +163,17 @@ class Reference:
         return None
 
     def _lesson(self, question, query, as_of):
-        """For a move-word question, the first lesson the judge rates over the floor and above every headline, else None.
-        BM25's next few are judged only when its best section's heading shares no word with the question: a rejected best
-        lesson was replaced by fund categories for "how is ICICI Prudential Multicap Fund doing". BM25's order rather than
-        the judge's: it put "Rounding bottom and top" above "Double top and double bottom" for a double bottom question."""
+        """For a move-word question, the lesson the judge rates best, if over the floor and above every headline. BM25's
+        next few are judged only when its best section's heading shares no word with the question: a rejected best
+        lesson was replaced by fund categories for "how is ICICI Prudential Multicap Fund doing"."""
         lessons = [] if RECENT.search(question) else self.lessons(question, 1) or self.lessons(question, LESSONS_JUDGED)
         if not lessons:
             return None
         headlines = self._newswire(query, as_of, None) or []
         scores = self.judge(question, [f"{title}. {text}" for title, text in lessons] + [chunk.text for chunk in headlines])
-        news = scores[len(lessons):]
-        return next((lesson for lesson, score in zip(lessons, scores)
-                     if score >= LESSON_FLOOR and all(score > other for other in news)), None)
+        best = max(range(len(lessons)), key=lambda at: scores[at])
+        beats_the_news = all(scores[best] > score for score in scores[len(lessons):])
+        return lessons[best] if scores[best] >= LESSON_FLOOR and beats_the_news else None
 
     def asks_lately(self, question, moves, sure):
         """Whether prices, filings and headlines answer a question before the advisory path. Always when the router
