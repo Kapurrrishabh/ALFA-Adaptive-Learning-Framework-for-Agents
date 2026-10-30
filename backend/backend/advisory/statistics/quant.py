@@ -26,6 +26,11 @@ def cagr(close: pd.Series) -> float:
     return float((close.iloc[-1] / close.iloc[0]) ** (1 / years) - 1) if years > 0 else float("nan")
 
 
+def calendar_cagr(close: pd.Series) -> float:
+    """`cagr` over calendar days rather than rows, as fund and ETF returns are quoted."""
+    return float((close.iloc[-1] / close.iloc[0]) ** (365.25 / (close.index[-1] - close.index[0]).days) - 1)
+
+
 def ann_vol(r: pd.Series) -> float:
     return float(r.std(ddof=1) * math.sqrt(A))
 

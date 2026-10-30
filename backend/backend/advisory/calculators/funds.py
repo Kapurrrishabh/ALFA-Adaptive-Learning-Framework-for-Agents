@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from backend.advisory.statistics.quant import ann_vol, max_drawdown
+from backend.advisory.statistics.quant import ann_vol, calendar_cagr, max_drawdown
 
 PERIODS = {"1M": (1, False), "6M": (6, False), "1Y": (12, False), "3Y": (36, True), "5Y": (60, True)}
 WORDS = {"1M": "month", "6M": "6 months", "1Y": "year", "3Y": "3 years", "5Y": "5 years"}
@@ -25,10 +25,9 @@ def trailing_returns(nav: pd.Series) -> Dict[str, Optional[Dict[str, Any]]]:
         if start.empty:
             out[label] = None
             continue
-        growth = float(nav.iloc[-1]) / float(start.iloc[-1])
-        years = (end - start.index[-1]).days / 365.25
-        out[label] = {"pct": round((growth ** (1 / years) if annualised else growth) * 100 - 100, 2),
-                      "annualised": annualised, "from": str(start.index[-1].date())}
+        held = nav.loc[start.index[-1]:]
+        rate = calendar_cagr(held) if annualised else float(held.iloc[-1] / held.iloc[0]) - 1
+        out[label] = {"pct": round(rate * 100, 2), "annualised": annualised, "from": str(start.index[-1].date())}
     return out
 
 
