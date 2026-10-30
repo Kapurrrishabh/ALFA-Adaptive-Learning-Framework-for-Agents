@@ -115,10 +115,18 @@ def test_exposure_modes():
 
 def test_live_defensive_exposure_sizes_to_the_backtested_volatility_target(panel, monkeypatch):
     monkeypatch.setattr(S, "VOL_TARGET", 0.05)
+    monkeypatch.setattr(S, "VOL_HALF_LIFE", 60)
     bench = synthetic.ohlcv(400, seed=7, drift=0.003, vol=0.012, end="2026-08-31")["close"]
     backtested = E.variants(S.Factory(panel, bench), bench)["momentum_trend_vol_overlay"]["exposure"]
     live = exposure_for("defensive", market_state(bench, bench.index[-1]))
     assert 0 < live < 1 and live == pytest.approx(backtested(bench.index[-1]), abs=0.01)
+
+
+def test_live_crash_risk_flags_the_regime_the_backtested_guard_cuts(monkeypatch):
+    monkeypatch.setattr(S, "CRASH_VOL_QUANTILE", 0.3)
+    bench = synthetic.ohlcv(700, seed=2, drift=-0.002, end=END)["close"]
+    asof = bench.index[-1]
+    assert market_state(bench, asof)["momentum_crash_risk"] and S.momentum_crash_guard(bench)(asof) < 1
 
 
 def test_plan_buys_top_ranked_sells_dropouts_and_sizes_to_capital(panel):

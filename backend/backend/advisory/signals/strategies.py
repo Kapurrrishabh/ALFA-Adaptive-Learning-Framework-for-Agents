@@ -83,7 +83,9 @@ class Factory:
 
 # --- exposure overlays -----------------------------------------------------------
 VOL_TARGET = 0.15           # yearly volatility the overlay aims for, live and in the backtest
+VOL_HALF_LIFE = 20          # trading days after which a day's weight in that volatility halves
 CRASH_VOL_DAYS = 126        # trading days of realised volatility the crash guard ranks, live and in the backtest
+CRASH_VOL_QUANTILE = 0.8    # the guard cuts when that volatility is in the top fifth of its history
 
 
 def trend_filter(bench: pd.Series, months: int = 10) -> Callable[[pd.Timestamp], float]:
@@ -99,15 +101,14 @@ def trend_filter(bench: pd.Series, months: int = 10) -> Callable[[pd.Timestamp],
     return expo
 
 
-def vol_target(bench: pd.Series, target: float, half_life: int = 20,
-               cap: float = 1.0) -> Callable[[pd.Timestamp], float]:
-    """Harvey et al.: exposure = target / EWMA vol of the benchmark, capped."""
+def vol_target(bench: pd.Series, target: float) -> Callable[[pd.Timestamp], float]:
+    """Harvey et al.: exposure = target / EWMA vol of the benchmark, capped at fully invested."""
     r = np.log(bench / bench.shift(1))
-    sigma = np.sqrt((r ** 2).ewm(halflife=half_life).mean() * F.YEAR)
+    sigma = np.sqrt((r ** 2).ewm(halflife=VOL_HALF_LIFE).mean() * F.YEAR)
 
     def expo(asof: pd.Timestamp) -> float:
         s = sigma.loc[:asof].iloc[-1]
-        return float(min(cap, target / s)) if s > 0 else 1.0
+        return float(min(1.0, target / s)) if s > 0 else 1.0
     return expo
 
 
@@ -124,7 +125,7 @@ def momentum_crash_guard(bench: pd.Series, cut: float = 0.5) -> Callable[[pd.Tim
         if len(b) < 2 * F.YEAR or len(v) < F.YEAR:
             return 1.0
         bear = b.iloc[-1] / b.iloc[-2 * F.YEAR] - 1 < 0
-        high_vol = v.iloc[-1] >= v.quantile(0.8)
+        high_vol = v.iloc[-1] >= v.quantile(CRASH_VOL_QUANTILE)
         return cut if bear and high_vol else 1.0
     return expo
 

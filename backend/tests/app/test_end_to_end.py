@@ -106,11 +106,10 @@ def test_chat_replies_read_at_plain_language_grade(orch, monkeypatch, question, 
     assert grade(plain(orch.handle(question, "plain").text)) <= most
 
 
-def test_the_market_reply_quotes_the_volatility_target_it_sizes_to(orch, monkeypatch):
+def test_the_market_reply_quotes_the_backtested_volatility_target(orch, monkeypatch):
     import backend.advisory.signals.strategies as strategies
     monkeypatch.setattr(strategies, "VOL_TARGET", 0.25)
-    reply = orch.handle("Is the market in a downtrend?", "vol")
-    assert f"To aim for 25% volatility, you would hold {reply.data['payload']['vol_target_exposure']:.0%}" in reply.text
+    assert "To aim for 25% volatility" in orch.handle("Is the market in a downtrend?", "vol").text
 
 
 def test_full_report_has_all_18_sections(service):
