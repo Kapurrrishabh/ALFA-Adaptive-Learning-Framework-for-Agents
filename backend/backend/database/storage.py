@@ -84,7 +84,17 @@ CREATE TABLE IF NOT EXISTS model_versions (
     backtest TEXT, limitations TEXT, created_at TEXT NOT NULL, approved_by TEXT,
     UNIQUE (name, version)
 );
+CREATE TABLE IF NOT EXISTS usage (
+    who TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL, count INTEGER NOT NULL,
+    PRIMARY KEY (who, day, kind)
+);
 """
+EVERYONE = "*"
+
+
+def _refuse_everyone(who: str) -> None:
+    if who == EVERYONE:
+        raise ValueError(f"User id {who!r} is the all-users usage row; charge or refund a real user id.")
 
 
 def _serialized(cls):
@@ -105,6 +115,9 @@ def _serialized(cls):
 @_serialized
 class Store:
     def __init__(self, path: str):
+        if sqlite3.sqlite_version_info < (3, 35):
+            raise RuntimeError(f"SQLite {sqlite3.sqlite_version} is too old: the usage counters need RETURNING, "
+                               "added in SQLite 3.35. Run on a Python or Docker image with a newer SQLite.")
         self.path = path
         self._lock = threading.RLock()
         if path != ":memory:":
@@ -274,3 +287,35 @@ class Store:
         return [{**dict(r), "payload": json.loads(r["payload"])} for r in self.conn.execute(
             "SELECT created_at, value, payload FROM portfolio_snapshots WHERE portfolio_id = ?"
             " ORDER BY id DESC LIMIT ?", (row[0], limit))]
+
+    # --- usage counters ------------------------------------------------------
+    def spend(self, who: str, kind: str, day: str, limit: int, everyone_limit: int) -> Optional[str]:
+        """None when counted, else the cap that stopped it ('you' or 'everyone'), with both counts unchanged."""
+        _refuse_everyone(who)
+        with self.conn:
+            if not self._count_one(who, kind, day, limit):
+                return "you"
+            if not self._count_one(EVERYONE, kind, day, everyone_limit):
+                self.conn.rollback()
+                return "everyone"
+        return None
+
+    def _count_one(self, who: str, kind: str, day: str, limit: int) -> bool:
+        return self.conn.execute(
+            "INSERT INTO usage (who, day, kind, count) SELECT ?, ?, ?, 1 WHERE ? > 0"
+            " ON CONFLICT (who, day, kind) DO UPDATE SET count = count + 1 WHERE count < ?"
+            " RETURNING count", (who, day, kind, limit, limit)).fetchone() is not None
+
+    def refund(self, who: str, kind: str, day: str) -> None:
+        _refuse_everyone(who)
+        with self.conn:
+            if self._lower_one(who, kind, day):
+                self._lower_one(EVERYONE, kind, day)
+
+    def _lower_one(self, who: str, kind: str, day: str) -> bool:
+        return self.conn.execute("UPDATE usage SET count = count - 1 WHERE who = ? AND day = ? AND kind = ?"
+                                 " AND count > 0", (who, day, kind)).rowcount > 0
+
+    def usage(self, who: str, day: str) -> Dict[str, int]:
+        return {r["kind"]: r["count"] for r in self.conn.execute(
+            "SELECT kind, count FROM usage WHERE who = ? AND day = ?", (who, day))}
