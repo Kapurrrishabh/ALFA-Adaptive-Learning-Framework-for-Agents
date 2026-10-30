@@ -916,7 +916,7 @@ def test_a_move_word_question_is_taught_when_the_judge_rates_the_lesson_above_th
     """"How are capital gains on shares taxed?" says "gains", and was sent to the newswire instead of the
     lesson on taxes that answers it."""
     built = news_reference(ExplodingWriter())
-    built.lessons = lambda question: [("Taxes on listed equity", "Gains held over a year are taxed at 12.5%.")]
+    built.lessons = lambda question, k: [("Taxes on listed equity", "Gains held over a year are taxed at 12.5%.")]
     built.judge = judged(LESSON_FLOOR + 0.1, LESSON_FLOOR)
     turn = agent(market, router, reference=built).answer("how are capital gains on shares taxed ?")
     assert turn.spoke and turn.intent == "reference lesson"
@@ -927,7 +927,7 @@ def test_a_lesson_below_the_floor_is_not_served_even_when_no_headline_rates_high
     booked = Chunk("Mint, 28 Oct 2026: Traders book profits after gains in bank stocks.", [], "https://n.test/book",
                    "2026-10-28")
     built = news_reference(None, news=(booked,))
-    built.lessons = lambda question: [("P/B ratio (price to book)", "P/B is price over book value per share.")]
+    built.lessons = lambda question, k: [("P/B ratio (price to book)", "P/B is price over book value per share.")]
     built.judge = judged(LESSON_FLOOR - 0.01, 0.0)
     turn = agent(market, router, reference=built).answer("how do i book profits after gains ?")
     assert turn.intent == "reference recent" and booked.text in turn.served
@@ -938,7 +938,7 @@ def test_a_move_word_in_a_question_naming_no_company_and_no_lesson_reads_the_new
     crash = Chunk("Mint, 28 Oct 2026: The Sensex crashed 900 points as bank stocks fell.", [], "https://n.test/crash",
                   "2026-10-28")
     built = news_reference(None, news=(crash,))
-    built.lessons = lambda question: []
+    built.lessons = lambda question, k: []
     turn = agent(market, router, reference=built).answer("why did the sensex crash ?")
     assert turn.intent == "reference recent" and crash.text in turn.served
 
@@ -948,10 +948,32 @@ def test_a_move_question_reads_the_news_when_the_judge_rates_a_headline_above_th
     moved = Chunk("Mint, 28 Oct 2026: The Nifty slipped as bond yields kept rising.", [], "https://n.test/yields",
                   "2026-10-28")
     built = news_reference(None, news=(moved,))
-    built.lessons = lambda asked: [("Free cash flow and FCF yield", "FCF yield is free cash flow over market value.")]
+    built.lessons = lambda asked, k: [("Free cash flow and FCF yield", "FCF yield is free cash flow over market value.")]
     built.judge = judged(LESSON_FLOOR + 0.1, LESSON_FLOOR + 0.2)
     turn = agent(market, router, reference=built).answer("are bond yields going to rise ?")
     assert turn.intent == "reference recent" and moved.text in turn.served
+
+
+def test_a_move_word_question_is_taught_by_a_lesson_below_bm25s_best_when_the_judge_rejects_that_one(market, router):
+    """"How is short term tax charged on shares that rose" ranked the ELSS lesson above the lesson on taxes."""
+    lessons = [("ELSS (tax-saving funds)", "ELSS funds lock your money in for three years."),
+               ("Taxes on listed equity", "Short-term gains on shares are taxed at 20%.")]
+    built = news_reference(None)
+    built.lessons = lambda question, k: lessons[:k]
+    built.judge = lambda question, texts: [LESSON_FLOOR - 0.01, LESSON_FLOOR + 0.1] + [0.0] * (len(texts) - 2)
+    turn = agent(market, router, reference=built).answer("how is short term tax charged on shares that rose ?")
+    assert turn.intent == "reference lesson" and turn.served == lessons[1][1]
+
+
+def test_of_two_lessons_the_judge_accepts_the_one_bm25_ranks_higher_is_served(market, router):
+    """The judge rated "Rounding bottom and top" above "Double top and double bottom" for a question on a double bottom."""
+    lessons = [("Double top and double bottom", "Two troughs at about the same level."),
+               ("Rounding bottom and top", "A slow, curved turn in price.")]
+    built = news_reference(None)
+    built.lessons = lambda question, k: lessons[:k]
+    built.judge = lambda question, texts: [LESSON_FLOOR + 0.07, LESSON_FLOOR + 0.1] + [0.0] * (len(texts) - 2)
+    turn = agent(market, router, reference=built).answer("what does a double bottom look like before prices rise ?")
+    assert turn.served == lessons[0][1]
 
 
 @pytest.mark.parametrize("question,intent", [("is AAPL overbought right now ?", "overbought"),
@@ -1033,10 +1055,10 @@ def test_an_exchange_listed_name_resolves_to_its_ticker_as_whole_words(tmp_path)
 def test_a_concept_question_naming_no_company_is_answered_from_the_lessons_first(market, router):
     """The corpus is mostly US forums: "how does a SIP work" read from it was Wikipedia's sales incentive plan."""
     built = reference("never written", model=ExplodingModel())
-    built.lessons = lambda question: [("SIP (systematic investment plan)", "A SIP invests a fixed amount every month.")]
+    built.lessons = lambda question, k: [("SIP (systematic investment plan)", "A SIP invests a fixed amount every month.")]
     turn = agent(market, router, reference=built).answer("how does a SIP work ?")
     assert turn.spoke and turn.served == "A SIP invests a fixed amount every month." and turn.intent == "reference lesson"
-    built.lessons = lambda question: []
+    built.lessons = lambda question, k: []
     assert agent(market, router, reference=built).answer("what is a stop loss order ?").served == PASSAGE
 
 

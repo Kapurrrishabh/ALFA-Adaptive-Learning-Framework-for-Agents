@@ -72,10 +72,10 @@ def filings_from(tokenizer):
 
 
 def lessons_from():
-    """The curated lessons as question -> [(title, text)], with their hard line wraps undone."""
+    """The curated lessons as (question, how many) -> [(title, text)], best first, with their hard line wraps undone."""
     from backend.knowledge_base.lessons import knowledge_base
     held = knowledge_base()
-    return lambda question: [(lesson.title, " ".join(lesson.text.split())) for lesson, _ in held.search(question, k=1)]
+    return lambda question, k: [(lesson.title, " ".join(lesson.text.split())) for lesson, _ in held.search(question, k=k)]
 
 
 def news_from(tokenizer):

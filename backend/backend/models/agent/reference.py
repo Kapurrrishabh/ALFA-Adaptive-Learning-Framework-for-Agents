@@ -64,6 +64,9 @@ LATELY = re.compile(RECENT.pattern + r"|\b(fall(s|ing|en)?|fell|drop(s|ped|ping)
 # provisional, on `judge`'s scale (bge cosine) and from 32 questions with a move word: lessons beside the point
 # ("FCF yield" for bond yields) scored 0.53-0.62 and lessons that answered 0.66-0.84
 LESSON_FLOOR = 0.63
+# provisional: the lesson on taxes that answers "how is short term tax charged on shares that rose" is BM25's third
+# section, after one sharing no word with its heading and the ELSS lesson
+LESSONS_JUDGED = 3
 
 
 class SearchFailed(RuntimeError):
@@ -103,9 +106,9 @@ class Reference:
         # Optional: (query, top_k, as_of) -> chunk indices, best first. Given, it replaces BM25 for the
         # stored passages; BM25 put the endorsed answer first 12.3% of the time (models/external/sentence.py).
         self.rank = rank
-        # Optional: question -> [(title, text)] from the curated lessons (knowledge_base/lessons). Asked first for a
-        # question that names no company: the corpus is mostly US forums, and "how does a SIP work" read from it
-        # was answered with Wikipedia's sales incentive plan.
+        # Optional: (question, how many) -> [(title, text)], best first, from the curated lessons (knowledge_base/lessons).
+        # Asked first for a question that names no company: the corpus is mostly US forums, and "how does a SIP work"
+        # read from it was answered with Wikipedia's sales incentive plan.
         self.lessons = lessons
         # (question, texts) -> closeness of each, deciding a lesson against the news when a question has a move word
         # in it: word rules sent "are bond yields going to rise" to the lesson on FCF yield
@@ -138,9 +141,11 @@ class Reference:
         """
         query = f"{question} {' '.join(subject.names)}" if subject else question
         news_first = self.news is not None and LATELY.search(question)
-        taught = self.lessons(question) if subject is None and self.lessons is not None else None
-        if taught and (not news_first or not RECENT.search(question) and self._teaches(question, taught[0], query, as_of)):
-            title, text = taught[0]
+        taught = None
+        if subject is None and self.lessons is not None:
+            taught = self._lesson(question, query, as_of) if news_first else next(iter(self.lessons(question, 1)), None)
+        if taught:
+            title, text = taught
             return Looked(text, f"document lesson:{title} ; published undated ; passage_1 {text}", LESSON_HOW,
                           [], float("nan"), text, "")
         if news_first:
@@ -151,11 +156,18 @@ class Reference:
                 return self._read(question, chunks, subject)
         return None
 
-    def _teaches(self, question, lesson, query, as_of):
-        """Whether the lesson answers the question better than every headline does, and well enough to serve."""
+    def _lesson(self, question, query, as_of):
+        """For a move-word question, the first of BM25's best few lessons the judge rates over the floor and above
+        every headline, else None. BM25's order rather than the judge's: it put "Rounding bottom and top" above
+        "Double top and double bottom" for a question about a double bottom."""
+        lessons = [] if RECENT.search(question) else self.lessons(question, LESSONS_JUDGED)
+        if not lessons:
+            return None
         headlines = self._newswire(query, as_of, None) or []
-        scores = self.judge(question, [f"{lesson[0]}. {lesson[1]}"] + [chunk.text for chunk in headlines])
-        return scores[0] >= LESSON_FLOOR and all(scores[0] > score for score in scores[1:])
+        scores = self.judge(question, [f"{title}. {text}" for title, text in lessons] + [chunk.text for chunk in headlines])
+        news = scores[len(lessons):]
+        return next((lesson for lesson, score in zip(lessons, scores)
+                     if score >= LESSON_FLOOR and all(score > other for other in news)), None)
 
     def asks_lately(self, question, moves):
         """Whether a question says it is about now ("lately", "today", "news"), so prices, filings and headlines
