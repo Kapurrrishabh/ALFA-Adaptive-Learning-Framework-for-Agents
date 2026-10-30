@@ -122,11 +122,14 @@ def price_move(subject, prices):
             f"{shown['return_5d']} over 5 days and {shown['return_20d']} over 20 days.")
 
 
-def recent_plain(subject, prices, chunks):
-    """The same answer without a language model: the price sentence, then the newest report or the lack of one."""
+def recent_plain(subject, prices, chunks, unread=False):
+    """The same answer without a language model: the price sentence, then the newest report or the lack of one. With
+    no report it says when SEC filings were `unread`, and otherwise claims nothing of filings: not every question reads
+    them."""
     said = [price_move(subject, prices)] if prices else []
-    said.append(f"The latest report: {latest(chunks).text}" if chunks
-                else "I found no news or filing about it in the archive, so I cannot say why.")
+    said.append(f"The latest report: {latest(chunks).text}" if chunks else
+                "I found no news about it in the archive and could not read its SEC filings just now, so I cannot "
+                "say why." if unread else "I found no news about it in the archive, so I cannot say why.")
     return " ".join(said)
 
 

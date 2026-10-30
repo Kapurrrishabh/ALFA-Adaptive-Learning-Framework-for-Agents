@@ -26,8 +26,10 @@ The first two of those five are also where a **reference** answer gets its chanc
 routed intent whose answer is a refusal. A question naming no instrument, one the router cannot place, or
 one it placed as asking for a figure we do not hold, is not necessarily a question we hold nothing on -- it
 is one the price snapshot cannot answer. So before any of those three refusals is returned, `reference` is
-asked to find it in the documents. Those three and nowhere else on purpose: an intent the router placed on
-a figure we do have is answered from that figure, because that is the path whose faithfulness is measured.
+asked to find it in the documents. Beyond those three, only a question about what happened lately, or one the
+router is sure asks how the price moved, reads the dated sources first (`Reference.asks_lately`), and that
+answer opens with the price files' own figures in a sentence of ours. Any other intent the router placed on a
+figure we do have is answered from that figure, because that is the path whose faithfulness is measured.
 With no `reference` given, all three refuse exactly as they did before it existed.
 """
 
@@ -180,7 +182,7 @@ class Agent:
                                evidence=looked.evidence, margin=margin, as_of=looked.day or None)
         return Turn(question, question, ticker, f"{REFERENCE} {looked.how}", looked.served,
                     looked.answer, looked.evidence, looked.confidence, None, True, margin,
-                    looked.unsupported, "", looked.day or None, looked.phrased_by, looked.unphrased_because)
+                    looked.unsupported, looked.unread, looked.day or None, looked.phrased_by, looked.unphrased_because)
 
     def _stated(self, confidence):
         """The chance of being right, in the units B3 fitted. None until a calibrator has been fitted."""

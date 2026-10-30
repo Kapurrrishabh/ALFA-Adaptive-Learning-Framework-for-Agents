@@ -1232,6 +1232,29 @@ def test_a_question_the_router_is_unsure_of_reads_the_dated_sources_only_when_it
     assert (turn.intent == "reference recent") == recent
 
 
+@pytest.mark.parametrize("filings", [RefusedLive(), ExplodingLive()])
+def test_a_question_sure_to_ask_how_the_price_moved_is_answered_from_the_price_files_without_filings(registered, router,
+                                                                                                    filings):
+    """"how is AAPL doing" was refused as unreachable when EDGAR refused us, though the price files held the answer, and
+    it waited on EDGAR when EDGAR did answer."""
+    built = news_reference(ExplodingWriter(), news=(), filings=filings)
+    turn = agent(registered, router, model=ExplodingModel(), reference=built).answer("how has AAPL performed ?")
+    assert turn.spoke and turn.served.startswith("AAPL closed at $") and turn.because == ""
+
+
+APPLE = Chunk("Mint, 6 Oct 2026: Apple shares rose after AAPL launched a new phone.", [], "https://n.test/aapl",
+              "2026-10-06")
+
+
+@pytest.mark.parametrize("news,said", [((), "could not read its SEC filings"), ((APPLE,), APPLE.text)])
+def test_filings_that_cannot_be_read_cost_their_own_passages_not_the_turn(registered, router, news, said):
+    """The reply names the filings only when nothing else was found; the turn records the refusal either way."""
+    built = news_reference(None, news=news, filings=RefusedLive())
+    turn = agent(registered, router, model=ExplodingModel(), reference=built).answer("how has AAPL done lately ?")
+    assert turn.spoke and turn.served.startswith("AAPL closed at $") and said in turn.served
+    assert ("SEC filings" in turn.served) == (not news) and "403 from efts.sec.gov" in turn.because
+
+
 def test_a_rewrite_that_misspells_the_ticker_serves_alfas_words(market, router):
     turn = phrased_agent(market, router, DRAFT, FakeWriter("AAAPL.NS is up 13.8% over 20 days, closing at 165.00.")).answer(ASKED)
     assert turn.served == DRAFT and "names AAAPL.NS" in turn.unphrased_because

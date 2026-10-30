@@ -81,9 +81,10 @@ class SearchFailed(RuntimeError):
     `requests` to exist.
     """
 
-# `lesson` is a curated lesson's heading and text, which decide whether a question it answers is on topic
+# `lesson` is a curated lesson's heading and text, which decide whether a question it answers is on topic; `unread`
+# names a source that could not be read for an answer the others gave
 Looked = namedtuple("Looked", "served evidence how unsupported confidence answer day phrased_by unphrased_because "
-                              "lesson", defaults=("", "", ""))
+                              "lesson unread", defaults=("", "", "", ""))
 
 
 class Reference:
@@ -156,7 +157,9 @@ class Reference:
             return Looked(text, f"document lesson:{title} ; published undated ; passage_1 {text}", LESSON_HOW,
                           [], float("nan"), text, "", lesson=f"{title}. {text}")
         if news_first:
-            return self._recent(question, query, as_of, subject, prices)
+            # Filings are a network wait the price files do not need, so a question here for its route alone, with no
+            # time, news or window word ("how is AAPL doing"), is answered without them, as it was before it came here.
+            return self._recent(question, query, as_of, subject, prices, not lately or LOOK_BACK.search(question))
         for arm in self._arms(subject, question):
             chunks = arm(query, as_of, subject)
             if chunks:
@@ -183,19 +186,26 @@ class Reference:
 
     def asks_lately(self, question, moves, sure):
         """Whether prices, filings and headlines answer a question before the advisory path. Always when the router
-        is `sure` it asks how the price `moves`: ALFA's answers to that never clear the answer cut (0 of 294, at most
-        0.9992 against 0.9996). Unsure, it needs a time word or a window; any other intent needs a news word."""
+        is `sure` it asks how the price `moves`: our sentence from the price files states the 5- and 20-day figures
+        ALFA's answer would, without its confidence having to clear a cut that moves with every refit from feedback.
+        Unsure, it needs a time word or a window; any other intent needs a news word."""
         return self.news is not None and (moves and (sure or LOOK_BACK.search(question) is not None)
                                           or NEWS.search(question) is not None)
 
-    def _recent(self, question, query, as_of, subject, prices):
-        """What happened lately, from everything dated: the price snapshot, SEC filings and headlines.
+    def _recent(self, question, query, as_of, subject, prices, filed):
+        """What happened lately, from everything dated: the price snapshot, SEC filings when `filed`, and headlines.
 
         An encyclopedia is not asked: read for "why is infosys falling" it gave "falling because it is a
-        technology company". With nothing dated about it at all, the turn says so.
+        technology company". With nothing dated about it at all, the turn says so. Filings that could not be read
+        cost their own passages and not the turn, as a source does in `Live`: they are read only for a subject, which
+        always comes with its prices.
         """
-        found = (self._searched(query, as_of, subject, self.filings) or []) if self.filings and subject and subject.cik \
-            else []
+        found, refused = [], None
+        if filed and self.filings and subject and subject.cik:
+            try:
+                found = self._searched(query, as_of, subject, self.filings) or []
+            except SearchFailed as error:
+                refused = error
         found += self._newswire(query, as_of, subject) or []
         if not found and prices is None:
             return Looked("", "", UNANSWERED, [], float("nan"), "", "", "", "no recent news names it")
@@ -204,13 +214,14 @@ class Reference:
         money = phrase.currency(subject.ticker) if subject else None
         # prices alone need no rewording: the plain answer already says all they do, and that nothing says why
         written = phrase.recent(question, subject, prices, found, self.writer, money) if self.writer and found else None
+        unread = f"sec filings unread: {refused}" if refused else ""
         if written is not None and written.text:
-            return Looked(written.text, evidence, RECENT_HOW, [], float("nan"), "", day, written.by, "")
+            return Looked(written.text, evidence, RECENT_HOW, [], float("nan"), "", day, written.by, "", unread=unread)
         if written is not None and written.because == phrase.NOT_ANSWERED and not prices:
             return Looked("", evidence, UNANSWERED, [], float("nan"), "", day, "", written.because)
-        plain = phrase.recent_plain(subject, prices, found)
+        plain = phrase.recent_plain(subject, prices, found, bool(unread))
         return Looked(plain, evidence, RECENT_HOW, [], float("nan"), plain, day, "",
-                      written.because if written is not None else "")
+                      written.because if written is not None else "", unread=unread)
 
     def _arms(self, subject, question):
         """The arms in the order they are asked, decided by whether the subject has an identity to ask by.
