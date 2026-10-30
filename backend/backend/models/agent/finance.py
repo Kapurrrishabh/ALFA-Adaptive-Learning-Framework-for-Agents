@@ -247,12 +247,14 @@ _MONEY = re.compile(
     r"capital (gains?|markets?)|balance sheets?|real estate|property|propert(y|ies)|valuation|ratios?|brokers?|demat|futures|options|derivatives?|commodit\w*|crude|oil|sectors?|"
     r"rall(y|ies|ied|ying)|crash\w*|bull\w*|bear\w*|stop[- ]loss|orders?|hedg\w*|etfs?|analysts?|ratings?|buyback|"
     r"merger|acquisitions?|listing|momentum|drawdown|wealth|income|expense\w*|cash|spend\w*|economy|"
-    r"rsi|macd|bollinger|stochastic|overbought|oversold|volume|breakouts?|(small|mid|large)[- ]?caps?|fiis?|diis?|"
-    r"diversif\w*|candlesticks?|charts?|doji|harami|sharpe|sortino|ebitda|ltcg|stcg|elss)\b", re.I)
+    r"rsi|macd|bollinger|stochastic oscillators?|overbought|oversold|(small|mid|large)[- ]?caps?|fiis?|diis?|"
+    r"diversif\w*|candlesticks?|chart patterns?|doji|harami|sharpe|sortino|ebitda|ltcg|stcg|elss|cagr|xirr)\b", re.I)
+# Words about markets only beside another: "the volume of a sphere", "an acne breakout" and "a pie chart" are not.
+_PAIRED = re.compile(r"\b(volume|breakouts?|charts?|candles?|hammer)\b", re.I)
 
 
 def about_money(text, lesson=""):
-    """Whether a question is about money, markets, companies or the economy: by its words, or because the
-    curated `lesson` found for it, money by construction, uses every word it does. One shared word is not
-    enough: "how do candles burn" found the lesson on candle anatomy, and "what is a black hole" three black crows."""
-    return _MONEY.search(text) is not None or bool(lesson) and lessons.covers(lesson, text)
+    """Whether a question is about money: by its words, or because the curated `lesson` found for it uses every one of
+    them. One shared word is not enough: "how do candles burn" found the lesson on candle anatomy."""
+    return (_MONEY.search(text) is not None or len({word.lower() for word in _PAIRED.findall(text)}) > 1
+            or bool(lesson) and lessons.covers(lesson, text))

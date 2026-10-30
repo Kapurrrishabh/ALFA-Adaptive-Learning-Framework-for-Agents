@@ -81,8 +81,9 @@ class SearchFailed(RuntimeError):
     `requests` to exist.
     """
 
-Looked = namedtuple("Looked", "served evidence how unsupported confidence answer day phrased_by unphrased_because",
-                    defaults=("", ""))
+# `lesson` is a curated lesson's heading and text, which decide whether a question it answers is on topic
+Looked = namedtuple("Looked", "served evidence how unsupported confidence answer day phrased_by unphrased_because "
+                              "lesson", defaults=("", "", ""))
 
 
 class Reference:
@@ -152,7 +153,7 @@ class Reference:
         if taught:
             title, text = taught
             return Looked(text, f"document lesson:{title} ; published undated ; passage_1 {text}", LESSON_HOW,
-                          [], float("nan"), text, "")
+                          [], float("nan"), text, "", lesson=f"{title}. {text}")
         if news_first:
             return self._recent(question, query, as_of, subject, prices)
         for arm in self._arms(subject, question):

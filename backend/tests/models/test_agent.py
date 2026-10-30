@@ -1114,7 +1114,8 @@ def test_a_question_not_about_money_is_refused_even_when_a_passage_matches(marke
 @pytest.mark.parametrize("question", ["what does RSI mean ?", "what is diversification ?",
                                       "what does it mean when the macd line rises above the signal line ?",
                                       "does volume rise before a breakout ?", "why are small caps rallying ?",
-                                      "are fiis and diis buying ?", "how do i read a candlestick chart ?"])
+                                      "are fiis and diis buying ?", "how do i read a candlestick chart ?",
+                                      "what is cagr ?", "what is xirr ?", "what is a hammer candle ?"])
 def test_market_words_alone_put_a_question_about_money(question):
     """Each of the first five found its lesson or a headline and was refused as not about money."""
     assert finance.about_money(question)
@@ -1122,22 +1123,41 @@ def test_market_words_alone_put_a_question_about_money(question):
 
 @pytest.mark.parametrize("question", ["write me a poem about the sea", "what is the weather in Mumbai ?",
                                       "who won the cricket match yesterday ?", "tell me a joke", "asdfgh qwerty",
-                                      "how many hours should i sleep ?", "recommend a good movie for tonight"])
+                                      "how many hours should i sleep ?", "recommend a good movie for tonight",
+                                      "what are the top songs on the music charts ?", "show me a chart of the weather",
+                                      "how do i make a pie chart in excel ?", "what is stochastic gradient descent ?",
+                                      "what is the volume of a sphere ?", "how do i turn up the volume on my phone ?",
+                                      "how do i treat an acne breakout ?"])
 def test_a_question_about_something_else_is_not_about_money(question):
     assert not finance.about_money(question)
 
 
-def test_a_lesson_that_uses_every_word_of_the_question_is_served_though_no_money_word_is_in_it(market, router):
+@pytest.mark.parametrize("question,lesson", [
+    ("what is a pennant ?", ("Flags and pennants", "A pennant is a small triangle after a sharp move.")),
+    ("what is a hanging man ?", ("Hammer and hanging man", "Both have a small body near the top of the range.")),
+])
+def test_a_lesson_that_uses_every_word_of_the_question_is_served_though_no_money_word_is_in_it(market, router, question,
+                                                                                                lesson):
     """A lesson is about money by construction, so naming its topic is enough: "what is a pennant" names no market word."""
     built = reference("never written", model=ExplodingModel())
-    built.lessons = lambda question, k: [("Flags and pennants", "A pennant is a small triangle after a sharp move.")]
-    turn = agent(market, router, reference=built).answer("what is a pennant ?")
+    built.lessons = lambda asked, k: [lesson]
+    turn = agent(market, router, reference=built).answer(question)
     assert turn.spoke and turn.intent == "reference lesson"
+
+
+def test_the_words_a_lesson_is_cited_with_do_not_put_a_question_on_topic(market, router):
+    """Its evidence wraps a lesson in "document lesson: ... published undated", which no lesson says."""
+    built = reference("never written", model=ExplodingModel())
+    built.lessons = lambda asked, k: [("Candle anatomy", "A candle shows the open, high, low and close of one period.")]
+    turn = agent(market, router, reference=built).answer("what is an undated document ?")
+    assert not turn.spoke and turn.served == finance.OFF_TOPIC
 
 
 @pytest.mark.parametrize("question,lesson", [
     ("how do candles burn ?", ("Candle anatomy", "A candle shows the open, high, low and close of one period.")),
     ("what is a black hole ?", ("Three white soldiers and three black crows", "Three long black candles in a row.")),
+    ("what is the volume of a sphere ?", ("Volume, OBV and accumulation/distribution", "Volume confirms price moves.")),
+    ("how do i treat an acne breakout ?", ("Breakouts and false breakouts", "A breakout is a close beyond a range.")),
 ])
 def test_a_lesson_sharing_one_word_with_a_question_about_something_else_is_refused(market, router, question, lesson):
     """The lessons' heading check lets one shared word through, and every lesson is about money, not the question."""
