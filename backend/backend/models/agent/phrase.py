@@ -21,12 +21,12 @@ ANSWER_SYSTEM = """Rewrite the ANSWER for an Indian retail investor in two or th
 Keep every number exactly as written. Keep every judgement as it is. Add nothing: no new facts, no reasons, \
 no advice, no predictions. Never say a price will rise or fall. No lists or headings."""
 
-PASSAGE_SYSTEM = """Answer the QUESTION for an Indian retail investor in two or three short, plain sentences, \
-using only the PASSAGES. Report what the passages say happened, and what they say it happened after or \
-alongside, naming the source and date as the passage gives them; do not explain beyond what they say. Keep \
-every number exactly as written. Never refer to passages by number. No advice, no predictions, and never say a \
-price will rise or fall. If the passages do not answer the question, reply with the single word NONE and \
-nothing else."""
+PASSAGE_SYSTEM = """Answer the QUESTION for an Indian retail investor in two or three short sentences, using \
+only the PASSAGES. Use everyday words. Say what the passages report happened, and what it happened after or \
+alongside. Name the source and date as the passage gives them. Do not answer yes or no, and do not give your \
+own verdict on the question: report what the passages say. Do not explain beyond what they say. Keep every \
+number exactly as written. Never refer to passages by number. No advice, no predictions, and never say a price \
+will rise or fall. If the passages do not answer the question, reply with the single word NONE and nothing else."""
 
 _THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}\b)")
 # a ticker, or a name in capitals: "RELIEANCE.NS" was written for RELIANCE.NS and passed every other check
@@ -34,7 +34,16 @@ _NAMES = re.compile(r"\b[A-Z0-9&-]{2,}\.(?:NS|BO)\b|\b[A-Z]{5,}\b")
 # A reply that says the passages do not answer, wherever it says it: "...founded in 1981. The passage does
 # not provide a specific reason. None." was half an answer and half a refusal, and only the refusal was true.
 _DECLINES = re.compile(r"\bnone\.?\s*$|\b(does|do|did) not (provide|say|mention|explain|give|contain|answer)|"
-                       r"\bno (information|mention|reason|details?)\b|\bnot (mentioned|provided|specified)\b", re.I)
+                       r"\bno (information|mention|reason|details?)\b|\bnot (\w+ly )?(mentioned|provided|specified)\b", re.I)
+# Verdicts a writer gave in place of a report, which HHEM judged unsupported: "NO" for "are it stocks falling",
+# "Bond yields are not falling." for "are bond yields falling". A clause that is only the question's own words,
+# said or denied, is the writer ruling on the question.
+_BARE_VERDICT = re.compile(r"^\W*(yes|no)\s*([,.;:!]|$)", re.I)
+_YES_NO = re.compile(r"^\W*(is|are|was|were|do|does|did|has|have|had|will|can|could|should)\b", re.I)
+_VERDICT_WORDS = frozenset("is are was were be been being do does did has have had will would can could should the "
+                           "a an not no yes isn't aren't wasn't weren't doesn't don't didn't hasn't haven't".split())
+# provisional: "NO" was one word, and the shortest reply HHEM judged supported six ("Nifty has fallen 13% this year.")
+MIN_WORDS = 4
 
 
 def currency(ticker):
@@ -65,7 +74,7 @@ def from_passages(question, chunks, writer, money=None):
     text, by = reply
     if _DECLINES.search(text):
         return Phrased("", "", NOT_ANSWERED)
-    reasons = _checked(text, passages, money, question)
+    reasons = _rules_on(question, text, passages) + _checked(text, passages, money, question)
     return Phrased("", "", "; ".join(reasons)) if reasons else Phrased(text, by, "")
 
 
@@ -121,6 +130,22 @@ def _ask(writer, system, content):
     except (LLMUnavailable, DataUnavailable) as error:
         return Phrased("", "", f"the language model is unavailable: {error}")
     return writer.text(reply).strip(), reply.model
+
+
+def _rules_on(question, text, source):
+    """Why `text` is a verdict rather than a report of what happened, or nothing when it is a report."""
+    reasons = ["it answers yes or no"] if _BARE_VERDICT.match(text) else []
+    if _YES_NO.match(question):
+        claim = _claim(question)
+        reasons += [f"it rules on the question itself: “{clause.strip()}”" for clause in re.split(r"[.,;:!?()]", text)
+                    if clause.strip() and _claim(clause) == claim and clause.strip().lower() not in source.lower()]
+    if len(text.split()) < MIN_WORDS:
+        reasons.append(f"it is {len(text.split())} words, too few to say what happened")
+    return reasons
+
+
+def _claim(text):
+    return set(re.findall(r"[a-z0-9']+", text.lower().replace("’", "'"))) - _VERDICT_WORDS
 
 
 def _checked(text, source, money, asked=""):

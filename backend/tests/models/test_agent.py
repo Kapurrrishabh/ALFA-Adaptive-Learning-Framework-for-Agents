@@ -1027,6 +1027,46 @@ def test_a_writer_that_finds_no_answer_serves_the_plain_answer_not_its_half_refu
     assert turn.spoke and "founded" not in turn.served and NEWS.text in turn.served
 
 
+ASKED_YES_NO = "are refinery stocks falling ?"
+
+
+@pytest.mark.parametrize("reply,reason", [
+    ("NO", "answers yes or no"),
+    ("No, they did not. Reliance Industries commissioned a refinery unit (Mint, 6 Oct 2026).", "answers yes or no"),
+    ("Refinery stocks are not falling. Reliance Industries commissioned a unit (Mint, 6 Oct 2026).", "rules on"),
+    ("Refinery stocks are falling (Mint, 6 Oct 2026).", "rules on"),
+    ("Refinery unit commissioned.", "too few to say what happened"),
+])
+def test_a_writer_that_rules_on_a_yes_no_question_serves_the_plain_answer(market, router, reply, reason):
+    """"are it stocks falling" was served "NO", and "are bond yields falling" "Bond yields are not falling.": verdicts
+    no passage gave, which HHEM judged unsupported."""
+    from backend.models.agent import phrase
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply))).answer(ASKED_YES_NO)
+    assert turn.spoke and turn.served == phrase.recent_plain(None, None, [NEWS]) and turn.phrased_by == ""
+    assert reason in turn.unphrased_because
+
+
+def test_a_writer_saying_the_passages_do_not_mention_it_is_a_refusal_not_an_answer(market, router):
+    """"Pharma stocks are not specifically mentioned in the passages provided." was served, and HHEM judged it 0.17."""
+    writer = FakeWriter("Refinery stocks are not specifically mentioned in the passages provided.")
+    turn = agent(market, router, reference=news_reference(writer)).answer(ASKED_YES_NO)
+    assert not turn.spoke and turn.served == finance.NOT_IN_SOURCES
+
+
+def test_a_writer_that_reports_what_happened_on_a_yes_no_question_is_served(market, router):
+    reply = "Reliance Industries commissioned its new refinery unit (Mint, 6 Oct 2026)."
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply))).answer(ASKED_YES_NO)
+    assert turn.served == reply and turn.phrased_by == "test-lm"
+
+
+def test_a_verdict_the_passages_state_in_those_words_is_kept(market, router):
+    said = Chunk("Mint, 6 Oct 2026: Refinery stocks are falling after the new unit opened.", [], "https://n.test/r",
+                 "2026-10-06")
+    reply = "Refinery stocks are falling, after the new unit opened (Mint, 6 Oct 2026)."
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply), news=(said,))).answer(ASKED_YES_NO)
+    assert turn.served == reply and turn.phrased_by == "test-lm"
+
+
 def test_forum_and_encyclopedia_passages_are_quoted_not_reworded(market, router):
     """The language model misattributed long prose ("HDFCBANK.NS is a subsidiary of HDFC Bank"), as ALFA's
     own generator did, so only dated headlines are reworded."""
