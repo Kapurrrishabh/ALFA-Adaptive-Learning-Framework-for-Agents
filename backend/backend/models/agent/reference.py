@@ -106,9 +106,9 @@ class Reference:
         # ALFA's own generator did, so those are still quoted. A failed check serves the plain answer.
         self.writer = writer
         # (premise, hypothesis) pairs -> chance of entailment each, which every sentence the writer wrote must clear
-        if writer is not None and entails is None:
-            raise ValueError("a Reference given a writer needs entails= to check its replies against the passages, "
-                             "as ask.reference_from does with entails_from()")
+        if writer is not None and news is not None and entails is None:
+            raise ValueError("a Reference given a writer and news needs entails= to check its replies against the "
+                             "passages, as ask.reference_from does with entails_from()")
         self.entails = entails
         # The newswire and SEC's filings on their own, read with the price snapshot for a question about
         # what happened lately (`LATELY`): headlines alone said Titan fell, not by how much or from where.

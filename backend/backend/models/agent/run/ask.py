@@ -170,7 +170,7 @@ def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=Fal
                      news=news_from(tokenizer) if live else None,
                      filings=filings_from(tokenizer) if live else None,
                      rank=ranker_from(chunks) if dense else None, lessons=lessons_from(rerank_from() if live else None),
-                     judge=judge_from() if live else None, entails=entails_from() if writer else None)
+                     judge=judge_from() if live else None, entails=entails_from() if writer and live else None)
 
 
 # Which encoder routes, and the gate fitted for it: models/training/route.py fitted ALFA's at 97% precision,

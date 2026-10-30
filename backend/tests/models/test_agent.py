@@ -1170,6 +1170,12 @@ def test_a_writer_without_an_entailment_model_is_refused_when_the_reference_is_b
         news_reference(FakeWriter("never asked"), entails=None)
 
 
+def test_a_writer_with_no_news_to_reword_needs_no_entailment_model(market, router):
+    """Only news replies are checked by it, and `--phrase` without `--live` loaded its 568 MB for nothing."""
+    built = reference("never written", model=ExplodingModel(), writer=ExplodingWriter())
+    assert agent(market, router, reference=built).answer("what is a stop loss order ?").served == PASSAGE
+
+
 def test_a_writer_saying_the_passages_do_not_mention_it_is_a_refusal_not_an_answer(market, router):
     """"Pharma stocks are not specifically mentioned in the passages provided." was served, and HHEM judged it 0.17."""
     writer = FakeWriter("Refinery stocks are not specifically mentioned in the passages provided.")
