@@ -1065,6 +1065,12 @@ ASKED_YES_NO = "are refinery stocks falling ?"
     ("No, they did not. Reliance Industries commissioned a refinery unit (Mint, 6 Oct 2026).", "answers yes or no"),
     ("Refinery stocks are not falling. Reliance Industries commissioned a unit (Mint, 6 Oct 2026).", "rules on"),
     ("Refinery stocks are falling (Mint, 6 Oct 2026).", "rules on"),
+    ("Refinery stocks are not currently falling. Reliance Industries commissioned a unit (Mint, 6 Oct 2026).", "rules on"),
+    ("Refinery stocks are not falling in India. Reliance Industries commissioned a unit (Mint, 6 Oct 2026).", "rules on"),
+    ("Stocks of the refinery sector are not falling. Reliance Industries commissioned a unit (Mint, 6 Oct 2026).",
+     "rules on"),                                                                                # reordered
+    ("Stocks are not falling: Reliance Industries commissioned a unit (Mint, 6 Oct 2026).", "rules on"),  # drops a word
+    ("Refinery stocks aren't falling as Reliance Industries commissioned a unit (Mint, 6 Oct 2026).", "rules on"),
     ("Refinery unit commissioned.", "too few to say what happened"),
 ])
 def test_a_writer_that_rules_on_a_yes_no_question_serves_the_plain_answer(market, router, reply, reason):

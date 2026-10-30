@@ -24,7 +24,7 @@ words. Keep each sentence under 15 words. Keep every number exactly as written, 
 as it is, and do not call a figure high, low, a lot or a little. Add nothing else: no new facts, no reasons, no \
 advice, no predictions. Never say a price will rise or fall. No lists or headings."""
 
-# Left in its long sentences: split into short ones, it answered "how is my portfolio doing" with a Treasury headline
+# No cap on sentence length here: with one, it answered "how is my portfolio doing" with a Treasury headline
 PASSAGE_SYSTEM = """Answer the QUESTION for an Indian retail investor in two or three short sentences in everyday \
 words, using only the PASSAGES. Report what the passages say happened, and what they say it happened after or \
 alongside, naming the source and date as the passage gives them; do not explain beyond what they say. Do not \
@@ -40,13 +40,16 @@ _NAMES = re.compile(r"\b[A-Z0-9&-]{2,}\.(?:NS|BO)\b|\b[A-Z]{5,}\b")
 # not provide a specific reason. None." was half an answer and half a refusal, and only the refusal was true.
 _DECLINES = re.compile(r"\bnone\.?\s*$|\b(does|do|did) not (provide|say|mention|explain|give|contain|answer)|"
                        r"\bno (information|mention|reason|details?)\b|\bnot (\w+ly )?(mentioned|provided|specified)\b", re.I)
-# Verdicts a writer gave in place of a report, which HHEM judged unsupported: "NO" for "are it stocks falling",
-# "Bond yields are not falling." for "are bond yields falling". A clause that is only the question's own words,
-# said or denied, is the writer ruling on the question.
+# Verdicts a writer gave in place of a report, which HHEM judged unsupported: "NO" for "are it stocks falling" and
+# "Bond yields are not falling." for "are bond yields falling".
 _BARE_VERDICT = re.compile(r"^\W*(yes|no)\s*([,.;:!]|$)", re.I)
-_YES_NO = re.compile(r"^\W*(is|are|was|were|do|does|did|has|have|had|will|can|could|should)\b", re.I)
-_VERDICT_WORDS = frozenset("is are was were be been being do does did has have had will would can could should the "
-                           "a an not no yes isn't aren't wasn't weren't doesn't don't didn't hasn't haven't".split())
+_AUX = frozenset("is are was were do does did has have had will can could should".split())
+_YES_NO = re.compile(rf"^\W*({'|'.join(_AUX)})\b", re.I)
+_DENIALS = frozenset("not no never".split())
+_VERDICT_WORDS = _AUX | _DENIALS | frozenset("be been being would yes the a an in on of to for at by with "
+                                             "against".split())
+# a reason starts a new clause: "Bond yields are not falling as the RBI held rates" rules on the question first
+_CLAUSES = re.compile(r"[.,;:!?()]|\b(?:as|because|but|while|since|though|although|amid|after|and|so)\b", re.I)
 # provisional: "NO" was one word, and the shortest reply HHEM judged supported six ("Nifty has fallen 13% this year.")
 MIN_WORDS = 4
 # a size the draft never gives: "Infosys is quite volatile" for a draft that gave the figure alone
@@ -85,7 +88,7 @@ def from_passages(question, chunks, writer, money=None):
     text, by = reply
     if _DECLINES.search(text):
         return Phrased("", "", NOT_ANSWERED)
-    reasons = _rules_on(question, text, passages) + _checked(text, passages, money, question)
+    reasons = _verdicts(question, text, passages) + _checked(text, passages, money, question)
     return Phrased("", "", "; ".join(reasons)) if reasons else Phrased(text, by, "")
 
 
@@ -143,20 +146,32 @@ def _ask(writer, system, content):
     return writer.text(reply).strip(), reply.model
 
 
-def _rules_on(question, text, source):
+def _verdicts(question, text, source):
     """Why `text` is a verdict rather than a report of what happened, or nothing when it is a report."""
     reasons = ["it answers yes or no"] if _BARE_VERDICT.match(text) else []
     if _YES_NO.match(question):
-        claim = _claim(question)
-        reasons += [f"it rules on the question itself: “{clause.strip()}”" for clause in re.split(r"[.,;:!?()]", text)
-                    if clause.strip() and _claim(clause) == claim and clause.strip().lower() not in source.lower()]
+        claim = _claim(_words(question))
+        reasons += [f"it rules on the question itself: “{clause.strip()}”" for clause in _CLAUSES.split(text)
+                    if _restates(_words(clause), claim) and clause.strip().lower() not in source.lower()]
     if len(text.split()) < MIN_WORDS:
         reasons.append(f"it is {len(text.split())} words, too few to say what happened")
     return reasons
 
 
-def _claim(text):
-    return set(re.findall(r"[a-z0-9']+", text.lower().replace("’", "'"))) - _VERDICT_WORDS
+def _restates(words, claim):
+    """Whether a clause says the question's claim back, adding two words at most; denying it, it may drop one."""
+    said = _claim(words)
+    return bool(words & _AUX) and len(said - claim) <= 2 and \
+        len(said & claim) >= max(2, len(claim) - bool(words & _DENIALS))
+
+
+def _words(text):
+    return set(re.findall(r"[a-z0-9']+", text.lower().replace("’", "'").replace("n't", " not")))
+
+
+def _claim(words):
+    return {word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+            for word in words - _VERDICT_WORDS}
 
 
 def _checked(text, source, money, asked=""):
