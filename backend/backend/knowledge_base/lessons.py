@@ -60,6 +60,12 @@ def _tokens(text: str) -> List[str]:
     return out
 
 
+def covers(text: str, question: str) -> bool:
+    """Whether `text` uses every word of `question` that carries meaning, as this module tokenizes them."""
+    said = set(_tokens(text))
+    return all(t in said for t in _tokens(question))
+
+
 def _shares_word(query: List[str], title: List[str]) -> bool:
     """Whether a question and a heading name the same thing, allowing for the crude stemmer above:
     "tax" and "taxe" (from "Taxes") count as the same word."""

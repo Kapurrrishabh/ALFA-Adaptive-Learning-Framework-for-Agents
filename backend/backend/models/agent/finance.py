@@ -17,6 +17,7 @@ from collections import namedtuple
 from backend.models.data import advisory, prices
 
 from backend.advisory.sentiment.feeds import feed
+from backend.knowledge_base import lessons
 
 # Questions are lowercased by the tokenizer anyway, and a ticker is the one token whose case a user
 # varies freely: "aapl", "Aapl", "AAPL" all name the same file.
@@ -244,10 +245,14 @@ _MONEY = re.compile(
     r"revenue|earnings|results?|quarter\w*|compan(y|ies)|business\w*|portfolio|risk\w*|volatil\w*|returns?|money|"
     r"salary|savings?|insurance|pension|ppf|epf|deposits?|credit|debt|interest|mortgage|emi|budget|financ\w*|"
     r"capital (gains?|markets?)|balance sheets?|real estate|property|propert(y|ies)|valuation|ratios?|brokers?|demat|futures|options|derivatives?|commodit\w*|crude|oil|sectors?|"
-    r"rall(y|ies)|crash\w*|bull\w*|bear\w*|stop[- ]loss|orders?|hedg\w*|etfs?|analysts?|ratings?|buyback|"
-    r"merger|acquisitions?|listing|momentum|drawdown|wealth|income|expense\w*|cash|spend\w*|economy)\b", re.I)
+    r"rall(y|ies|ied|ying)|crash\w*|bull\w*|bear\w*|stop[- ]loss|orders?|hedg\w*|etfs?|analysts?|ratings?|buyback|"
+    r"merger|acquisitions?|listing|momentum|drawdown|wealth|income|expense\w*|cash|spend\w*|economy|"
+    r"rsi|macd|bollinger|stochastic|overbought|oversold|volume|breakouts?|(small|mid|large)[- ]?caps?|fiis?|diis?|"
+    r"diversif\w*|candlesticks?|charts?|doji|harami|sharpe|sortino|ebitda|ltcg|stcg|elss)\b", re.I)
 
 
-def about_money(text):
-    """Whether a question is about money, markets, companies or the economy, by its words alone."""
-    return _MONEY.search(text) is not None
+def about_money(text, lesson=""):
+    """Whether a question is about money, markets, companies or the economy: by its words, or because the
+    curated `lesson` found for it, money by construction, uses every word it does. One shared word is not
+    enough: "how do candles burn" found the lesson on candle anatomy, and "what is a black hole" three black crows."""
+    return _MONEY.search(text) is not None or bool(lesson) and lessons.covers(lesson, text)

@@ -39,7 +39,7 @@ from backend.models.networks.generator import ANSWER_TEMPERATURE, ANSWER_TOP_P
 
 from backend.models.agent import phrase
 from backend.models.agent.context import assemble
-from backend.models.agent.reference import REFERENCE, UNANSWERED, SearchFailed
+from backend.models.agent.reference import LESSON_HOW, REFERENCE, UNANSWERED, SearchFailed
 
 # Everything the turn did, so a caller can log it, show it, or judge it without re-running anything.
 # `served` is what a user reads; `answer` is what the model wrote, which differ exactly when a guard
@@ -172,7 +172,7 @@ class Agent:
             return None
         # Checked once something was found, so a question nothing matched keeps the refusal it always had:
         # 519,135 general passages answer "write me a poem about the sea" out of The Lusiads otherwise.
-        if not ticker and not self.domain.about_money(question):
+        if not ticker and not self.domain.about_money(question, looked.evidence if looked.how == LESSON_HOW else ""):
             return self._quiet(question, self.domain.OFF_TOPIC, "not about money", margin=margin)
         if looked.how == UNANSWERED:
             return self._quiet(question, self.domain.NOT_IN_SOURCES, "sources do not answer it", ticker=ticker,

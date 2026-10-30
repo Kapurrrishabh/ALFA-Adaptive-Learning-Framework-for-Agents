@@ -1042,6 +1042,42 @@ def test_a_question_not_about_money_is_refused_even_when_a_passage_matches(marke
     assert not turn.spoke and turn.served == finance.OFF_TOPIC
 
 
+@pytest.mark.parametrize("question", ["what does RSI mean ?", "what is diversification ?",
+                                      "what does it mean when the macd line rises above the signal line ?",
+                                      "does volume rise before a breakout ?", "why are small caps rallying ?",
+                                      "are fiis and diis buying ?", "how do i read a candlestick chart ?"])
+def test_market_words_alone_put_a_question_about_money(question):
+    """Each of the first five found its lesson or a headline and was refused as not about money."""
+    assert finance.about_money(question)
+
+
+@pytest.mark.parametrize("question", ["write me a poem about the sea", "what is the weather in Mumbai ?",
+                                      "who won the cricket match yesterday ?", "tell me a joke", "asdfgh qwerty",
+                                      "how many hours should i sleep ?", "recommend a good movie for tonight"])
+def test_a_question_about_something_else_is_not_about_money(question):
+    assert not finance.about_money(question)
+
+
+def test_a_lesson_that_uses_every_word_of_the_question_is_served_though_no_money_word_is_in_it(market, router):
+    """A lesson is about money by construction, so naming its topic is enough: "what is a pennant" names no market word."""
+    built = reference("never written", model=ExplodingModel())
+    built.lessons = lambda question, k: [("Flags and pennants", "A pennant is a small triangle after a sharp move.")]
+    turn = agent(market, router, reference=built).answer("what is a pennant ?")
+    assert turn.spoke and turn.intent == "reference lesson"
+
+
+@pytest.mark.parametrize("question,lesson", [
+    ("how do candles burn ?", ("Candle anatomy", "A candle shows the open, high, low and close of one period.")),
+    ("what is a black hole ?", ("Three white soldiers and three black crows", "Three long black candles in a row.")),
+])
+def test_a_lesson_sharing_one_word_with_a_question_about_something_else_is_refused(market, router, question, lesson):
+    """The lessons' heading check lets one shared word through, and every lesson is about money, not the question."""
+    built = reference("never written", model=ExplodingModel())
+    built.lessons = lambda asked, k: [lesson]
+    turn = agent(market, router, reference=built).answer(question)
+    assert not turn.spoke and turn.served == finance.OFF_TOPIC
+
+
 def test_an_exchange_listed_name_resolves_to_its_ticker_as_whole_words(tmp_path):
     price_file(tmp_path, "INFY.NS")
     price_file(tmp_path, "HDFCBANK.NS")
