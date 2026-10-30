@@ -118,8 +118,8 @@ def render_analysis(a: StockAnalysis, full: bool = False) -> str:
         out.append(f"Trend in the company's results: {f.details['trend']}.")
         out.append(f"Revenue growth: {_metric(m, 'revenue_growth')}.")
         out.append(f"EPS growth ({TERM_MEANINGS['EPS']}): {_metric(m, 'eps_growth')}.")
-        out.append(f"Net margin ({TERM_MEANINGS['Margin']}): {_metric(m, 'net_margin')}.")
-        out.append(f"Operating margin (the share of revenue left after running costs): {_metric(m, 'operating_margin')}.")
+        out.append(f"Net margin ({TERM_MEANINGS['Net margin']}): {_metric(m, 'net_margin')}.")
+        out.append(f"Operating margin ({TERM_MEANINGS['Operating margin']}): {_metric(m, 'operating_margin')}.")
         out.append(f"ROE (profit on {TERM_MEANINGS['Equity']}): {_metric(m, 'roe')}.")
         out.append(f"ROIC (profit on {TERM_MEANINGS['Invested capital']}): {_metric(m, 'roic')}.")
         out.append(f"Debt/equity (debt against {TERM_MEANINGS['Equity']}): {_metric(m, 'debt_to_equity')}.")
@@ -246,7 +246,8 @@ TERM_MEANINGS = {
     "Beta": "how far the stock tends to move when the market moves; above 1 means it moves more",
     "Sharpe ratio": "return for the risk taken",
     "EPS": "profit per share",
-    "Margin": "the share of revenue kept as profit",
+    "Net margin": "the share of revenue kept as profit",
+    "Operating margin": "the share of revenue left after running costs",
     "Equity": "the owners' money in the business",
     "Invested capital": "all the money put in by owners and lenders",
     "EBIT": "profit before interest and tax",
@@ -255,6 +256,7 @@ TERM_MEANINGS = {
     "PEG": "the P/E divided by profit growth",
     "Free cash flow": "cash left after running and investing in the business",
     "Not a statistically significant difference": "one that could easily be chance",
+    "No statistically significant edge": "the moves after past signals could easily be chance",
 }
 
 

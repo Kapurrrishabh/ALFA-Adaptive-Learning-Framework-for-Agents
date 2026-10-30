@@ -15,6 +15,7 @@ from backend.config import FORECAST_DAYS
 from backend.api.orchestrator import Orchestrator
 from backend.advisory.calculators.screener import screen
 from backend.advisory.service import AnalysisService
+from backend.advisory.statistics.validation import event_study
 from backend.database.sources import synthetic
 
 from .conftest import END, NOW
@@ -68,14 +69,25 @@ def test_a_drill_down_explains_the_jargon_its_own_lines_use(service):
     assert "Drawdown: a fall from a peak." in risk and "EBIT:" not in risk
 
 
-@pytest.mark.parametrize("verdict, called_chance", [("not a statistically significant", True),
-                                                    ("a statistically significant", False)])
-def test_a_drill_down_calls_a_result_chance_only_when_it_is_not_significant(service, verdict, called_chance):
+# every return on a flat price is zero, so this is the verdict pattern and candle checks give a null result
+NO_EDGE = event_study(pd.Series(100.0, index=range(300)), pd.Series(True, index=range(300)), 10, 1)["verdict"]
+
+
+@pytest.mark.parametrize("domain, verdict, called_chance", [
+    ("historical", "not a statistically significant difference", True),
+    ("historical", "a statistically significant difference", False),
+    ("pattern", NO_EDGE, True)])
+def test_a_drill_down_calls_a_result_chance_only_when_it_is_not_significant(service, domain, verdict, called_chance):
     a = service.analyze("TEST")
-    past = a.results["historical"]
-    past.evidence = [replace(e, claim=re.sub(r"(not )?a statistically significant", verdict, e.claim))
-                     for e in past.evidence]
-    assert ("could easily be chance" in R.render_domain(a, "historical")) == called_chance
+    r = a.results[domain]
+    r.evidence = [replace(e, claim=f"{e.claim.split(' — ')[0]} — {verdict}.") for e in r.evidence]
+    assert ("could easily be chance" in R.render_domain(a, domain)) == called_chance
+
+
+def test_the_analysis_and_its_drill_down_give_operating_margin_one_meaning(service):
+    a = service.analyze("TEST")
+    meaning = re.search(r"Operating margin \((.+?)\):", R.render_analysis(a)).group(1)
+    assert f"Operating margin: {meaning}." in R.render_domain(a, "fundamental")
 
 
 def test_every_reply_that_explains_volatility_reads_the_one_meaning(orch, monkeypatch):
