@@ -19,7 +19,7 @@ ENCODER_ID = os.environ.get("STOCKINTEL_ENCODER", "BAAI/bge-small-en-v1.5")
 RERANKER_ID = os.environ.get("STOCKINTEL_RERANKER", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 # Not settable like the two above: phrase.ENTAILED was measured on this model's scale. Not Vectara's HHEM either, which
 # is the independent judge eval_user_questions grades the same replies with. 142M parameters: 568 MB on disk, about
-# 400 MB more resident once it has scored a reply, loaded on first use.
+# 400 MB more resident once it has scored a reply; loaded when an agent with a writer starts (ask.entails_from).
 NLI_ID = "cross-encoder/nli-deberta-v3-small"
 
 

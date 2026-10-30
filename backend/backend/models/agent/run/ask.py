@@ -91,8 +91,10 @@ def judge_from():
 
 
 def entails_from():
-    """Entailment by the NLI cross-encoder, which `Reference` checks each sentence the writer wrote against."""
+    """Entailment by the NLI cross-encoder, which `Reference` checks each sentence the writer wrote against. Loaded
+    here, at start, so no user waits on its 568 MB download and a failed download stops the start, not a turn."""
     from backend.models.external import sentence
+    sentence.nli()
     return sentence.entailment
 
 
