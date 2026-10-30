@@ -932,8 +932,8 @@ def judged(lesson, headline):
 def test_a_move_word_question_is_taught_when_the_judge_rates_the_lesson_above_the_news(market, router):
     """"How are capital gains on shares taxed?" says "gains", and was sent to the newswire instead of the
     lesson on taxes that answers it."""
-    built = news_reference(ExplodingWriter(), judge=judged(LESSON_FLOOR + 0.1, LESSON_FLOOR),
-                           lessons=lambda question, k: [("Taxes on listed equity", "Gains held over a year are taxed at 12.5%.")])
+    taxes = [("Taxes on listed equity", "Gains held over a year are taxed at 12.5%.")]
+    built = news_reference(ExplodingWriter(), judge=judged(LESSON_FLOOR + 0.1, LESSON_FLOOR), lessons=ranked(taxes))
     turn = agent(market, router, reference=built).answer("how are capital gains on shares taxed ?")
     assert turn.spoke and turn.intent == "reference lesson"
 
@@ -943,7 +943,7 @@ def test_a_lesson_below_the_floor_is_not_served_even_when_no_headline_rates_high
     booked = Chunk("Mint, 28 Oct 2026: Traders book profits after gains in bank stocks.", [], "https://n.test/book",
                    "2026-10-28")
     built = news_reference(None, news=(booked,), judge=judged(LESSON_FLOOR - 0.01, 0.0),
-                           lessons=lambda question, k: [("P/B ratio (price to book)", "P/B is price over book value per share.")])
+                           lessons=ranked([("P/B ratio (price to book)", "P/B is price over book value per share.")]))
     turn = agent(market, router, reference=built).answer("how do i book profits after gains ?")
     assert turn.intent == "reference recent" and booked.text in turn.served
 
@@ -961,8 +961,9 @@ def test_a_move_question_reads_the_news_when_the_judge_rates_a_headline_above_th
     """"Why are bond yields rising" was served the lesson on free cash flow yield, because its heading says "yield"."""
     moved = Chunk("Mint, 28 Oct 2026: The Nifty slipped as bond yields kept rising.", [], "https://n.test/yields",
                   "2026-10-28")
-    built = news_reference(None, news=(moved,), judge=judged(LESSON_FLOOR + 0.1, LESSON_FLOOR + 0.2),
-                           lessons=lambda asked, k: [("Free cash flow and FCF yield", "FCF yield is free cash flow over market value.")])
+    yields = [("Free cash flow and FCF yield", "FCF yield is free cash flow over market value.")]
+    built = news_reference(None, news=(moved,), lessons=ranked(yields),
+                           judge=judged(LESSON_FLOOR + 0.1, LESSON_FLOOR + 0.2))
     turn = agent(market, router, reference=built).answer("are bond yields going to rise ?")
     assert turn.intent == "reference recent" and moved.text in turn.served
 
@@ -1027,8 +1028,8 @@ def test_lessons_and_news_without_a_judge_are_refused_when_the_reference_is_buil
                                       "why does RSI use the last 14 days ?"])
 def test_a_window_in_a_question_naming_no_company_does_not_keep_it_from_its_lesson(market, router, question):
     """Read as a time word, "over the last few weeks" sent the first question to an unrelated headline on JGB yields."""
-    built = news_reference(None, judge=judged(LESSON_FLOOR + 0.05, 0.0),
-                           lessons=lambda asked, k: [("Volume, OBV and accumulation/distribution", "Volume confirms price moves.")])
+    volume = [("Volume, OBV and accumulation/distribution", "Volume confirms price moves.")]
+    built = news_reference(None, judge=judged(LESSON_FLOOR + 0.05, 0.0), lessons=ranked(volume))
     turn = agent(market, router, reference=built).answer(question)
     assert turn.intent == "reference lesson"
 
@@ -1108,11 +1109,12 @@ def test_a_writer_sentence_no_passage_entails_serves_the_plain_answer_and_names_
     assert f"no passage says “{verdict}”" in turn.unphrased_because
 
 
-def test_a_source_in_brackets_after_a_full_stop_is_checked_with_the_sentence_it_cites(market, router):
-    """Read alone, "(Mint, 6 Oct 2026)" scored as low as 0.002 against the passage it names."""
-    reply = "Reliance Industries commissioned its new refinery unit. (Mint, 6 Oct 2026)"
-    built = news_reference(FakeWriter(reply), entails=lambda pairs: [0.0 if said.startswith("(") else 1.0
-                                                                     for _, said in pairs])
+@pytest.mark.parametrize("reply", ["Reliance Industries commissioned its new refinery unit. (Mint, 6 Oct 2026)",
+                                   "Reliance Industries (RIL) commissioned its new refinery unit (Mint, 6 Oct 2026)."])
+def test_a_source_in_brackets_is_not_read_as_a_claim(market, router, reply):
+    """Read alone, "(Mint, 6 Oct 2026)" scored as low as 0.002 against the passage it names, and a sentence carrying its
+    source failed against the passage sentence that said it word for word."""
+    built = news_reference(FakeWriter(reply), entails=lambda pairs: [0.0 if "(" in said else 1.0 for _, said in pairs])
     turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
     assert turn.served == reply and turn.phrased_by == "test-lm"
 
@@ -1145,8 +1147,8 @@ def test_a_writer_that_reports_what_happened_on_a_yes_no_question_is_served(mark
 
 
 def test_a_report_in_the_questions_own_words_is_served_when_the_passages_entail_it(market, router):
-    """"The Nifty has fallen 1.2% as IT stocks dropped on weak US cues (ET, 27 Oct 2026)." was refused for "has the nifty
-    fallen", by a word rule that read any restatement of the question as a verdict."""
+    """"The Nifty has fallen 1.2% as IT stocks dropped on weak US cues (ET, 27 Oct 2026)." was refused for "has the
+    nifty fallen", by a word rule that read any restatement of the question as a verdict."""
     said = Chunk("Mint, 6 Oct 2026: Refinery stocks fell 2% after the new unit opened.", [], "https://n.test/r",
                  "2026-10-06")
     reply = "Refinery stocks are falling, down 2% after the new unit opened (Mint, 6 Oct 2026)."

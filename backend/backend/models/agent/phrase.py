@@ -44,9 +44,10 @@ _DECLINES = re.compile(r"\bnone\.?\s*$|\b(does|do|did) not (provide|say|mention|
                        r"\bno (information|mention|reason|details?)\b|\bnot (\w+ly )?(mentioned|provided|specified)\b", re.I)
 # a yes or no in place of the report the prompt asks for: "NO" for "are it stocks falling"
 _BARE_VERDICT = re.compile(r"^\W*(yes|no)\s*([,.;:!]|$)", re.I)
-# Provisional, on sentence.entailment's scale. On 79 replies, 15 from the user-question eval and 64 written for this, the
-# gate was as accurate anywhere from 0.5 to 0.8; more labelled replies from the next eval run would place it.
+# Provisional, on sentence.entailment's scale. On 104 replies, 40 by the writer for user questions and 64 written to
+# test it, the gate was as accurate anywhere from 0.5 to 0.8; more labelled writer replies would place it.
 ENTAILED = 0.5
+_BRACKETED = re.compile(r"\s*\([^()]*\)")
 # a size the draft never gives: "Infosys is quite volatile" for a draft that gave the figure alone
 _SIZES = re.compile(r"\b(a lot|quite|very|highly|extremely|fairly|significant(ly)?|moderate(ly)?|sharp(ly)?|little)\b",
                     re.I)
@@ -148,13 +149,10 @@ def _ask(writer, system, content):
 
 def _unentailed(text, sources, entails):
     """Why `text` says something no source entails, sentence by sentence, or nothing when every sentence is entailed."""
-    claims = []
-    for part in sentences(text):
-        # a source in brackets after the full stop belongs to the sentence it cites; alone it scored as low as 0.002
-        if claims and part.startswith("("):
-            claims[-1] += " " + part
-        else:
-            claims.append(part)
+    # Brackets hold a source or a gloss that no sentence of a passage states: "(Mint, 6 Oct 2026)" scored 0.002 alone,
+    # and kept on its sentence it failed 3 of 21 faithful writer replies. The figure check still reads them.
+    claims = [claim for claim in (_BRACKETED.sub("", part).strip() for part in sentences(text))
+              if re.search(r"\w", claim)]
     # the passages' sentences first: short, they entail most true claims, and whole passages took three times as long
     for premises in ([part for source in sources for part in sentences(source)], sources + [" ".join(sources)]):
         premises = list(dict.fromkeys(premises))

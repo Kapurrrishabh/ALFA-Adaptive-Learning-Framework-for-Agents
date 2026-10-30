@@ -156,7 +156,8 @@ class Reference:
         """
         query = f"{question} {' '.join(subject.names)}" if subject else question
         news_first = self.news is not None and (lately or LATELY.search(question))
-        taught = None if subject is not None or self.lessons is None else self._lesson(question, query, as_of, news_first)
+        taught = self._lesson(question, query, as_of, news_first) if subject is None and self.lessons is not None \
+            else None
         if taught:
             title, text = taught
             return Looked(text, f"document lesson:{title} ; published undated ; passage_1 {text}", LESSON_HOW,
@@ -174,7 +175,7 @@ class Reference:
     def _lesson(self, question, query, as_of, news_first):
         """The lesson the judge rates best of BM25's first few: BM25's order alone taught ELSS for "what is the tax on
         short term profit when shares rise". For a move-word question it must clear the floor and beat every headline;
-        any other needs BM25's best section to name a lesson, as before, since right ones scored as low as 0.55 there."""
+        any other needs BM25's best section to name a lesson, as before, and no floor: right ones scored 0.55 there."""
         if news_first and RECENT.search(question):
             return None
         first = self.lessons(question, 1)
