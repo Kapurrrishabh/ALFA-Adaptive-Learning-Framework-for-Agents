@@ -2,6 +2,8 @@
 
 Trailing returns are measured between calendar dates, as fund returns are quoted, not by counting NAVs:
 funds publish about 246 NAVs a year (scheme 120599, 2013-2025), so 252 of them reach back a year and a week.
+Volatility keeps quant's 252-day year so it compares with the stocks' figure; on 246 NAVs a year that reads
+about 1.2% high: a true 15.0% shows as 15.2%.
 """
 from __future__ import annotations
 
