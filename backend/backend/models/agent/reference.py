@@ -55,11 +55,11 @@ UNANSWERED = "unanswered"
 # are read before a corpus that holds no news at all. `NEWS` leaves out the time words the trained intents
 # are asked with too ("is it overbought right now", "how far is it off its recent high").
 NEWS = re.compile(r"\b(today|yesterday|this (week|month|quarter)|latest|news|announc\w*|results?)\b", re.I)
-# A window ("over the last month", "past 30 days") is a time word too: "how has TCS been doing over the last month"
-# went to ALFA, whose performance answers sit under the confidence cut, while the price files held its answer.
-RECENT = re.compile(NEWS.pattern + r"|\b(lately|recent(ly)?|now|currently)\b|"
-                    r"\b(last|past|previous)( (few|couple of|several|\d+|one|two|three|four))? (days?|weeks?|months?|sessions?)\b",
-                    re.I)
+RECENT = re.compile(NEWS.pattern + r"|\b(lately|recent(ly)?|now|currently)\b", re.I)
+# A window counts only for how a named price moved: read as a time word anywhere, it sent "why does RSI use the
+# last 14 days" to the news instead of the lesson on RSI.
+LOOK_BACK = re.compile(RECENT.pattern + r"|\b(last|past|previous)( \w+){0,2} "
+                                        r"(days?|weeks?|months?|sessions?|years?|quarters?)\b", re.I)
 # A question about a price move or what a company is up to asks what happened lately, and the newswire is
 # read before anything else: "any news on tata steel" ranked over Wikipedia and the newswire together was
 # answered from its 2007 acquisition, because a long article repeats the name more often than a headline.
@@ -130,7 +130,7 @@ class Reference:
         self.top_p = top_p
         self.rng = rng
 
-    def look_up(self, question, as_of=None, subject=None, prices=None):
+    def look_up(self, question, as_of=None, subject=None, prices=None, lately=False):
         """A `Looked` for one question, or None when nothing we can read was about it.
 
         None rather than a refusal, so the caller keeps owning what silence sounds like.
@@ -141,10 +141,11 @@ class Reference:
         one company was answered out of a passage about another.
 
         `prices` is the subject's snapshot as (evidence, the figures it states, its date), from
-        `finance.Market.snapshot`, given by the caller that holds the price files.
+        `finance.Market.snapshot`, given by the caller that holds the price files. `lately` is the caller's
+        `asks_lately` answer, which can hold for a question with no time word in it.
         """
         query = f"{question} {' '.join(subject.names)}" if subject else question
-        news_first = self.news is not None and LATELY.search(question)
+        news_first = self.news is not None and (lately or LATELY.search(question))
         taught = None
         if subject is None and self.lessons is not None:
             taught = self._lesson(question, query, as_of) if news_first else next(iter(self.lessons(question, 1)), None)
@@ -174,12 +175,12 @@ class Reference:
         return next((lesson for lesson, score in zip(lessons, scores)
                      if score >= LESSON_FLOOR and all(score > other for other in news)), None)
 
-    def asks_lately(self, question, moves):
-        """Whether a question says it is about now ("lately", "today", "news"), so prices, filings and headlines
-        answer it before the advisory path: "how is AAPL doing lately" was refused at ALFA's confidence cut,
-        while the price files and the newswire held its answer. A time word counts only when the question asks
-        how the price `moves`; for any other intent it takes a news word."""
-        return self.news is not None and (RECENT if moves else NEWS).search(question) is not None
+    def asks_lately(self, question, moves, sure):
+        """Whether prices, filings and headlines answer a question before the advisory path. Always when the router
+        is `sure` it asks how the price `moves`: ALFA's answers to that never clear the answer cut (0 of 294, at most
+        0.9992 against 0.9996). Unsure, it needs a time word or a window; any other intent needs a news word."""
+        return self.news is not None and (moves and (sure or LOOK_BACK.search(question) is not None)
+                                          or NEWS.search(question) is not None)
 
     def _recent(self, question, query, as_of, subject, prices):
         """What happened lately, from everything dated: the price snapshot, SEC filings and headlines.

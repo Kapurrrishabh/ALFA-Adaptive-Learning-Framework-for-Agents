@@ -983,6 +983,17 @@ def test_of_two_lessons_the_judge_accepts_the_one_bm25_ranks_higher_is_served(ma
     assert turn.served == lessons[0][1]
 
 
+@pytest.mark.parametrize("question", ["what does it mean if a stock fell over the last few weeks on low volume ?",
+                                      "why does RSI use the last 14 days ?"])
+def test_a_window_in_a_question_naming_no_company_does_not_keep_it_from_its_lesson(market, router, question):
+    """Read as a time word, "over the last few weeks" sent the first question to an unrelated headline on JGB yields."""
+    built = news_reference(None)
+    built.lessons = lambda asked, k: [("Volume, OBV and accumulation/distribution", "Volume confirms price moves.")]
+    built.judge = judged(LESSON_FLOOR + 0.05, 0.0)
+    turn = agent(market, router, reference=built).answer(question)
+    assert turn.intent == "reference lesson"
+
+
 def test_a_best_lesson_the_judge_rejects_is_not_replaced_by_a_weaker_one(market, router):
     """"How is ICICI Prudential Multicap Fund doing" was served the lesson on fund categories, under the rejected one."""
     lessons = [("Mutual fund", "A mutual fund pools money from many investors."),
@@ -1158,15 +1169,27 @@ def test_a_concept_question_naming_no_company_is_answered_from_the_lessons_first
 
 @pytest.mark.parametrize("question", ["how has RELIANCE.NS been doing lately ?",
                                       "how has RELIANCE.NS been doing over the last month ?",
-                                      "how has RELIANCE.NS done over the past month ?",
-                                      "RELIANCE.NS last 30 days performance"])
-def test_a_question_that_says_lately_reads_the_dated_sources_before_the_advisory_path(market, router, question):
-    """"how is AAPL doing lately" was refused at ALFA's confidence cut while the price files held its answer, and so
-    was "how has TCS been doing over the last month": a window is a time word too."""
+                                      "how is RELIANCE.NS performing ?", "how has RELIANCE.NS done this year ?"])
+def test_a_question_sure_to_ask_how_the_price_moved_reads_the_dated_sources_before_the_advisory_path(market, router,
+                                                                                                      question):
+    """"how is AAPL doing lately" and "how has TCS been doing over the last month" were refused at ALFA's confidence cut
+    while the price files held their answer, and so was every one of its 294 answers on how a price moved."""
     turn = agent(market, router, model=ExplodingModel(),
                  reference=news_reference(FakeWriter("Reliance commissioned a refinery unit (Mint, 6 Oct 2026)."))).answer(
         question)
     assert turn.spoke and turn.intent == "reference recent"
+
+
+@pytest.mark.parametrize("question,recent", [("how has RELIANCE.NS done over the past month ?", True),
+                                             ("RELIANCE.NS last 30 days performance", True),
+                                             ("how did RELIANCE.NS do over the last six months ?", True),
+                                             ("how is RELIANCE.NS performing ?", False)])
+def test_a_question_the_router_is_unsure_of_reads_the_dated_sources_only_when_it_names_a_window(market, router, question,
+                                                                                                recent):
+    """The router read "what does TCS do" as a question on how its price moved, at a margin under the gate."""
+    built = news_reference(FakeWriter("Reliance commissioned a refinery unit (Mint, 6 Oct 2026)."), live=FakeLive([]))
+    turn = agent(market, router, gate_cut=1e9, model=ExplodingModel(), reference=built).answer(question)
+    assert (turn.intent == "reference recent") == recent
 
 
 def test_a_rewrite_that_misspells_the_ticker_serves_alfas_words(market, router):

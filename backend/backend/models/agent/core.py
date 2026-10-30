@@ -97,12 +97,13 @@ class Agent:
                     or self._quiet(question, self.domain.NO_SUBJECT, "no subject"))
 
         route = self.router.route(self.domain.without_subject(question, ticker))
-        if self.reference is not None and self.reference.asks_lately(question, route.label == self.domain.MOVES):
-            looked = self._looked_up(question, as_of, ticker=ticker, margin=route.margin)
+        sure = bool(self.gate.answers([route.margin])[0])
+        if self.reference is not None and self.reference.asks_lately(question, route.label == self.domain.MOVES, sure):
+            looked = self._looked_up(question, as_of, ticker=ticker, margin=route.margin, lately=True)
             if looked is not None:
                 return looked
 
-        if not bool(self.gate.answers([route.margin])[0]):
+        if not sure:
             return (self._looked_up(question, as_of, ticker=ticker, margin=route.margin)
                     or self._quiet(question, self.domain.UNKNOWN_QUESTION, "unclear question",
                                    ticker=ticker, margin=route.margin))
@@ -140,7 +141,7 @@ class Agent:
                     written, evidence, confidence, self._stated(confidence), speaks, route.margin,
                     unsupported, because, taken_at, phrased.by, phrased.because)
 
-    def _looked_up(self, question, as_of, ticker="", margin=float("nan")):
+    def _looked_up(self, question, as_of, ticker="", margin=float("nan"), lately=False):
         """A turn read out of the documents, or None when there is nothing to read one from.
 
         None, not a refusal, so a caller that gets nothing back still returns the refusal it already had.
@@ -161,7 +162,7 @@ class Agent:
         try:
             looked = self.reference.look_up(question, as_of,
                                             self.market.subject(ticker) if ticker else None,
-                                            self.market.snapshot(ticker, as_of) if ticker else None)
+                                            self.market.snapshot(ticker, as_of) if ticker else None, lately)
         except SearchFailed as error:
             # A refusal rather than nothing, and a different refusal from the trained one: the documents
             # would have been asked and were not, so saying "i am not sure what you are asking" would
