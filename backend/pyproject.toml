@@ -38,6 +38,8 @@ collect = ["requests>=2.31", "beautifulsoup4>=4.12", "pypdf>=4", "py7zr>=0.20"]
 ml = ["torch>=2.2", "chronos-forecasting>=2.0", "einops>=0.7", "sentence-transformers>=3.0"]
 # a server without torch: models from a Hugging Face Space, state in a Hugging Face dataset
 cloud = ["gradio_client>=2.0", "huggingface_hub>=0.30"]
+# CAS statements (user/portfolio/cas.py), read only in a subprocess; about 74 MB on a Mac, and needs Python 3.11+
+cas = ["casparser>=1.4,<2"]
 
 [project.scripts]
 stockintel = "backend.cli:main"

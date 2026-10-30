@@ -1,6 +1,10 @@
 import io
+import json
+import logging
+import os
 import re
 import sys
+import time
 import tracemalloc
 import zipfile
 from datetime import date
@@ -14,7 +18,7 @@ from backend.advisory.calculators.backtest import strategies as S
 from backend.advisory.calculators.backtest.engine import BacktestConfig, run
 from backend.database.sources import panel
 from backend.database.sources.panel import Listing
-from backend.user.portfolio import importers
+from backend.user.portfolio import cas, importers
 from backend.user.portfolio.portfolio import Transaction, analyze, build_positions, risk_decomposition, what_if
 from backend.advisory.statistics.model_registry import ModelRegistry, PromotionError
 
@@ -585,3 +589,144 @@ def test_a_name_offers_at_most_three_choices():
 def test_every_row_is_counted_in_one_state():
     rows = [file_row(isin="INE002A01018"), file_row(name="Tata Steel Limited"), file_row(symbol="GONE")]
     assert importers.counts(importers.match(rows, DIRECTORY, NAMES)) == {"matched": 1, "check": 1, "not_found": 1}
+
+
+PDF, PASSWORD = b"%PDF-1.7 synthetic statement", "Pass-phrase-7"
+HOLDER = {"name": "A. Holder", "email": "holder@example.com", "address": "1 Example Road", "mobile": "9800000000"}
+CAMS_CAS = {    # laid out as casparser 1.4.1 writes its JSON, with the holder's details that must not pass on
+    "statement_period": {"from": "01-Apr-2024", "to": "30-Sep-2026"}, "investor_info": HOLDER,
+    "cas_type": "DETAILED", "file_type": "CAMS", "parse_warnings": ["unparseable header: 'Nominee: B. Holder'"],
+    "folios": [{"folio": "1234567/89", "amc": "Synthetic Mutual Fund", "name": "A. Holder", "PAN": "ABCDE1234F",
+                "KYC": "OK", "PANKYC": "OK", "schemes": [{
+                    "scheme": "Synthetic Multicap Fund - Direct Plan - Growth", "advisor": "INA000000000",
+                    "rta_code": "S01", "rta": "CAMS", "type": "EQUITY", "isin": "INF000S01011", "amfi": "100001",
+                    "nominees": ["B. Holder"], "open": "0.000", "close": "12.345", "close_calculated": "12.345",
+                    "valuation": {"date": "2026-09-30", "nav": "800.50", "cost": "9999.50", "value": "9882.17"},
+                    "transactions": [
+                        {"date": "2024-05-10", "description": "Purchase by A. Holder", "amount": "9999.50",
+                         "units": "12.345", "nav": "810.00", "balance": "12.345", "type": "PURCHASE",
+                         "dividend_rate": None, "gift_folio": None},
+                        {"date": "2024-05-10", "description": "*** Stamp Duty ***", "amount": "0.50", "units": None,
+                         "nav": None, "balance": None, "type": "STAMP_DUTY_TAX", "dividend_rate": None,
+                         "gift_folio": None}]}]}]}
+CAMS_KEPT = {
+    "statement_period": {"from": "01-Apr-2024", "to": "30-Sep-2026"}, "cas_type": "DETAILED", "file_type": "CAMS",
+    "parse_warning_count": 1, "folios": [{"schemes": [{
+        "scheme": "Synthetic Multicap Fund - Direct Plan - Growth", "isin": "INF000S01011", "amfi": "100001",
+        "open": "0.000", "close": "12.345", "transactions": [
+            {"date": "2024-05-10", "type": "PURCHASE", "units": "12.345", "nav": "810.00", "amount": "9999.50"},
+            {"date": "2024-05-10", "type": "STAMP_DUTY_TAX", "units": None, "nav": None, "amount": "0.50"}]}]}]}
+NSDL_CAS = {
+    "statement_period": {"from": "01-Sep-2026", "to": "30-Sep-2026"}, "investor_info": HOLDER, "file_type": "NSDL",
+    "parse_warnings": [], "nps": {"pran": "110000000000", "nps_sp": "PROT", "value": "500.00", "schemes": [
+        {"scheme": "Synthetic Pension Fund E - Tier I", "fund_manager": "Synthetic", "tier": "I", "asset_class": "E",
+         "units": "10", "nav": "50", "value": "500.00"}]},
+    "accounts": [{"name": "Synthetic Broking Limited", "type": "CDSL", "dp_id": "12345678", "client_id": "87654321",
+                  "folios": 1, "balance": "16000.00", "owners": [{"name": "A. Holder", "PAN": "ABCDE1234F"}],
+                  "equities": [{"name": "SYNTHETIC INDUSTRIES LTD", "isin": "INE000D01019", "num_shares": "5",
+                                "price": "1400.00", "value": "7000.00", "symbol": "SYNTHA", "exchange": "NSE"}],
+                  "mutual_funds": [{"name": "SYNTHETIC MULTICAP DIRECT GROWTH", "isin": "INF000S01011",
+                                    "amfi": "100001", "type": "EQUITY", "balance": "10.000", "nav": "800.00",
+                                    "value": "8000.00", "avg_cost": "700.00", "total_cost": "7000.00",
+                                    "ucc": "MFUCC123", "folio": "1234567/89", "pnl": None, "return": None}],
+                  "bonds": [{"name": "SYNTHETIC BOND", "isin": "INE000B07019", "num_bonds": "1", "value": "1000.00",
+                             "face_value": None, "coupon_rate": None, "coupon_frequency": None,
+                             "maturity_date": None, "market_price": None}]}]}
+NSDL_KEPT = {
+    "statement_period": {"from": "01-Sep-2026", "to": "30-Sep-2026"}, "file_type": "NSDL", "parse_warning_count": 0,
+    "nps": {"schemes": [{"scheme": "Synthetic Pension Fund E - Tier I", "units": "10", "nav": "50",
+                         "value": "500.00"}]},
+    "accounts": [{"equities": [{"name": "SYNTHETIC INDUSTRIES LTD", "isin": "INE000D01019", "num_shares": "5",
+                                "value": "7000.00"}],
+                  "mutual_funds": [{"name": "SYNTHETIC MULTICAP DIRECT GROWTH", "isin": "INF000S01011",
+                                    "amfi": "100001", "balance": "10.000", "nav": "800.00", "avg_cost": "700.00"}],
+                  "bonds": [{"name": "SYNTHETIC BOND", "isin": "INE000B07019", "num_bonds": "1",
+                             "value": "1000.00"}]}]}
+
+
+@pytest.fixture
+def casparser(tmp_path, monkeypatch):
+    """Runs cas.read's worker with a stub casparser whose read_cas_pdf(file, password, output) runs the line `body`,
+    or with no casparser when `body` is None. -I ignores PYTHONPATH, so a boot script puts the stub on its path."""
+    def stub(body):
+        boot = ["import runpy, sys"]
+        if body is None:
+            boot.append("sys.modules['casparser'] = None")     # as if not installed, even where it is
+        else:
+            (tmp_path / "casparser").mkdir()
+            (tmp_path / "casparser" / "exceptions.py").write_text(
+                "class CASParseError(Exception): pass\nclass IncorrectPasswordError(CASParseError): pass\n")
+            (tmp_path / "casparser" / "__init__.py").write_text(
+                f"import json, os, sys, time\nfrom .exceptions import *\n"
+                f"def read_cas_pdf(file, password, output):\n    {body}\n")
+            boot.append(f"sys.path.insert(0, {str(tmp_path)!r})")
+        boot.append(f"runpy.run_path({str(cas.WORKER)!r}, run_name='__main__')")
+        (tmp_path / "boot.py").write_text("\n".join(boot))
+        monkeypatch.setattr(cas, "WORKER", tmp_path / "boot.py")
+    return stub
+
+
+@pytest.mark.parametrize("statement, kept", [(CAMS_CAS, CAMS_KEPT), (NSDL_CAS, NSDL_KEPT)], ids=["CAMS", "NSDL"])
+def test_a_cas_keeps_its_holdings_but_not_who_holds_them(casparser, statement, kept):
+    casparser(f"assert (file.read(), password, output) == ({PDF!r}, {PASSWORD!r}, 'json'); "
+              f"return {json.dumps(statement)!r}")
+    assert cas.read(PDF, PASSWORD) == kept
+
+
+def test_a_wrong_cas_password_is_refused_in_plain_words(casparser):
+    casparser("raise IncorrectPasswordError('Incorrect PDF password!')")
+    with pytest.raises(ValueError, match="That password didn't open the file. .* usually your PAN in capitals"):
+        cas.read(PDF, PASSWORD)
+
+
+def test_a_pdf_that_is_not_a_cas_is_refused_with_casparsers_reason(casparser):
+    casparser("raise CASParseError('Could not identify the CAS issuer.')")
+    with pytest.raises(ValueError, match="isn't a CAS statement we can read: Could not identify the CAS issuer"):
+        cas.read(PDF, PASSWORD)
+
+
+def test_a_cas_that_reads_too_long_is_stopped_at_the_time_limit(casparser, tmp_path, monkeypatch):
+    casparser(f"open({str(tmp_path / 'pid')!r}, 'w').write(str(os.getpid())); time.sleep(60)")
+    monkeypatch.setattr(cas, "CAS_TIMEOUT_S", 1)
+    started = time.monotonic()
+    with pytest.raises(ValueError, match="took more than 1 seconds to read"):
+        cas.read(PDF, PASSWORD)
+    assert time.monotonic() - started < 5
+    with pytest.raises(ProcessLookupError):     # stopped, not left running
+        os.kill(int((tmp_path / "pid").read_text()), 0)
+
+
+def test_a_server_without_casparser_does_not_read_cas(casparser):
+    casparser(None)
+    with pytest.raises(importers.ImportUnsupported):
+        cas.read(PDF, PASSWORD)
+
+
+def test_the_cas_password_is_never_on_the_command_line_or_in_the_logs(casparser, tmp_path, caplog):
+    casparser(f"open({str(tmp_path / 'argv')!r}, 'w').write(json.dumps(sys.orig_argv)); "
+              "raise IncorrectPasswordError('Incorrect PDF password!')")
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(ValueError) as refused:
+        cas.read(PDF, PASSWORD)
+    assert PASSWORD not in (tmp_path / "argv").read_text() + caplog.text + str(refused.value)
+
+
+def test_the_cas_reader_gets_none_of_the_servers_secrets(casparser, tmp_path, monkeypatch):
+    monkeypatch.setenv("STOCKINTEL_AUTH_SECRET", "not-for-the-reader")
+    casparser(f"open({str(tmp_path / 'env')!r}, 'w').write(json.dumps(dict(os.environ))); raise CASParseError('x')")
+    with pytest.raises(ValueError):
+        cas.read(PDF, PASSWORD)
+    assert "STOCKINTEL_AUTH_SECRET" not in json.loads((tmp_path / "env").read_text())
+
+
+def test_a_cas_reader_failure_names_its_type_but_not_its_message(casparser):
+    casparser("raise KeyError('ABCDE1234F')")
+    with pytest.raises(RuntimeError, match="failed with KeyError") as failed:
+        cas.read(PDF, PASSWORD)
+    assert "ABCDE1234F" not in str(failed.value)
+
+
+def test_a_cas_reader_that_dies_is_a_server_error(casparser):
+    casparser("os._exit(3)")
+    with pytest.raises(RuntimeError, match="exit code 3"):
+        cas.read(PDF, PASSWORD)
