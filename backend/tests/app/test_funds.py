@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import threading
 import time
 from datetime import date
 
@@ -37,6 +38,18 @@ NAV_TEXT = "\r\n".join([
     "147990;INF090I01TY5;-;Franklin India Low Duration Fund (No. of Segregated Portfolios-2);;;0.0000;20-Jul-2020", " ",
     "Open Ended Schemes(Debt Scheme - Medium Duration Fund)",
     "118554;INF090I01JI9;-;Franklin India Income Opportunities Fund;;;26.5759;12-Dec-2021", " ",
+    "Open Ended Schemes(Debt Scheme - Credit Risk Fund)",
+    "148304;INF090I01VZ8;-;Franklin India Credit Risk Fund (No. of segregated portfolios-3);Direct Plan;Growth;0.0000;"
+    "29-Oct-2026", " ", "Open Ended Schemes(Solution Oriented Scheme - Children's Fund)", " ", "Axis Mutual Fund", " ",
+    "135762;INF846K01WO1;-;Axis Children's Fund;Direct Plan;Growth Option;28.9693;29-Oct-2026",
+    "135764;INF846K01WR4;-;Axis Children's Fund;Direct Plan;Growth Option;29.5233;29-Oct-2026",
+    "135766;INF846K01WM5;-;Axis Children's Fund;Regular Plan;Growth Option;25.1982;29-Oct-2026", " ",
+    "Open Ended Schemes(Equity Scheme - Flexi Cap Fund)", " ", "PPFAS Mutual Fund", " ",
+    "122639;INF879O01027;-;Parag Parikh Flexi Cap Fund;Direct Plan;Growth;88.8018;29-Oct-2026", " ",
+    "Open Ended Schemes(Equity Scheme - Small Cap Fund)", " ", "Kotak Mahindra Mutual Fund", " ",
+    "120164;INF174K01KT2;-;Kotak Small Cap Fund;Direct Plan;Growth;304.5360;29-Oct-2026", " ",
+    "Mahindra Manulife Mutual Fund", " ",
+    "150915;INF174V01BK7;-;Mahindra Manulife Small Cap Fund;Direct Plan;Growth;22.5855;29-Oct-2026", " ",
 ])
 PARSED = amfi.parse(NAV_TEXT)
 CURRENT = amfi.current(PARSED)
@@ -75,6 +88,11 @@ def test_a_category_line_with_no_fund_house_line_keeps_the_house_above_it():
 def test_a_dash_isin_is_missing_and_the_reinvestment_isin_is_kept():
     s = by_code(109472)
     assert (s.isin_growth, s.isin_reinvestment) == (None, "INF204K01EG7")
+
+
+def test_text_in_an_isin_column_that_is_not_an_isin_is_missing():
+    s = by_code(118990, amfi.parse(NAV_TEXT.replace("INF179K01XS6", "HDFCNIVODG")))
+    assert (s.isin_growth, s.isin_reinvestment) == ("INF179K01XR8", None)
 
 
 def test_a_row_with_no_nav_is_left_out():
@@ -132,6 +150,20 @@ def test_every_query_word_must_start_a_word_of_the_name():
 
 def test_a_fund_house_abbreviation_is_read_as_its_name():
     assert amfi.search(CURRENT, "absl psu")[0]["fund"] == "Aditya Birla Sun Life PSU Equity Fund"
+
+
+def test_a_fund_houses_own_name_finds_its_funds():
+    assert [f["fund"] for f in amfi.search(CURRENT, "ppfas")] == ["Parag Parikh Flexi Cap Fund"]
+
+
+def test_a_word_of_the_fund_house_ranks_below_the_same_word_in_a_funds_name():
+    assert [f["fund"] for f in amfi.search(CURRENT, "mahindra small cap")] == ["Mahindra Manulife Small Cap Fund",
+                                                                              "Kotak Small Cap Fund"]
+
+
+def test_plans_amfi_labels_the_same_way_are_marked_ambiguous():
+    plans = amfi.search(CURRENT, "axis children")[0]["plans"]
+    assert [(p["code"], p["is_ambiguous"]) for p in plans] == [(135762, True), (135764, True), (135766, False)]
 
 
 def test_an_isin_held_only_in_the_reinvestment_column_finds_its_scheme():
@@ -197,6 +229,37 @@ def test_history_from_mfapi_is_read_oldest_first():
     assert got.index[0] == nav.index[0] and got.iloc[-1] == pytest.approx(nav.iloc[-1])
 
 
+def test_a_slow_history_download_does_not_hold_up_fund_search(nav_cache, tmp_path, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+
+    def download(url):
+        if "mfapi" in url:
+            started.set()
+            release.wait(10)
+            return mfapi_json(118989, growing(1))
+        return NAV_TEXT
+    monkeypatch.setattr(amfi, "HISTORY_DIR", tmp_path / "mfapi")
+    monkeypatch.setattr(amfi, "_download", download)
+    slow = threading.Thread(target=amfi.history, args=(118989,))
+    slow.start()
+    started.wait(10)
+    search = threading.Thread(target=amfi.schemes)
+    search.start()
+    search.join(5)
+    searched_meanwhile = not search.is_alive()
+    release.set()
+    slow.join()
+    search.join()
+    assert searched_meanwhile
+
+
+def test_a_history_carried_at_zero_has_no_return():
+    zero = growing(1) * 0
+    with pytest.raises(DataUnavailable, match=f"scheme 148304 has {len(zero)} NAVs that are not above zero, "
+                                              f"first on \\['{zero.index[0].date()}'"):
+        amfi.parse_history(mfapi_json(148304, zero), 148304)
+
+
 def test_mfapi_answering_an_unknown_code_with_an_empty_scheme_is_no_history():
     with pytest.raises(DataUnavailable, match="no NAV history for scheme 118989"):
         amfi.parse_history(json.dumps({"meta": {"scheme_code": 0}, "data": [], "status": "SUCCESS"}), 118989)
@@ -224,12 +287,12 @@ def test_a_period_longer_than_the_history_has_no_return():
 def test_a_fund_moving_1_percent_a_day_has_its_volatility_annualised():
     idx = pd.bdate_range(end="2026-10-29", periods=600)
     nav = pd.Series(100 * np.cumprod([1.01 if i % 2 else 0.99 for i in range(600)]), index=idx)
-    assert funds.analytics(nav)["volatility_1y_pct"] == pytest.approx(np.sqrt(252), abs=0.05)
+    assert funds.analytics(nav, is_growth=True)["volatility_1y_pct"] == pytest.approx(np.sqrt(252), abs=0.05)
 
 
 def test_the_worst_fall_runs_from_the_peak_to_the_trough():
     dip = pd.Series([100.0, 120.0, 90.0, 130.0], index=pd.bdate_range(end="2026-10-29", periods=4))
-    dd = funds.analytics(dip)["max_drawdown"]
+    dd = funds.analytics(dip, is_growth=True)["max_drawdown"]
     assert (dd["max_drawdown_pct"], dd["peak_date"], dd["trough_date"]) == (-25.0, str(dip.index[1].date()),
                                                                             str(dip.index[2].date()))
 
@@ -237,7 +300,7 @@ def test_the_worst_fall_runs_from_the_peak_to_the_trough():
 def test_the_summary_quotes_only_figures_the_analytics_hold():
     nav = growing(6)
     nav.iloc[-300:-250] *= 0.8
-    a = funds.analytics(nav)
+    a = funds.analytics(nav, is_growth=True)
     text = funds.summary(a)
     assert text.startswith("Over the last 5 years its NAV grew") and "worst fall" in text
     held = json.dumps(a)
@@ -245,6 +308,12 @@ def test_the_summary_quotes_only_figures_the_analytics_hold():
 
 
 def test_a_fund_too_new_for_any_return_says_so():
-    a = funds.analytics(growing(0.05))
+    a = funds.analytics(growing(0.05), is_growth=True)
     assert a["returns"]["1M"] is None and a["volatility_1y_pct"] is None
     assert "too soon for a 1-month return" in funds.summary(a)
+
+
+def test_a_plan_that_is_not_growth_says_its_payouts_are_left_out():
+    a = funds.analytics(growing(6), is_growth=False)
+    assert a["is_total_return"] is False
+    assert funds.summary(a).endswith("so any payouts are left out of these figures and show as falls.")

@@ -38,13 +38,13 @@ COLUMNS = {"code": "Scheme Code", "isin_growth": "ISIN Div Payout/ ISIN Growth",
            "isin_reinvestment": "ISIN Div Reinvestment", "fund": "Scheme Name", "plan": "Plan",
            "option": "Option", "nav": "Net Asset Value", "date": "Date"}
 CATEGORY_LINE = re.compile(r"^([A-Za-z ]+Schemes)\s*\((.*)\)$")
-NO_ISIN, NO_NAV = "-", "N.A."
+NO_NAV = "N.A."
 DIRECT = "Direct Plan"
 SYNONYMS = {"absl": "aditya birla sun life"}
 ISIN = re.compile(r"^INF[A-Z0-9]{9}$")
 NOTE = re.compile(r"\([^)]*\)")
 
-_LOCK = threading.Lock()
+_LOCKS: Dict[Path, threading.Lock] = {}
 _READ: Dict[Path, Tuple[int, List["Scheme"]]] = {}
 
 
@@ -63,6 +63,10 @@ class Scheme:
     category: str
     amc: str
 
+    @property
+    def is_growth(self) -> bool:
+        return "growth" in (self.option or "").lower()
+
 
 def parse(text: str) -> List[Scheme]:
     """Every priced row of NAVAll.txt, read by AMFI's column names. Category lines ("Open Ended
@@ -74,7 +78,8 @@ def parse(text: str) -> List[Scheme]:
         raise DataUnavailable(f"AMFI's NAV file has no {missing} column; its header is {header}. "
                               "The format changed: update amfi.COLUMNS.")
     at = {key: header.index(name) for key, name in COLUMNS.items()}
-    isin = lambda f, key: None if f[at[key]] in (NO_ISIN, "") else f[at[key]]  # noqa: E731
+    # where a scheme has no ISIN AMFI writes "-", "Redeemed" or other text (152713: "HDFCNIVODG")
+    isin = lambda f, key: f[at[key]] if ISIN.match(f[at[key]]) else None  # noqa: E731
     out: List[Scheme] = []
     scheme_type = category = amc = None
     for number, raw in enumerate(lines[1:], start=2):
@@ -124,16 +129,23 @@ def _index(name: str) -> Set[str]:
 
 
 def _plan_order(s: Scheme) -> tuple:
-    return s.plan != DIRECT, "growth" not in (s.option or "").lower(), s.plan or "", s.option or "", s.code
+    return s.plan != DIRECT, not s.is_growth, s.plan or "", s.option or "", s.code
+
+
+def query_words(query: str) -> List[str]:
+    """The words `search` looks for, with abbreviations spelt out. ValueError if there is too little to search."""
+    words = [t for w in _words(query) for t in SYNONYMS.get(w, w).split()]
+    if len(query.strip()) < MIN_QUERY_CHARS or not words:
+        raise ValueError(f"type at least {MIN_QUERY_CHARS} letters of the fund's name; got {query!r}")
+    return words
 
 
 def search(schemes: List[Scheme], query: str, limit: int = 10) -> List[Dict[str, object]]:
-    """Funds with a name word starting with each word of `query`, or the scheme with that ISIN. Best first:
-    more words matched whole, then shorter names. Each fund lists its plans, Direct and Growth first."""
+    """Funds whose name or fund house has a word starting with each word of `query`, or the scheme with that ISIN.
+    Best first: more words matched whole in the fund's name, then shorter names. Each fund lists its plans,
+    Direct and Growth first; a plan is ambiguous when AMFI labels another code of the fund the same way."""
     q = query.strip()
-    tokens = [t for w in _words(q) for t in SYNONYMS.get(w, w).split()]
-    if len(q) < MIN_QUERY_CHARS or not tokens:
-        raise ValueError(f"type at least {MIN_QUERY_CHARS} letters of the fund's name; got {query!r}")
+    tokens = query_words(q)
     if ISIN.match(q.upper()):
         schemes, tokens = [s for s in schemes if q.upper() in (s.isin_growth, s.isin_reinvestment)], []
     funds: Dict[Tuple[str, str], List[Scheme]] = {}
@@ -142,13 +154,15 @@ def search(schemes: List[Scheme], query: str, limit: int = 10) -> List[Dict[str,
     ranked = []
     for (amc, fund), plans in funds.items():
         words = _index(fund)
-        if all(any(w.startswith(t) for w in words) for t in tokens):
+        searchable = words | _index(amc)
+        if all(any(w.startswith(t) for w in searchable) for t in tokens):
             whole = sum(t in words for t in tokens)
             # a note in brackets, like "(erstwhile Bluechip Fund)", does not make the name longer
             ranked.append(((-whole, len(_words(NOTE.sub("", fund))), fund), amc, fund, plans))
     ranked.sort(key=lambda r: r[0])
     return [{"fund": fund, "amc": amc, "category": plans[0].category, "scheme_type": plans[0].scheme_type,
-             "plans": [{"code": s.code, "plan": s.plan, "option": s.option, "nav": s.nav, "nav_date": s.nav_date}
+             "plans": [{"code": s.code, "plan": s.plan, "option": s.option, "nav": s.nav, "nav_date": s.nav_date,
+                        "is_ambiguous": sum((o.plan, o.option) == (s.plan, s.option) for o in plans) > 1}
                        for s in sorted(plans, key=_plan_order)]}
             for _, amc, fund, plans in ranked[:limit]]
 
@@ -167,7 +181,12 @@ def parse_history(text: str, code: int) -> pd.Series:
     if nav.index.duplicated().any():
         raise DataUnavailable(f"mfapi.in lists these dates twice in scheme {code}'s history: "
                               f"{sorted({str(d.date()) for d in nav.index[nav.index.duplicated()]})[:5]}")
-    return nav.sort_index()
+    nav = nav.sort_index()
+    unpriced = nav.index[~(nav > 0)]      # segregated portfolios are carried at 0
+    if len(unpriced):
+        raise DataUnavailable(f"mfapi.in's history for scheme {code} has {len(unpriced)} NAVs that are not above zero, "
+                              f"first on {[str(d.date()) for d in unpriced[:3]]}, so no return can be measured from it")
+    return nav
 
 
 def _download(url: str) -> str:
@@ -180,7 +199,7 @@ def _download(url: str) -> str:
 
 def _todays_copy(url: str, path: Path, check: Callable[[str], object]) -> Path:
     """`path`, downloaded again unless it was written today. A download `check` rejects is never kept."""
-    with _LOCK:
+    with _LOCKS.setdefault(path, threading.Lock()):      # per file, so a slow history download holds up no search
         if not path.exists() or date.fromtimestamp(path.stat().st_mtime) != date.today():
             text = _download(url)
             check(text)

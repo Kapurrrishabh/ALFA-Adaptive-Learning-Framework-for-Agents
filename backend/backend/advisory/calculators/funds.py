@@ -31,24 +31,28 @@ def trailing_returns(nav: pd.Series) -> Dict[str, Optional[Dict[str, Any]]]:
     return out
 
 
-def analytics(nav: pd.Series) -> Dict[str, Any]:
+def analytics(nav: pd.Series, is_growth: bool) -> Dict[str, Any]:
+    """`is_growth`: the NAV keeps the fund's income, so its change is the whole return. Otherwise payouts are left out."""
     end = nav.index[-1]
     year = nav.loc[end - pd.DateOffset(years=1):]
     covers_year = nav.index[0] <= end - pd.DateOffset(years=1)
     return {"as_of": str(end.date()), "since": str(nav.index[0].date()), "returns": trailing_returns(nav),
+            "is_total_return": is_growth,
             "volatility_1y_pct": round(ann_vol(year.pct_change().dropna()) * 100, 2) if covers_year else None,
             "max_drawdown": max_drawdown(nav)}
 
 
 def summary(a: Dict[str, Any]) -> str:
-    """One plain sentence from `analytics` output: the longest return it has, and the worst fall."""
+    """Plain sentences from `analytics` output: the longest return it has, the worst fall, and any payouts left out."""
     covered = [p for p in PERIODS if a["returns"][p]]
     dd = a["max_drawdown"]
     fall = (f"its worst fall since {a['since']} was {abs(dd['max_drawdown_pct'])}%, from {dd['peak_date']} to "
             f"{dd['trough_date']}" if dd["max_drawdown_pct"] < 0 else f"it has not fallen below an earlier high since {a['since']}")
+    payouts = "" if a["is_total_return"] else (" AMFI does not list this as a Growth option, so any payouts are left "
+                                               "out of these figures and show as falls.")
     if not covered:
-        return f"Its NAV history starts on {a['since']}, too soon for a 1-month return, and {fall}."
+        return f"Its NAV history starts on {a['since']}, too soon for a 1-month return, and {fall}.{payouts}"
     r = a["returns"][covered[-1]]
     moved = "grew" if r["pct"] >= 0 else "fell"
     rate = " a year" if r["annualised"] else ""
-    return f"Over the last {WORDS[covered[-1]]} its NAV {moved} {abs(r['pct'])}%{rate}, and {fall}."
+    return f"Over the last {WORDS[covered[-1]]} its NAV {moved} {abs(r['pct'])}%{rate}, and {fall}.{payouts}"

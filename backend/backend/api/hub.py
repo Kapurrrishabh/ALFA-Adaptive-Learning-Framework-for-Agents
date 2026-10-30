@@ -330,6 +330,7 @@ class Hub:
     # --- mutual funds ----------------------------------------------------------------------
     def fund_search(self, q: str) -> Dict[str, Any]:
         from backend.database.sources import amfi
+        amfi.query_words(q)                 # a bad query is a 400 even while AMFI's file cannot be downloaded
         return {"query": q, "funds": amfi.search(amfi.schemes(), q), "source": amfi.NAV_SOURCE}
 
     def fund(self, code: int) -> Dict[str, Any]:
@@ -346,7 +347,7 @@ class Hub:
             nav = amfi.history(code)
         except DataUnavailable as exc:      # the official facts still stand without the unofficial history
             return {**out, "analytics": None, "summary": None, "history": None, "history_error": str(exc)}
-        figures = funds.analytics(nav)
+        figures = funds.analytics(nav, scheme.is_growth)
         return {**out, "analytics": figures, "summary": funds.summary(figures), "history_error": None,
                 "history": {"dates": [str(d.date()) for d in nav.index], "nav": [float(x) for x in nav]}}
 
