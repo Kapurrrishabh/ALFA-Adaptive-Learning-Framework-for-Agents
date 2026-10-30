@@ -987,36 +987,39 @@ def rating(*lessons):
     return lambda question, texts: list(lessons) + [0.0] * (len(texts) - len(lessons))
 
 
-def test_a_move_word_question_is_taught_by_a_lesson_below_bm25s_best_when_the_judge_rejects_that_one(market, router):
-    """"How is short term tax charged on shares that rose" ranked the ELSS lesson over the lesson on taxes."""
-    built = news_reference(None, lessons=ranked(TAX_LESSONS), judge=rating(LESSON_FLOOR - 0.01, LESSON_FLOOR + 0.1))
-    turn = agent(market, router, reference=built).answer("how is a quick profit taxed when shares jump ?")
+def test_the_lessons_bm25_finds_are_served_in_the_rerankers_order():
+    """BM25's order taught ELSS for "what is the tax on short term profit when shares rise", over the lesson on taxes."""
+    from backend.models.agent.run.ask import lessons_from
+    found = lessons_from()("what do candle patterns show ?", 4)
+    reranked = lessons_from(lambda question, texts: list(range(len(texts))))("what do candle patterns show ?", 4)
+    assert len(found) > 1 and reranked == found[::-1]
+
+
+def test_the_judge_does_not_reorder_the_lessons(market, router):
+    """Rated by closeness, "what is concentration risk" got the lesson on risk contribution at 0.758 against 0.742."""
+    built = news_reference(None, lessons=ranked(TAX_LESSONS), judge=rating(LESSON_FLOOR, LESSON_FLOOR + 0.2))
+    turn = agent(market, router, reference=built).answer("is elss a tax saver ?")
+    assert turn.served == TAX_LESSONS[0][1]
+
+
+def test_a_question_whose_best_section_names_no_lesson_is_taught_one_the_judge_rates_over_the_floor(market, router):
+    """"What tax applies when i sell shares at a profit after 6 months" was served a US forum post, though the judge
+    rated the lesson on taxes, the only one BM25 found, at 0.748."""
+    built = news_reference(None, lessons=headless(TAX_LESSONS[1:]), judge=rating(LESSON_FLOOR + 0.05))
+    turn = agent(market, router, reference=built).answer("what is owed on a quick share profit ?")
     assert turn.intent == "reference lesson" and turn.served == TAX_LESSONS[1][1]
 
 
-def test_of_the_lessons_judged_the_one_the_judge_rates_best_is_served_though_bm25s_best_names_one(market, router):
-    """"What is the tax on short term profit when shares rise" was taught ELSS, BM25's best and over the floor at 0.654,
-    though the judge rated the lesson on taxes 0.793."""
-    built = news_reference(None, lessons=ranked(TAX_LESSONS), judge=rating(LESSON_FLOOR + 0.02, LESSON_FLOOR + 0.1))
-    turn = agent(market, router, reference=built).answer("how is a quick profit taxed when shares jump ?")
-    assert turn.served == TAX_LESSONS[1][1]
-
-
-def test_a_question_with_no_move_word_is_taught_the_lesson_the_judge_rates_best(market, router):
-    """"Lump sum or sip" was taught the lesson on SIPs, BM25's best, not the one comparing the two."""
-    lessons = [("SIP (systematic investment plan)", "A SIP invests a fixed amount every month."),
-               ("Lump sum versus SIP", "A lump sum is invested at once; a SIP spreads it over months.")]
-    built = news_reference(None, lessons=ranked(lessons), judge=rating(0.7, 0.9))
-    turn = agent(market, router, reference=built).answer("is a lump sum better than a sip ?")
-    assert turn.served == lessons[1][1]
-
-
-def test_a_question_with_no_move_word_is_taught_only_when_bm25s_best_section_names_a_lesson(market, router):
-    """There is no floor for these, which right lessons scored as low as 0.55 under: "what is return on equity" was
-    otherwise taught the lesson on fund categories, BM25's second section."""
-    built = news_reference(None, lessons=headless(TAX_LESSONS), judge=rating(0.9, 0.9))
+def test_a_question_whose_best_section_names_no_lesson_is_not_taught_one_below_the_floor(market, router):
+    built = news_reference(None, lessons=headless(TAX_LESSONS), judge=rating(LESSON_FLOOR - 0.01, 0.9))
     turn = agent(market, router, reference=built).answer("what is a stop loss order ?")
-    assert turn.intent != "reference lesson"
+    assert turn.served == PASSAGE
+
+
+def test_with_no_judge_only_a_lesson_bm25s_best_section_names_is_served(market, router):
+    built = reference("never written", model=ExplodingModel(), lessons=headless(TAX_LESSONS))
+    turn = agent(market, router, reference=built).answer("what is a stop loss order ?")
+    assert turn.served == PASSAGE
 
 
 def test_lessons_and_news_without_a_judge_are_refused_when_the_reference_is_built():

@@ -68,9 +68,9 @@ LATELY = re.compile(RECENT.pattern + r"|\b(fall(s|ing|en)?|fell|drop(s|ped|ping)
 # provisional, on `judge`'s scale (bge cosine) and from 32 questions with a move word: lessons beside the point
 # ("FCF yield" for bond yields) scored 0.53-0.62 and lessons that answered 0.66-0.84
 LESSON_FLOOR = 0.63
-# provisional: on 26 lesson and tax wordings with a move word, the judge chose the right lesson 21 times from BM25's
-# first 3 sections and 24 from 4 or 5; from 5 it also took "what is ltcg on shares" from the lesson on taxes
-LESSONS_JUDGED = 4
+# provisional: on 190 labelled lesson, tax and news wordings, the lesson first in `lessons`' order (ask.lessons_from) of
+# BM25's first 3, 4 and 5 sections was served right 157, 159 and 160 times; one wording is too few to choose 5 for
+LESSONS_RANKED = 4
 
 
 class SearchFailed(RuntimeError):
@@ -121,8 +121,8 @@ class Reference:
         # Asked first for a question that names no company: the corpus is mostly US forums, and "how does a SIP work"
         # read from it was answered with Wikipedia's sales incentive plan.
         self.lessons = lessons
-        # (question, texts) -> closeness of each, choosing among the lessons and deciding a lesson against the news when
-        # a question has a move word in it: word rules sent "are bond yields going to rise" to the lesson on FCF yield
+        # (question, texts) -> closeness of each, deciding whether the first lesson answers well enough and better than
+        # the news: word rules sent "are bond yields going to rise" to the lesson on FCF yield
         if lessons is not None and news is not None and judge is None:
             raise ValueError("a Reference given both lessons and news needs a judge to choose between them; "
                              "pass judge=, as ask.reference_from does with judge_from()")
@@ -173,22 +173,19 @@ class Reference:
         return None
 
     def _lesson(self, question, query, as_of, news_first):
-        """The lesson the judge rates best of BM25's first few: BM25's order alone taught ELSS for "what is the tax on
-        short term profit when shares rise". For a move-word question it must clear the floor and beat every headline;
-        any other needs BM25's best section to name a lesson, as before, and no floor: right ones scored 0.55 there."""
+        """The first of BM25's first few lessons in `lessons`' order, when it answers. With no move word, one BM25's
+        best section names is served as it is: right ones scored as low as 0.55 by the judge. Any other must clear the
+        judge's floor, and with a move word beat every headline too, so with no judge it is not served."""
         if news_first and RECENT.search(question):
             return None
-        first = self.lessons(question, 1)
-        if self.judge is None or not news_first and not first:
-            return next(iter(first), None)
-        lessons = self.lessons(question, LESSONS_JUDGED)
-        if not lessons:
+        lessons = self.lessons(question, LESSONS_RANKED)
+        if lessons and not news_first and self.lessons(question, 1):
+            return lessons[0]
+        if not lessons or self.judge is None:
             return None
         headlines = (self._newswire(query, as_of, None) or []) if news_first else []
-        scores = self.judge(question, [f"{title}. {text}" for title, text in lessons] + [chunk.text for chunk in headlines])
-        best = max(range(len(lessons)), key=lambda at: scores[at])
-        beats_the_news = all(scores[best] > score for score in scores[len(lessons):])
-        return lessons[best] if not news_first or scores[best] >= LESSON_FLOOR and beats_the_news else None
+        scores = self.judge(question, [f"{lessons[0][0]}. {lessons[0][1]}"] + [chunk.text for chunk in headlines])
+        return lessons[0] if scores[0] >= LESSON_FLOOR and all(scores[0] > score for score in scores[1:]) else None
 
     def asks_lately(self, question, moves, sure):
         """Whether prices, filings and headlines answer a question before the advisory path. Always when the router
