@@ -1062,11 +1062,16 @@ def test_a_concept_question_naming_no_company_is_answered_from_the_lessons_first
     assert agent(market, router, reference=built).answer("what is a stop loss order ?").served == PASSAGE
 
 
-def test_a_question_that_says_lately_reads_the_dated_sources_before_the_advisory_path(market, router):
-    """"how is AAPL doing lately" was refused at ALFA's confidence cut while the price files held its answer."""
+@pytest.mark.parametrize("question", ["how has RELIANCE.NS been doing lately ?",
+                                      "how has RELIANCE.NS been doing over the last month ?",
+                                      "how has RELIANCE.NS done over the past month ?",
+                                      "RELIANCE.NS last 30 days performance"])
+def test_a_question_that_says_lately_reads_the_dated_sources_before_the_advisory_path(market, router, question):
+    """"how is AAPL doing lately" was refused at ALFA's confidence cut while the price files held its answer, and so
+    was "how has TCS been doing over the last month": a window is a time word too."""
     turn = agent(market, router, model=ExplodingModel(),
                  reference=news_reference(FakeWriter("Reliance commissioned a refinery unit (Mint, 6 Oct 2026)."))).answer(
-        "how has RELIANCE.NS been doing lately ?")
+        question)
     assert turn.spoke and turn.intent == "reference recent"
 
 

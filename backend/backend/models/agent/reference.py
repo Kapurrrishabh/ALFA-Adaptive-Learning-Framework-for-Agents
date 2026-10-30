@@ -55,7 +55,11 @@ UNANSWERED = "unanswered"
 # are read before a corpus that holds no news at all. `NEWS` leaves out the time words the trained intents
 # are asked with too ("is it overbought right now", "how far is it off its recent high").
 NEWS = re.compile(r"\b(today|yesterday|this (week|month|quarter)|latest|news|announc\w*|results?)\b", re.I)
-RECENT = re.compile(NEWS.pattern + r"|\b(lately|recent(ly)?|now|currently)\b", re.I)
+# A window ("over the last month", "past 30 days") is a time word too: "how has TCS been doing over the last month"
+# went to ALFA, whose performance answers sit under the confidence cut, while the price files held its answer.
+RECENT = re.compile(NEWS.pattern + r"|\b(lately|recent(ly)?|now|currently)\b|"
+                    r"\b(last|past|previous)( (few|couple of|several|\d+|one|two|three|four))? (days?|weeks?|months?|sessions?)\b",
+                    re.I)
 # A question about a price move or what a company is up to asks what happened lately, and the newswire is
 # read before anything else: "any news on tata steel" ranked over Wikipedia and the newswire together was
 # answered from its 2007 acquisition, because a long article repeats the name more often than a headline.
