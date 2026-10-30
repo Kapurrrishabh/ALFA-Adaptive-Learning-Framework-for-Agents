@@ -11,7 +11,7 @@ from .conftest import KEY  # noqa: E402
 
 pytestmark = pytest.mark.ui
 WIDTHS = [390, 800, 1366]   # provisional: a phone, the nav breakpoint itself, a laptop
-AXE_WIDTHS = [390, 1366]   # 800 px already gets the phone layout
+AXE_WIDTHS = [390, 1366]   # every element shown at 800 px is also shown at one of these
 THEMES = ["dark", "light"]
 SECTIONS = ["Home", "Markets", "Portfolio", "Ask", "Learn"]
 NO_PAGE = ["nowhere", "stock", "stock/%E0%A4"]
@@ -125,8 +125,13 @@ def test_an_address_with_no_page_says_so(visits, name):
 
 
 def test_every_chart_is_named_from_its_data(visits):
-    unnamed = {name: [c for c in visits[(1366, name)]["charts"] if not c or re.search("undefined|NaN", c)] for name in PAGES}
+    unnamed = {name: [c for c in visits[(1366, name)]["charts"] if not c or re.search(r"undefined|NaN|\[object", c)] for name in PAGES}
     assert {name: charts for name, charts in unnamed.items() if charts} == {}
+
+
+def test_each_pattern_chart_names_its_proven_edges(visits):
+    names = [c for c in visits[(1366, "performance")]["charts"] if c.startswith("Excess return")]
+    assert [c.rsplit(". ", 1)[1] for c in names] == ["Proven edge: none", "Proven edge: double top"]
 
 
 @pytest.fixture(scope="module")
@@ -261,6 +266,40 @@ def test_the_chart_tab_shown_is_the_one_announced_as_selected(browser, base_url)
     assert tabs.get_by_role("tab", selected=True).all_inner_texts() == ["Intraday"]
 
 
+def press_on_the_chart_tabs(browser, base_url, *keys):
+    """The stock page after Tab reaches its chart tabs and keys are pressed there."""
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/stock/TEST")
+    tab_to(tab, "[role=tab]")
+    for key in keys:
+        tab.page.keyboard.press(key)
+        tab.settle()
+    return tab
+
+
+def test_enter_on_a_chart_tab_keeps_the_focus_on_it(browser, base_url):
+    tab = press_on_the_chart_tabs(browser, base_url, "Enter")
+    assert tab.page.evaluate("document.activeElement.textContent") == "Technical"
+
+
+def test_arrow_right_on_a_chart_tab_shows_and_focuses_the_next_one(browser, base_url):
+    tab = press_on_the_chart_tabs(browser, base_url, "ArrowRight")
+    assert tab.page.evaluate("[document.activeElement.textContent, document.activeElement.ariaSelected]") == ["Intraday", "true"]
+
+
+def test_tab_from_the_chosen_chart_tab_goes_into_its_chart(browser, base_url):
+    tab = press_on_the_chart_tabs(browser, base_url, "ArrowRight", "Tab")
+    assert tab.page.evaluate("document.activeElement.closest('[role=tabpanel]') !== null")
+
+
+def test_a_sector_left_out_of_the_basket_is_announced_as_pressed(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/builder")
+    sectors = tab.page.get_by_role("group", name="Sectors to leave out")
+    sectors.get_by_role("button", name="Energy", exact=True).click()
+    assert sectors.get_by_role("button", pressed=True).all_inner_texts() == ["Energy"]
+
+
 def test_tapping_a_chart_shows_its_tooltip(browser, base_url):
     tab = Tab(browser, base_url, 390, has_touch=True)
     tab.go("#/portfolio")
@@ -273,6 +312,21 @@ def test_a_pattern_with_a_proven_edge_says_so_in_words(browser, base_url):
     tab = Tab(browser, base_url, 1366)
     tab.go("#/performance")
     assert [t for t in tab.page.locator("#view svg text").all_text_contents() if t.endswith("(edge)")] == ["double top (edge)"]
+
+
+def calibration_plot(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/performance")
+    return tab.page.get_by_role("img", name=re.compile("^How often stocks went up"))
+
+
+def test_each_calibration_horizon_has_its_own_dash(browser, base_url):
+    dashes = calibration_plot(browser, base_url).locator("path").evaluate_all("els => els.map((el) => el.getAttribute('stroke-dasharray'))")
+    assert len(set(dashes)) == len(dashes) == 2
+
+
+def test_the_calibration_plot_marks_its_reference_line_in_words(browser, base_url):
+    assert calibration_plot(browser, base_url).locator("text").all_text_contents().count("perfect") == 1
 
 
 def search_and_press_enter(tab, text):

@@ -524,7 +524,7 @@ function technicalPanel(ctx, sym, opts = {}) {
   const drawCards = () => {
     if (!data) return;
     cards.replaceChildren(...(data.patterns.length > 1 ? [h("div", { class: "muted", style: "grid-column:1/-1;font-size:12px" },
-      selected == null ? "Showing all patterns — click a card to focus on one." : "Showing the highlighted pattern — click another card to switch, or the same card to show all.")] : []),
+      selected == null ? "Showing all patterns — choose a card to focus on one." : "Showing the highlighted pattern — choose another card to switch, or the same card to show all.")] : []),
       ...(data.patterns.length ? data.patterns.map((p, k) => h("button", { class: "pattern-card", "aria-pressed": String(selected === k),
         onclick: () => { selected = selected === k ? null : k; draw(); drawCards(); cards.querySelectorAll(".pattern-card")[k].focus(); } },
       h("span", { class: "spread" }, h("span", { class: "nm" }, p.pattern.replace(/_/g, " ")), h("span", { class: `edge-badge ${p.record.has_edge ? "yes" : "no"}` }, p.record.has_edge ? "Proven edge" : "No proven edge")),
@@ -555,7 +555,6 @@ function technicalPanel(ctx, sym, opts = {}) {
 
 // ---------- generic charts (performance + portfolio) ----------
 const DASHED = "6 4";
-// a colour and a dash for each line, so lines differ by more than colour
 const SERIES = [["--series-1", "none"], ["--series-2", DASHED], ["--series-3", "1.5 3"], ["--series-4", "8 3 1.5 3"]];
 const textW = (str, size = 12) => { const c = textW.c || (textW.c = document.createElement("canvas").getContext("2d")); c.font = `${size}px Inter, system-ui, sans-serif`; return c.measureText(str).width; };
 function legend(items) {
@@ -607,7 +606,7 @@ function forestPlot(container, rows, { threshold = null } = {}) {
   const W = container.clientWidth || 700, rowH = 22, m = { l: Math.min(W * 0.45, 16 + Math.max(...ok.map((r) => textW(name(r))))), r: 70, t: 22, b: 26 }, H = m.t + m.b + ok.length * rowH, pw = W - m.l - m.r;
   const lim = Math.max(1, ...ok.map((r) => Math.max(Math.abs(r.ci_lo), Math.abs(r.ci_hi)))) * 1.05;
   const x = (v) => m.l + ((v + lim) / (2 * lim)) * pw;
-  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Excess return after each pattern with 95% interval" });
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Excess return after each pattern with 95% interval. Proven edge: ${ok.filter(sig).map((r) => r.pattern).join(", ") || "none"}` });
   for (const v of [-lim, -lim / 2, 0, lim / 2, lim]) { svg.append(s("line", { x1: x(v), x2: x(v), y1: m.t - 6, y2: H - m.b, stroke: v === 0 ? css("--ink-2") : css("--line"), "stroke-width": v === 0 ? 1.5 : 1 }));
     const t = s("text", { x: x(v), y: H - 8, "font-size": 11, fill: css("--muted"), "text-anchor": "middle" }); t.textContent = pct(v, 1); svg.append(t); }
   const hdr = s("text", { x: x(0), y: 12, "font-size": 11, fill: css("--muted"), "text-anchor": "middle" }); hdr.textContent = "← worse than normal   0 = no effect   better than normal →"; svg.append(hdr);
@@ -664,6 +663,7 @@ function calibrationPlot(container, pointsByH, label) {
     const a = s("text", { x: x(v), y: m.t + p + 14, "font-size": 10.5, fill: css("--muted"), "text-anchor": "middle" }); a.textContent = `${v * 100}%`; svg.append(a);
     const b = s("text", { x: m.l - 6, y: y(v) + 4, "font-size": 10.5, fill: css("--muted"), "text-anchor": "end" }); b.textContent = `${v * 100}%`; svg.append(b); }
   svg.append(s("line", { x1: x(lo), y1: y(lo), x2: x(hi), y2: y(hi), stroke: css("--ink-2"), "stroke-dasharray": "5 4" }));
+  const pf = s("text", { x: x(0.72), y: y(0.72) - 5, "font-size": 10.5, fill: css("--ink-2"), "text-anchor": "end", transform: `rotate(-45 ${x(0.72)} ${y(0.72)})` }); pf.textContent = "perfect"; svg.append(pf);
   const lx = s("text", { x: m.l + p / 2, y: H - 4, "font-size": 11, fill: css("--muted"), "text-anchor": "middle" }); lx.textContent = "model said: chance of going up"; svg.append(lx);
   Object.entries(pointsByH).forEach(([hz, pts], k) => { const col = css(SERIES[k][0]); let d = "";
     pts.forEach((q, i) => { d += (i ? "L" : "M") + x(q.predicted) + " " + y(q.actual); });
@@ -720,7 +720,7 @@ async function pagePerformance(view, ctx) {
     h("p", { class: "sub" }, `${new Set(d.forecast.coverage.map((c) => c.symbol)).size} large caps, ${fh.map((x) => `${num(x.n, 0)} (${x.horizon}-day)`).join(", ")} out-of-sample predictions. Dashed line: accuracy of simply guessing "up" every time.`), acc,
     h("div", { class: "verdict-line" }, beats.length ? `Verdict: beat always guessing “up” at ${beats.map((x) => `${x.horizon}-day (${num(x.accuracy * 100, 1)}% vs ${num(x.always_up_accuracy * 100, 1)}%)`).join(", ")}.`
       : `Verdict: no better than always guessing “up” at any of the ${fh.length} horizons. That's why the app never shows a predicted direction.`));
-  const calCard = h("div", { class: "card" }, h("h3", {}, "Calibration: when the model said X%, how often did it go up?"), h("p", { class: "sub" }, "A useful model's dots sit on the dashed diagonal."),
+  const calCard = h("div", { class: "card" }, h("h3", {}, "Calibration: when the model said X%, how often did it go up?"), h("p", { class: "sub" }, "A useful model's dots sit on the diagonal marked “perfect”."),
     legend(Object.keys(d.forecast.calibration).map((hz, k) => [`${hz}-day`, ...SERIES[k]])), cal);
   view.append(h("div", { class: "grid cols-2", style: "margin-top:18px" }, fcCard, calCard));
   // 3. ranges
@@ -795,11 +795,20 @@ function Field(label, input, hint) {
   field.showError = (msg) => { error.textContent = msg || ""; if (msg) input.setAttribute("aria-invalid", "true"); else input.removeAttribute("aria-invalid"); };
   return field;
 }
-// the choice lives only in aria-pressed, which the CSS also draws, so what is seen and what is read out agree
 function Segmented(options, current, onPick) {
   const el = h("div", { class: "seg" }, ...options.map(([value, label]) => h("button", { "aria-pressed": String(value === current),
     onclick: (e) => { for (const b of el.children) b.setAttribute("aria-pressed", String(b === e.currentTarget)); onPick(value); } }, label)));
   return el;
+}
+// a screen reader announces role=tab as a row the arrow keys move along, with one Tab stop for the whole row
+function Tabs(className, label, names, onPick) {
+  const panel = h("div", { role: "tabpanel", id: uid("panel") });
+  const tabs = names.map((k, i) => h("button", { role: "tab", id: `${panel.id}-${i}`, "aria-controls": panel.id, onclick: () => pick(i) }, k));
+  const pick = (i) => { tabs.forEach((b, j) => { b.setAttribute("aria-selected", String(i === j)); b.tabIndex = i === j ? 0 : -1; });
+    panel.setAttribute("aria-labelledby", tabs[i].id); onPick(names[i], panel); };
+  const list = h("div", { class: className, role: "tablist", "aria-label": label, onkeydown: (e) => { const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+    if (step) { const i = (tabs.indexOf(e.target) + step + tabs.length) % tabs.length; pick(i); tabs[i].focus(); } } }, ...tabs);
+  return { list, panel, show: (k) => pick(names.indexOf(k)) };
 }
 function Dialog(ctx, title, body, [label, run]) {
   const opener = document.activeElement, titleId = uid("dialog"), text = typeof body === "string" ? h("p", { id: `${titleId}-text` }, body) : null;
@@ -906,15 +915,11 @@ async function pageStock(view, ctx) {
       chip("52W low", inr(o.low_52w, 0)), chip("52W high", inr(o.high_52w, 0)), chip("P/E", num(o.stats["P/E (TTM)"], 1)), chip("Mkt cap", compactInr(o.stats["Market cap"]))),
     h("div", { class: "muted", style: "font-size:12px;margin-top:8px" }, `Daily close ${o.as_of} · NSE`));
   const modes = { "Technical": () => technicalPanel(ctx, sym, { bars: 63 }), "Intraday": () => intradayPanel(ctx, sym), "Price & projection": () => technicalPanel(ctx, sym, { line: true, bars: 126 }) };
-  const built = {}; const tabsEl = h("div", { class: "mode-tabs", role: "tablist", "aria-label": "Chart" });
-  const show = (k) => { for (const b of tabsEl.children) b.setAttribute("aria-selected", String(b.textContent === k)); built[k] = built[k] || modes[k](); chartCard.replaceChildren(tabsEl, built[k]); built[k].redraw(); };
-  tabsEl.append(...Object.keys(modes).map((k) => h("button", { role: "tab", onclick: () => show(k) }, k)));
-  show("Technical");
+  const built = {}, chart = Tabs("mode-tabs", "Chart", Object.keys(modes), (k, panel) => { built[k] = built[k] || modes[k](); panel.replaceChildren(built[k]); built[k].redraw(); });
+  chartCard.replaceChildren(chart.list, chart.panel); chart.show("Technical");
   const panes = { Overview: () => overviewPane(o), Research: () => researchPane(ctx, sym), News: () => newsPane(ctx, sym), Insider: () => insiderPane(ctx, sym) };
-  const tabs = h("div", { class: "tabs", role: "tablist", "aria-label": "Details" }); const pane = h("div");
-  const showPane = (k) => { for (const b of tabs.children) b.setAttribute("aria-selected", String(b.textContent === k)); pane.replaceChildren(skel(100)); Promise.resolve(panes[k]()).then((el) => pane.replaceChildren(el)).catch((e) => pane.replaceChildren(ErrorState(e, () => showPane(k)))); };
-  tabs.append(...Object.keys(panes).map((k) => h("button", { role: "tab", onclick: () => showPane(k) }, k)));
-  tabsCard.replaceChildren(tabs, pane); showPane("Overview");
+  const details = Tabs("tabs", "Details", Object.keys(panes), (k, pane) => { pane.replaceChildren(skel(100)); Promise.resolve(panes[k]()).then((el) => pane.replaceChildren(el)).catch((e) => pane.replaceChildren(ErrorState(e, () => details.show(k)))); });
+  tabsCard.replaceChildren(details.list, details.panel); details.show("Overview");
   api(`/ui/stock/${encodeURIComponent(sym)}/analyst`, { signal: ctx.signal }).then((a) => analystCard.replaceChildren(h("div", { class: "panel-title" }, "Analyst note"),
     h("p", { class: "analyst-text" }, a.text),
     h("div", { class: "muted", style: "font-size:12px" }, a.written_by ? `Written by ${a.written_by} from our models' numbers; every number was checked against them.`

@@ -30,8 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# the browser tests also need `playwright install chromium` once; the exact pins keep everyone on one browser build
-# and one set of axe accessibility rules
+# the browser tests also need `playwright install chromium` once; exact pins keep everyone on one browser build and axe rule set
 dev = ["pytest>=8", "playwright==1.63.0", "axe-playwright-python==0.1.8"]
 # collecting the training corpus (backend/database/dataforge); the app never needs these
 collect = ["requests>=2.31", "beautifulsoup4>=4.12", "pypdf>=4", "py7zr>=0.20"]
