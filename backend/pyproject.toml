@@ -23,6 +23,9 @@ dependencies = [
     # sign-in; 15.x is in maintenance mode (security fixes only), so a 16 needs a deliberate look first
     "fastapi-users[sqlalchemy,oauth]>=15.0.5,<16",
     "aiosqlite>=0.22",
+    # broker Excel exports; openpyxl parses their XML through defusedxml whenever it is installed
+    "openpyxl>=3.1",
+    "defusedxml>=0.7",
 ]
 
 [project.optional-dependencies]

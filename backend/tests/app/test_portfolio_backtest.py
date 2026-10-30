@@ -1,9 +1,18 @@
+import io
+import re
+import zipfile
+from datetime import date
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from backend.advisory.calculators.backtest import strategies as S
 from backend.advisory.calculators.backtest.engine import BacktestConfig, run
+from backend.database.sources import panel
+from backend.database.sources.panel import Listing
+from backend.user.portfolio import importers
 from backend.user.portfolio.portfolio import Transaction, analyze, build_positions, risk_decomposition, what_if
 from backend.advisory.statistics.model_registry import ModelRegistry, PromotionError
 
@@ -189,3 +198,194 @@ def test_registry_rejects_a_candidate_that_does_not_beat_the_base_rate(store):
                  metrics={"brier_skill": -0.05}, backtest=None, limitations="")
     with pytest.raises(PromotionError, match="does not beat the baseline"):
         reg.approve("forecast", "neg", "rishabh")
+
+
+# Laid out as NSE's files are: EQUITY_L's capitals and spaced headers, the ETF list's CRLF, SME's trailing comma
+NSE_FILES = {
+    "EQUITY_L.csv":
+        "SYMBOL,NAME OF COMPANY, SERIES, DATE OF LISTING, PAID UP VALUE, MARKET LOT, ISIN NUMBER, FACE VALUE\n"
+        "RELIANCE,Reliance Industries Limited,EQ,29-NOV-1995,10,1,INE002A01018,10\n"
+        "MOVEDUP,Moved Up Limited,EQ,01-JAN-2024,10,1,INE111A01011,10\n",
+    "eq_etfseclist.csv":
+        "Symbol,Underlying Asset,SecurityName,DateofListing,MarketLot,ISINNumber,FaceValue,ETF Underlying,"
+        "Underlying Key\r\nNIFTYBEES,Nifty 50,NIPINDETFNIFTYBEES,08-Jan-02,1,INF204KB14I2,1,EQUITY,Nifty 50\r\n",
+    "SME_EQUITY_L.csv":
+        "SYMBOL,NAME_OF_COMPANY,SERIES,DATE_OF_LISTING,PAID_UP_VALUE,ISIN_NUMBER,FACE_VALUE,\n"
+        "MOVEDUPSM,Moved Up Limited,SM,01-JAN-2020,10,INE111A01011,10,\n",
+    "ind_nifty500list.csv":
+        "Company Name,Industry,Symbol,Series,ISIN Code\n"
+        "Reliance Industries Ltd.,Oil Gas & Consumable Fuels,RELIANCE,EQ,INE002A01018\n"
+        "Embassy Office Parks REIT,Realty,EMBASSY,RR,INE041025011\n",
+}
+
+
+@pytest.fixture
+def nse_directory(tmp_path, monkeypatch):
+    import httpx
+    monkeypatch.setattr(panel, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(httpx, "get",
+                        lambda url, **_: SimpleNamespace(status_code=200, text=NSE_FILES[url.rsplit("/", 1)[1]]))
+    return panel.isin_directory()
+
+
+def test_equity_l_is_read_despite_its_capitals_and_spaced_headers(nse_directory):
+    assert nse_directory["INE002A01018"] == Listing("RELIANCE", "equity_l")
+
+
+def test_an_etf_isin_maps_to_the_listed_etf(nse_directory):
+    assert nse_directory["INF204KB14I2"] == Listing("NIFTYBEES", "etf")
+
+
+def test_a_company_that_moved_up_from_sme_keeps_its_main_board_symbol(nse_directory):
+    assert nse_directory["INE111A01011"] == Listing("MOVEDUP", "equity_l")
+
+
+def test_reits_come_from_the_nifty_500_list(nse_directory):
+    assert nse_directory["INE041025011"] == Listing("EMBASSY", "nifty500")
+
+
+def workbook(sheets):
+    """An .xlsx built here, so no real statement or personal data enters the repo."""
+    import openpyxl
+    book = openpyxl.Workbook()
+    book.remove(book.active)
+    for title, rows in sheets.items():
+        sheet = book.create_sheet(title)
+        for row in rows:
+            sheet.append(row)
+    out = io.BytesIO()
+    book.save(out)
+    return out.getvalue()
+
+
+ZERODHA_COLUMNS = ["Symbol", "ISIN", "Sector", "Quantity Available", "Quantity Discrepant", "Quantity Long Term",
+                   "Quantity Pledged (Margin)", "Quantity Pledged (Loan)", "Average Price", "Previous Closing Price"]
+HOLDING = {"Symbol": "SYNTHA", "ISIN": "INE000D01019", "Sector": "SYNTHETIC", "Quantity Available": 14,
+           "Quantity Discrepant": 0, "Quantity Long Term": 0, "Quantity Pledged (Margin)": 0,
+           "Quantity Pledged (Loan)": 0, "Average Price": 412.39, "Previous Closing Price": 455.5}
+
+
+def zerodha_holdings(*holdings):
+    """Zerodha's holdings workbook as third-party descriptions lay it out: Equity, Mutual Funds and Combined sheets,
+    each with a client line, a dated title and a summary above its table."""
+    def sheet(kind, columns, rows):
+        return [["Client ID", "ZZ0000"], [], [f"{kind} Holdings Statement as on 2026-06-30"], [], ["Summary"],
+                ["Invested Value", 1000.0], [], columns] + [[h.get(c) for c in columns] for h in rows]
+    combined = ZERODHA_COLUMNS[:3] + ["Instrument Type"] + ZERODHA_COLUMNS[3:]
+    return workbook({"Equity": sheet("Equity", ZERODHA_COLUMNS, holdings),
+                     "Mutual Funds": sheet("Mutual Funds", [], []),
+                     "Combined": sheet("Combined", combined, [{**h, "Instrument Type": "-"} for h in holdings])})
+
+
+def test_holdings_rows_leave_the_buy_date_empty():
+    rows = importers.parse(zerodha_holdings(HOLDING)).rows
+    assert [(r.symbol, r.quantity, r.trade_date) for r in rows] == [("SYNTHA", 14, None)]
+
+
+def test_a_sheet_that_understates_its_size_is_still_read_in_full():
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(zerodha_holdings(HOLDING, HOLDING))) as src, zipfile.ZipFile(out, "w") as dst:
+        for entry in src.infolist():
+            dst.writestr(entry, re.sub(rb'<dimension ref="[^"]*"/>', b'<dimension ref="A1"/>', src.read(entry)))
+    assert len(importers.parse(out.getvalue()).rows) == 2
+
+
+def test_the_sheets_left_unread_are_named():
+    assert importers.parse(zerodha_holdings(HOLDING)).warnings == [
+        "Only the 'Equity' sheet was read, not 'Mutual Funds' or 'Combined'."]
+
+
+def test_pledged_shares_are_shown_in_the_note_not_added_to_the_quantity():
+    row, = importers.parse(zerodha_holdings({**HOLDING, "Quantity Pledged (Margin)": 2})).rows
+    assert row.quantity == 14 and "2 pledged for margin" in row.note
+
+
+def test_a_groww_statement_is_dated_by_its_title():
+    statement = importers.parse(workbook({"Sheet1": [
+        ["Unique Client Code", "X1"], ["Holdings statement for stocks as on 01-09-2026"], [],
+        ["Stock Name", "ISIN", "Quantity", "Average buy price", "Closing price"],
+        ["RELIANCE INDUSTRIES LTD", "INE002A01018", 5, 1300.5, 1400]]}))
+    assert (statement.source, statement.as_of) == ("Groww stocks", date(2026, 9, 1))
+
+
+def test_an_unknown_layout_is_refused_with_the_layouts_we_read():
+    with pytest.raises(ValueError, match="Zerodha holdings: .*Groww stocks: .*Zerodha tradebook: .*CSV template: "):
+        importers.parse(workbook({"Sheet1": [["Name", "Shares"], ["Infosys", 3]]}))
+
+
+def test_a_quantity_that_is_not_a_number_is_refused_with_its_row():
+    with pytest.raises(ValueError, match="Row 9: Quantity Available is 'abc'"):
+        importers.parse(zerodha_holdings({**HOLDING, "Quantity Available": "abc"}))
+
+
+def test_an_excel_file_that_unpacks_past_the_limit_is_refused():
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        with archive.open("xl/worksheets/sheet1.xml", "w") as part:
+            for _ in range(importers.MAX_UNZIPPED // 2**20 + 1):
+                part.write(bytes(2**20))
+    with pytest.raises(ValueError, match="unpacks to"):
+        importers.parse(out.getvalue())
+
+
+def test_a_pdf_statement_is_unsupported_rather_than_misread():
+    with pytest.raises(importers.ImportUnsupported):
+        importers.parse(b"%PDF-1.7\n")
+
+
+def test_the_csv_template_reads_back_what_was_written():
+    text = ("\ufeffsymbol_or_isin,side,quantity,price,trade_date\n"      # Excel starts a UTF-8 CSV with a BOM
+            "INE009A01021,BUY,10,1500.5,2024-01-15\ntcs.ns,sell,2,,\n")
+    rows = importers.parse(text.encode()).rows
+    assert [(r.isin, r.symbol, r.side, r.quantity, r.price, r.trade_date) for r in rows] == [
+        ("INE009A01021", None, "BUY", 10, 1500.5, date(2024, 1, 15)), (None, "TCS.NS", "SELL", 2, None, None)]
+
+
+def test_a_tradebook_keeps_each_trades_side_and_date():
+    text = ("symbol,isin,trade_date,exchange,segment,series,trade_type,auction,quantity,price,trade_id,order_id,"
+            "order_execution_time\n"
+            "INFY,INE009A01021,2024-03-01,NSE,EQ,EQ,sell,false,5,1600.25,1,2,2024-03-01T10:00:00\n")
+    row, = importers.parse(text.encode()).rows
+    assert (row.side, row.trade_date) == ("SELL", date(2024, 3, 1))
+
+
+DIRECTORY = {"INE002A01018": Listing("RELIANCE", "equity_l"), "INE000E01027": Listing("SYNTHB", "equity_l"),
+             "INE155A01022": Listing("TATAMOTORS", "equity_l"), "INE081A01020": Listing("TATASTEEL", "equity_l"),
+             "INE245A01021": Listing("TATAPOWER", "equity_l"), "INE151A01013": Listing("TATACOMM", "equity_l")}
+NAMES = {"RELIANCE": "Reliance Industries", "TATAMOTORS": "Tata Motors", "TATASTEEL": "Tata Steel",
+         "TATAPOWER": "Tata Power Co.", "TATACOMM": "Tata Communications"}
+
+
+def file_row(isin=None, symbol=None, name=None):
+    return importers.Row(line=2, name=name, isin=isin, symbol=symbol, quantity=1.0, price=None, trade_date=None,
+                         side="BUY", note=None)
+
+
+def test_an_isin_maps_to_its_listed_symbol():
+    found, = importers.match([file_row(isin="INE002A01018")], DIRECTORY, NAMES)
+    assert (found.state, found.listing) == ("matched", Listing("RELIANCE", "equity_l"))
+
+
+def test_the_trading_series_is_stripped_from_a_symbol():
+    found, = importers.match([file_row(isin="INE999Z01019", symbol="SYNTHB-BE")], DIRECTORY, NAMES)
+    assert found.listing == Listing("SYNTHB", "equity_l")
+
+
+def test_an_unknown_isin_is_not_found():
+    found, = importers.match([file_row(isin="INE999Z01019", symbol="GONE")], DIRECTORY, NAMES)
+    assert found.state == "not_found"
+
+
+def test_a_name_that_fits_one_company_is_still_only_offered():
+    found, = importers.match([file_row(isin="INE999Z01019", name="TATA MOTORS LTD")], DIRECTORY, NAMES)
+    assert (found.state, found.listing, found.choices) == ("check", None, [Listing("TATAMOTORS", "equity_l")])
+
+
+def test_a_name_offers_at_most_three_choices():
+    found, = importers.match([file_row(name="TATA LTD")], DIRECTORY, NAMES)
+    assert len(found.choices) == 3
+
+
+def test_every_row_is_counted_in_one_state():
+    rows = [file_row(isin="INE002A01018"), file_row(name="Tata Steel Limited"), file_row(symbol="GONE")]
+    assert importers.counts(importers.match(rows, DIRECTORY, NAMES)) == {"matched": 1, "check": 1, "not_found": 1}
