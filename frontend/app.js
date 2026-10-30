@@ -761,7 +761,6 @@ const stockRow = (r, right) => h("a", { href: `#/stock/${encodeURIComponent(r.sy
   h("div", { class: "right" }, right));
 const priceChange = (price, chgPct) => [h("div", { class: "num" }, inr(price)), h("div", { class: `num ${cls(chgPct)}`, style: "font-size:12.5px" }, pct(chgPct))];
 const onOurSide = (e) => !e.status || e.status >= 500;
-// a 4xx's own words say what to change, so they lead; a 5xx or network text is for us, so it waits behind Details
 function errorWords(e) {
   return e.status === 401 ? "Please sign in." : e.status === 403 ? "Confirm your email first." : onOurSide(e) ? "Something went wrong on our side." : e.message;
 }
@@ -786,13 +785,14 @@ function Field(label, input, hint) {
   return field;
 }
 function Dialog(ctx, title, body, [label, run]) {
-  const opener = document.activeElement, titleId = uid("dialog");
+  const opener = document.activeElement, titleId = uid("dialog"), text = typeof body === "string" ? h("p", { id: `${titleId}-text` }, body) : null;
   const main = h("button", { class: "btn primary", type: "submit" }, label), problem = h("p", { class: "dialog-error", role: "alert" });
-  const close = () => { document.removeEventListener("keydown", onKeydown); bg.remove(); if (opener && opener.isConnected) opener.focus(); };
+  const close = () => { if (!bg.isConnected) return; document.removeEventListener("keydown", onKeydown); bg.remove(); if (opener && opener.isConnected) opener.focus(); };
   const cancel = h("button", { class: "btn", type: "button", onclick: close }, "Cancel");
   const form = h("form", { class: "form", novalidate: true, onsubmit: async (e) => {
     e.preventDefault(); main.disabled = true; problem.textContent = ""; for (const f of form.querySelectorAll(".field")) f.showError(null);
     try { await run(); close(); } catch (err) {
+      if (!bg.isConnected) return toast(`${label} failed: ${errorWords(err)}`);
       main.disabled = false;
       const refused = [], unplaced = [];
       for (const d of Array.isArray(err.detail) ? err.detail : []) {
@@ -802,9 +802,9 @@ function Dialog(ctx, title, body, [label, run]) {
       problem.textContent = refused.length ? unplaced.join("; ") : errorWords(err);
       (refused[0] || main).focus();
     } } },
-    h("h2", { id: titleId }, title), body, problem,
+    h("h2", { id: titleId }, title), text || body, problem,
     h("div", { class: "row", style: "justify-content:flex-end" }, cancel, main));
-  const box = h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-labelledby": titleId, tabindex: "-1" }, form);
+  const box = h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-labelledby": titleId, "aria-describedby": text && text.id, tabindex: "-1" }, form);
   const bg = h("div", { class: "modal-bg", onclick: (e) => { if (e.target === bg) close(); } }, box);
   const onKeydown = (e) => {
     if (e.key === "Escape") return close();
@@ -1051,7 +1051,7 @@ async function pagePortfolio(view, ctx) {
   const txs = h("div", { class: "card" }, h("h3", {}, "Transactions"), h("table", {},
     h("tr", {}, h("th", {}, "Date"), h("th", {}, "Stock"), h("th", {}, "Type"), h("th", { class: "r" }, "Qty"), h("th", { class: "r" }, "Price"), h("th", {})),
     ...p.transactions.map((t, i) => h("tr", {}, h("td", {}, t.trade_date), h("td", {}, t.symbol), h("td", { class: t.side === "BUY" ? "up" : "down" }, t.side), h("td", { class: "r num" }, num(t.quantity, 0)), h("td", { class: "r num" }, inr(t.price)),
-      h("td", { class: "r" }, h("button", { class: "btn small", onclick: () => Dialog(ctx, "Delete this transaction?", h("p", {}, `${t.side} ${num(t.quantity, 0)} ${t.symbol} at ${inr(t.price)} on ${t.trade_date}.`),
+      h("td", { class: "r" }, h("button", { class: "btn small", onclick: () => Dialog(ctx, "Delete this transaction?", `${t.side} ${num(t.quantity, 0)} ${t.symbol} at ${inr(t.price)} on ${t.trade_date}.`,
         ["Delete", async () => { await api(`/portfolio/transactions/${i}`, { method: "DELETE" }); route(); }]) }, "Delete"))))));
   view.replaceChildren(summary, h("div", { style: "margin-top:18px" }, histCard), h("div", { class: "grid cols-2", style: "margin-top:18px" }, h("div", { class: "grid" }, holdings, txs), h("div", { class: "grid", style: "align-content:start" }, alloc, risk)),
     h("p", { class: "footer-note" }, `As of ${rep.as_of}. ${rep.assumptions.join(" ")}`));
@@ -1283,7 +1283,7 @@ async function pageBuilder(view, ctx) {
     const warn = b.warnings.length ? h("div", { class: "card" }, h("h3", {}, "Heads-up"), h("ul", { class: "checks con" }, ...b.warnings.map((w) => h("li", {}, w)))) : null;
     if (!b.holdings.length) { out.replaceChildren(EmptyState("layers", "No stock to buy with these settings", null, null), warn || ""); return; }
     const r = b.risk, maxW = Math.max(...b.holdings.map((x) => x.weight_pct));
-    const apply = () => Dialog(ctx, "Add these stocks to your portfolio?", h("p", {}, `This adds ${b.holdings.length} BUY transactions dated today. Do this after you have actually bought them.`), ["Add to portfolio", async () => {
+    const apply = () => Dialog(ctx, "Add these stocks to your portfolio?", `This adds ${b.holdings.length} BUY transactions dated today. Do this after you have actually bought them.`, ["Add to portfolio", async () => {
       await api("/ui/builder/apply", { method: "POST", body: JSON.stringify({ holdings: b.holdings.map((x) => ({ symbol: x.symbol, shares: x.shares, price: x.price })) }) });
       toast("Added to your portfolio"); location.hash = "#/portfolio"; }]);
     const kpi = (k, v, sub, c = "") => h("div", { class: "stat kpi" }, h("div", { class: "k" }, k), h("div", { class: `v num ${c}` }, v), h("div", { class: "muted", style: "font-size:12px" }, sub));
