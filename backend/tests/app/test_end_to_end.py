@@ -16,6 +16,7 @@ from backend.advisory.calculators.screener import screen
 from backend.advisory.service import AnalysisService
 
 from .conftest import NOW
+from .test_funds import NAV_TEXT, growing, mfapi_json
 from .test_nlu_llm import _Picker
 
 KEY = "k" * 24
@@ -1058,3 +1059,82 @@ def test_a_vague_question_is_not_answered_with_an_unrelated_lesson(orch, monkeyp
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
     for question in ("is it a good day", "anything new", "what is going on out there?"):
         assert orch.handle(question, "vague").data["no_answer"], question
+
+
+@pytest.fixture
+def funds_served(tmp_path, monkeypatch):
+    from backend.database.sources import amfi
+    from backend.database.sources.provider import DataUnavailable
+    on = lambda nav_on_29_oct: growing(6) * (nav_on_29_oct / growing(6).iloc[-1])  # noqa: E731
+    pages = {amfi.NAV_URL: NAV_TEXT, amfi.HISTORY_URL.format(code=118989): mfapi_json(118989, on(210.512)),
+             amfi.HISTORY_URL.format(code=118990): mfapi_json(118990, on(70.2)),
+             amfi.HISTORY_URL.format(code=105758): mfapi_json(105758, on(150.0)),
+             amfi.HISTORY_URL.format(code=148304): mfapi_json(148304, growing(6) * 0)}
+
+    def download(url):
+        if url not in pages:
+            raise DataUnavailable(f"could not download {url}: 404")
+        return pages[url]
+    monkeypatch.setattr(amfi, "NAV_FILE", tmp_path / "navall.txt")
+    monkeypatch.setattr(amfi, "HISTORY_DIR", tmp_path / "mfapi")
+    monkeypatch.setattr(amfi, "_download", download)
+    return pages
+
+
+def test_fund_search_lists_each_fund_once_with_its_plans(app_client, funds_served):
+    r = app_client.get("/ui/funds/search?q=hdfc mid", headers={"X-API-Key": KEY}).json()
+    assert [f["fund"] for f in r["funds"]] == ["HDFC Mid Cap Fund", "HDFC NIFTY Midcap 150 Index Fund"]
+    assert r["funds"][0]["plans"][0] == {"code": 118989, "plan": "Direct Plan", "option": "Growth Option",
+                                         "nav": 210.512, "nav_date": "2026-10-29", "is_ambiguous": False}
+
+
+@pytest.mark.parametrize("q", ["", "h"])
+def test_fund_search_refuses_an_empty_or_one_letter_query_even_while_amfi_is_down(app_client, funds_served, q):
+    from backend.database.sources import amfi
+    del funds_served[amfi.NAV_URL]
+    r = app_client.get(f"/ui/funds/search?q={q}", headers={"X-API-Key": KEY})
+    assert r.status_code == 400 and "at least 2 letters" in r.json()["detail"]
+
+
+def test_fund_page_gives_amfi_facts_and_labels_the_history_unofficial(app_client, funds_served):
+    r = app_client.get("/ui/funds/118989", headers={"X-API-Key": KEY}).json()
+    assert (r["scheme"]["fund"], r["scheme"]["nav"], r["scheme"]["nav_date"]) == ("HDFC Mid Cap Fund", 210.512, "2026-10-29")
+    assert r["analytics"]["returns"]["5Y"]["pct"] == pytest.approx(10.0)
+    assert "unofficial" in r["source"]["history"] and r["summary"].startswith("Over the last 5 years")
+    assert len(r["history"]["dates"]) == len(r["history"]["nav"]) == len(growing(6))
+
+
+def test_fund_page_without_history_still_gives_the_official_nav_and_says_why(app_client, funds_served):
+    r = app_client.get("/ui/funds/105759", headers={"X-API-Key": KEY}).json()
+    assert r["scheme"]["nav"] == 60.3 and r["analytics"] is None and "mf/105759" in r["history_error"]
+
+
+def test_a_history_that_disagrees_with_amfis_nav_is_not_charted(app_client, funds_served):
+    r = app_client.get("/ui/funds/105758", headers={"X-API-Key": KEY}).json()
+    assert r["history"] is None and "150.0" in r["history_error"] and "190.1" in r["history_error"]
+
+
+def test_a_history_that_matches_amfis_nav_says_so(app_client, funds_served):
+    r = app_client.get("/ui/funds/118989", headers={"X-API-Key": KEY}).json()
+    assert r["history_check"] == "matches AMFI's NAV on 2026-10-29"
+
+
+def test_an_idcw_plans_figures_say_its_payouts_are_left_out(app_client, funds_served):
+    r = app_client.get("/ui/funds/118990", headers={"X-API-Key": KEY}).json()
+    assert r["analytics"]["is_total_return"] is False and "not list this as a Growth option" in r["summary"]
+
+
+def test_fund_page_for_a_portfolio_carried_at_zero_gives_amfis_facts_and_no_return(app_client, funds_served):
+    r = app_client.get("/ui/funds/148304", headers={"X-API-Key": KEY})
+    assert r.status_code == 200 and r.json()["scheme"]["nav"] == 0.0 and r.json()["analytics"] is None
+    assert "not above zero" in r.json()["history_error"]
+
+
+def test_an_unknown_fund_code_is_a_404_that_says_how_to_find_one(app_client, funds_served):
+    r = app_client.get("/ui/funds/999999", headers={"X-API-Key": KEY})
+    assert r.status_code == 404 and "999999" in r.json()["detail"] and "/ui/funds/search" in r.json()["detail"]
+
+
+def test_fund_routes_refuse_anonymous_callers(app_client, funds_served):
+    for path in ("/ui/funds/search?q=hdfc", "/ui/funds/118989"):
+        assert app_client.get(path).status_code == 401, path

@@ -388,6 +388,7 @@ def cmd_evaluate_signals(args) -> int:
     import yfinance as yf
     from backend.database.sources.panel import universe_panel
     from backend.advisory.signals import evaluate as E
+    from backend.advisory.statistics.quant import calendar_cagr
     panel = universe_panel("nifty500", "10y")
     bm = {}
     for t, name in [("^NSEI", "Nifty 50 (price)"), ("^CRSLDX", "Nifty 500 (price)"),
@@ -407,8 +408,7 @@ def cmd_evaluate_signals(args) -> int:
     a, b = etf.index[0], etf.index[-1]
 
     def cagr(s):
-        s = s.loc[a:b].dropna()
-        return ((s.iloc[-1] / s.iloc[0]) ** (365.25 / (s.index[-1] - s.index[0]).days) - 1) * 100
+        return calendar_cagr(s.loc[a:b].dropna()) * 100
     print(f"\nSurvivorship check over the live ETF's life ({a.date()} → {b.date()}):")
     print(f"  real momentum ETF {cagr(etf):.1f}% vs Nifty 500 price index {cagr(bm['Nifty 500 (price)']):.1f}% "
           f"→ gap {cagr(etf) - cagr(bm['Nifty 500 (price)']):+.1f} pts/yr. {performance.NO_DIVIDENDS_NOTE}")

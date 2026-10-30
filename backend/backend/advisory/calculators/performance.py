@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from backend.advisory.statistics import forecast
+from backend.advisory.statistics.quant import calendar_cagr
 from backend.advisory.statistics.stats import auc, brier, norm_ppf
 from backend.config import FORECAST_DAYS
 from backend.database.sources.panel import CACHE_DIR, universe_panel
@@ -94,8 +95,7 @@ def _momentum(bench_symbols: Dict[str, pd.Series]) -> Dict[str, Any]:
     a, b = etf.index[0], etf.index[-1]
 
     def cagr(s: pd.Series) -> float:
-        s = s.loc[a:b].dropna()
-        return round(float(((s.iloc[-1] / s.iloc[0]) ** (365.25 / (s.index[-1] - s.index[0]).days) - 1) * 100), 2)
+        return round(calendar_cagr(s.loc[a:b].dropna()) * 100, 2)
     yearly = []
     for y in range(a.year + 1, b.year + 1):
         e_, n_ = etf.loc[str(y)], bench_symbols["^CRSLDX"].loc[str(y)]
