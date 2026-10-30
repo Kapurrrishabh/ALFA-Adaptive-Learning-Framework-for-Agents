@@ -20,6 +20,9 @@ dependencies = [
     "httpx>=0.27",
     "websockets>=13",
     "curl_cffi>=0.10",
+    # sign-in; 15.x is in maintenance mode (security fixes only), so a 16 needs a deliberate look first
+    "fastapi-users[sqlalchemy,oauth]>=15.0.5,<16",
+    "aiosqlite>=0.22",
 ]
 
 [project.optional-dependencies]
