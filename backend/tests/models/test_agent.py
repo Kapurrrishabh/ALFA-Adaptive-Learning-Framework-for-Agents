@@ -1110,13 +1110,26 @@ def test_a_writer_sentence_no_passage_entails_serves_the_plain_answer_and_names_
 
 
 @pytest.mark.parametrize("reply", ["Reliance Industries commissioned its new refinery unit. (Mint, 6 Oct 2026)",
-                                   "Reliance Industries (RIL) commissioned its new refinery unit (Mint, 6 Oct 2026)."])
-def test_a_source_in_brackets_is_not_read_as_a_claim(market, router, reply):
+                                   "Reliance Industries commissioned its new refinery unit (Mint, 6 Oct 2026).",
+                                   "Refinery stocks moved after the new unit (Mint, 6 Oct 2026; ET, 7 Oct 2026)."])
+def test_a_source_in_brackets_that_a_passage_names_is_not_read_as_a_claim(market, router, reply):
     """Read alone, "(Mint, 6 Oct 2026)" scored as low as 0.002 against the passage it names, and a sentence carrying its
     source failed against the passage sentence that said it word for word."""
-    built = news_reference(FakeWriter(reply), entails=lambda pairs: [0.0 if "(" in said else 1.0 for _, said in pairs])
+    moved = Chunk("ET, 7 Oct 2026: Refinery stocks moved.", [], "https://n.test/moved", "2026-10-07")
+    built = news_reference(FakeWriter(reply), news=(NEWS, moved),
+                           entails=lambda pairs: [0.0 if "(" in said else 1.0 for _, said in pairs])
     turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
     assert turn.served == reply and turn.phrased_by == "test-lm"
+
+
+@pytest.mark.parametrize("reply", ["Reliance Industries commissioned its new refinery unit (its biggest in years).",
+                                   "Reliance Industries commissioned its new refinery unit (Mint, 6 Oct 2026). "
+                                   "(Two more units are planned.)"])
+def test_a_claim_in_brackets_that_no_passage_entails_serves_the_plain_answer(market, router, reply):
+    """"TCS shares fell 2% (their worst day in years)" was served: each bracket was left out before the gate read it."""
+    from backend.models.agent import phrase
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply), entails=literal)).answer(ASKED_YES_NO)
+    assert turn.served == phrase.recent_plain(None, None, [NEWS]) and "no passage says" in turn.unphrased_because
 
 
 def test_a_reply_that_only_names_a_source_serves_the_plain_answer(market, router):

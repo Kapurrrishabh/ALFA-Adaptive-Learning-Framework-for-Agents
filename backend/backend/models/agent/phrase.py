@@ -44,10 +44,10 @@ _DECLINES = re.compile(r"\bnone\.?\s*$|\b(does|do|did) not (provide|say|mention|
                        r"\bno (information|mention|reason|details?)\b|\bnot (\w+ly )?(mentioned|provided|specified)\b", re.I)
 # a yes or no in place of the report the prompt asks for: "NO" for "are it stocks falling"
 _BARE_VERDICT = re.compile(r"^\W*(yes|no)\s*([,.;:!]|$)", re.I)
-# Provisional, on sentence.entailment's scale. On 104 replies, 40 by the writer for user questions and 64 written to
-# test it, the gate was as accurate anywhere from 0.5 to 0.8; more labelled writer replies would place it.
+# Provisional, on sentence.entailment's scale. On 124 replies, 40 by the writer for user questions and 84 written to
+# test it, 0.5 to 0.7 were right on 115 and 0.85 on 117, too narrow a gain to fit; more writer replies would place it.
 ENTAILED = 0.5
-_BRACKETED = re.compile(r"\s*\([^()]*\)")
+_BRACKETED = re.compile(r"\s*\(([^()]*)\)")
 # a size the draft never gives: "Infosys is quite volatile" for a draft that gave the figure alone
 _SIZES = re.compile(r"\b(a lot|quite|very|highly|extremely|fairly|significant(ly)?|moderate(ly)?|sharp(ly)?|little)\b",
                     re.I)
@@ -149,9 +149,12 @@ def _ask(writer, system, content):
 
 def _unentailed(text, sources, entails):
     """Why `text` says something no source entails, sentence by sentence, or nothing when every sentence is entailed."""
-    # Brackets hold a source or a gloss that no sentence of a passage states: "(Mint, 6 Oct 2026)" scored 0.002 alone,
-    # and kept on its sentence it failed 3 of 21 faithful writer replies. The figure check still reads them.
-    claims = [claim for claim in (_BRACKETED.sub("", part).strip() for part in sentences(text))
+    # Only a bracket the passages hold word for word is left out, which is a source: "(Mint, 6 Oct 2026)" scored
+    # 0.002 alone and failed 3 of 21 faithful replies kept on its sentence. Any other, "(it will keep falling)", is a claim.
+    held = " ".join(sources)
+    cited = lambda bracket: "" if all(re.search(rf"(?<!\w){re.escape(source.strip())}(?!\w)", held)
+                                      for source in bracket.group(1).split(";")) else bracket.group(0)
+    claims = [claim for claim in (_BRACKETED.sub(cited, part).strip() for part in sentences(text))
               if re.search(r"\w", claim)]
     if not claims:
         return ["it states nothing a passage could support"]
