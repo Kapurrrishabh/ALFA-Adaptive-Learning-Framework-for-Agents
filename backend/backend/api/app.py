@@ -270,6 +270,14 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     def ui_insider(t: str):
         return ok(hub.insider(ticker(t)))
 
+    @app.get("/ui/funds/search", dependencies=[Depends(auth)])
+    def ui_fund_search(q: str = Query(default="", max_length=80)):
+        return ok(hub.fund_search(q))
+
+    @app.get("/ui/funds/{code}", dependencies=[Depends(auth)])
+    def ui_fund(code: int):
+        return ok(hub.fund(code))
+
     @app.post("/portfolio/transactions", dependencies=[Depends(auth)])
     def add_transaction(tx: TransactionIn):
         p = orch.store.portfolio(orch.portfolio_name) or {"cash": 0.0, "risk_profile": "moderate",

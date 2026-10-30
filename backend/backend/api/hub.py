@@ -327,6 +327,29 @@ class Hub:
                  "value_cr": round(float(r.value) / 1e7, 2), "shares": r.shares}
                 for r in mine.iloc[:limit].itertuples()]
 
+    # --- mutual funds ----------------------------------------------------------------------
+    def fund_search(self, q: str) -> Dict[str, Any]:
+        from backend.database.sources import amfi
+        return {"query": q, "funds": amfi.search(amfi.schemes(), q), "source": amfi.NAV_SOURCE}
+
+    def fund(self, code: int) -> Dict[str, Any]:
+        """One scheme's AMFI facts and latest NAV, with its record from the NAV history when mfapi.in has it."""
+        from dataclasses import asdict
+        from backend.advisory.calculators import funds
+        from backend.database.sources import amfi
+        scheme = next((s for s in amfi.schemes() if s.code == code), None)
+        if scheme is None:
+            raise DataUnavailable(f"no scheme with AMFI code {code} has a NAV in the last {amfi.LIVE_DAYS} days; "
+                                  "find the fund's code with /ui/funds/search")
+        out = {"scheme": asdict(scheme), "source": {"nav": amfi.NAV_SOURCE, "history": amfi.HISTORY_SOURCE}}
+        try:
+            nav = amfi.history(code)
+        except DataUnavailable as exc:      # the official facts still stand without the unofficial history
+            return {**out, "analytics": None, "summary": None, "history": None, "history_error": str(exc)}
+        figures = funds.analytics(nav)
+        return {**out, "analytics": figures, "summary": funds.summary(figures), "history_error": None,
+                "history": {"dates": [str(d.date()) for d in nav.index], "nav": [float(x) for x in nav]}}
+
     # --- verdict --------------------------------------------------------------------------
     def verdict(self, symbol: str) -> Dict[str, Any]:
         sym = symbol.upper()
