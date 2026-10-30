@@ -804,10 +804,11 @@ function Segmented(options, current, onPick) {
 function Tabs(className, label, names, onPick) {
   const panel = h("div", { role: "tabpanel", id: uid("panel") });
   const tabs = names.map((k, i) => h("button", { role: "tab", id: `${panel.id}-${i}`, "aria-controls": panel.id, onclick: () => pick(i) }, k));
+  let picks = 0;
   const pick = (i) => { tabs.forEach((b, j) => { b.setAttribute("aria-selected", String(i === j)); b.tabIndex = i === j ? 0 : -1; });
-    panel.setAttribute("aria-labelledby", tabs[i].id); onPick(names[i], panel); };
+    const mine = ++picks; panel.setAttribute("aria-labelledby", tabs[i].id); onPick(names[i], panel, () => mine === picks); };
   const list = h("div", { class: className, role: "tablist", "aria-label": label, onkeydown: (e) => { const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
-    if (step) { const i = (tabs.indexOf(e.target) + step + tabs.length) % tabs.length; pick(i); tabs[i].focus(); } } }, ...tabs);
+    if (step) { e.preventDefault(); const i = (tabs.indexOf(e.target) + step + tabs.length) % tabs.length; pick(i); tabs[i].focus(); } } }, ...tabs);
   return { list, panel, show: (k) => pick(names.indexOf(k)) };
 }
 function Dialog(ctx, title, body, [label, run]) {
@@ -918,7 +919,8 @@ async function pageStock(view, ctx) {
   const built = {}, chart = Tabs("mode-tabs", "Chart", Object.keys(modes), (k, panel) => { built[k] = built[k] || modes[k](); panel.replaceChildren(built[k]); built[k].redraw(); });
   chartCard.replaceChildren(chart.list, chart.panel); chart.show("Technical");
   const panes = { Overview: () => overviewPane(o), Research: () => researchPane(ctx, sym), News: () => newsPane(ctx, sym), Insider: () => insiderPane(ctx, sym) };
-  const details = Tabs("tabs", "Details", Object.keys(panes), (k, pane) => { pane.replaceChildren(skel(100)); Promise.resolve(panes[k]()).then((el) => pane.replaceChildren(el)).catch((e) => pane.replaceChildren(ErrorState(e, () => details.show(k)))); });
+  const details = Tabs("tabs", "Details", Object.keys(panes), (k, pane, current) => { pane.replaceChildren(skel(100));
+    Promise.resolve(panes[k]()).then((el) => current() && pane.replaceChildren(el)).catch((e) => current() && pane.replaceChildren(ErrorState(e, () => details.show(k)))); });
   tabsCard.replaceChildren(details.list, details.panel); details.show("Overview");
   api(`/ui/stock/${encodeURIComponent(sym)}/analyst`, { signal: ctx.signal }).then((a) => analystCard.replaceChildren(h("div", { class: "panel-title" }, "Analyst note"),
     h("p", { class: "analyst-text" }, a.text),

@@ -292,6 +292,24 @@ def test_tab_from_the_chosen_chart_tab_goes_into_its_chart(browser, base_url):
     assert tab.page.evaluate("document.activeElement.closest('[role=tabpanel]') !== null")
 
 
+def test_a_late_answer_for_a_details_tab_arrowed_past_does_not_replace_the_one_shown(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    held = []
+    tab.go("#/stock/TEST")
+    tab.page.route("**/stocks/TEST/analysis", lambda route: held.append(route))
+    tab.page.get_by_role("tab", name="Overview").focus()
+    tab.page.keyboard.press("ArrowRight")
+    tab.wait_until(lambda: held)
+    tab.page.keyboard.press("ArrowRight")
+    news = tab.page.get_by_text("No recent news found.").or_(tab.page.get_by_text("News unavailable"))
+    news.wait_for()
+    for route in held:
+        route.continue_()
+    tab.settle()
+    assert tab.page.get_by_role("tab", selected=True).all_inner_texts()[-1] == "News" and news.count() == 1
+    assert tab.page.get_by_text("Every engine's evidence").count() == 0
+
+
 def test_a_sector_left_out_of_the_basket_is_announced_as_pressed(browser, base_url):
     tab = Tab(browser, base_url, 1366)
     tab.go("#/builder")
