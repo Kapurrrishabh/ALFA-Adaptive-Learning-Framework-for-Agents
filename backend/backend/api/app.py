@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from backend.advisory import report as R
 from backend.advisory.calculators.backtest import strategies as S
-from backend.config import FORECAST_DAYS, resolve_symbol
+from backend.config import DEFAULT_PORTFOLIO, FORECAST_DAYS, resolve_symbol
 from backend.database.sources.provider import DataUnavailable
 from backend.database.sources.quality import DataQualityError
 from backend.api.jsonutil import sanitize
@@ -117,7 +117,7 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
             raise HTTPException(401, "missing or invalid X-API-Key header")
         if not bucket.allow(x_api_key):
             raise HTTPException(429, f"rate limit of {RATE_PER_MIN} requests/minute exceeded")
-        return x_api_key
+        return DEFAULT_PORTFOLIO
 
     @app.exception_handler(DataUnavailable)
     async def _unavailable(_: Request, exc: DataUnavailable):
@@ -140,8 +140,8 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     def ok(obj: Any) -> JSONResponse:
         return JSONResponse(sanitize(obj))
 
-    def session():
-        return orch.session("api")
+    def session(owner: str):
+        return orch.session(owner, "api")
 
     @app.get("/health")
     def health():
@@ -186,9 +186,9 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     def ui_chart(t: str, range: str = "1Y"):
         return ok(hub.chart(ticker(t), range))
 
-    @app.get("/ui/stock/{t}/verdict", dependencies=[Depends(auth)])
-    def ui_verdict(t: str):
-        return ok(hub.verdict(ticker(t)))
+    @app.get("/ui/stock/{t}/verdict")
+    def ui_verdict(t: str, owner: str = Depends(auth)):
+        return ok(hub.verdict(ticker(t), session(owner)))
 
     @app.get("/ui/stock/{t}/technical", dependencies=[Depends(auth)])
     def ui_technical(t: str, bars: int = Query(default=180, ge=20, le=750), horizon: int = Query(default=FORECAST_DAYS, ge=5, le=60)):
@@ -210,9 +210,9 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     def ui_ticker():
         return ok(hub.ticker())
 
-    @app.get("/ui/stock/{t}/analyst", dependencies=[Depends(auth)])
-    def ui_analyst(t: str):
-        return ok(hub.analyst_note(ticker(t)))
+    @app.get("/ui/stock/{t}/analyst")
+    def ui_analyst(t: str, owner: str = Depends(auth)):
+        return ok(hub.analyst_note(ticker(t), session(owner)))
 
     @app.get("/ui/sectors", dependencies=[Depends(auth)])
     def ui_sectors():
@@ -244,25 +244,26 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
                    exclude: str = ""):
         return ok(hub.build_portfolio(capital, strategy, risk, n, [x for x in exclude.split(",") if x]))
 
-    @app.post("/ui/builder/apply", dependencies=[Depends(auth)])
-    def ui_builder_apply(body: BuilderApplyIn):
-        p = orch.store.portfolio(orch.portfolio_name) or {"cash": 0.0, "risk_profile": "moderate",
-                                                         "horizon": "medium", "transactions": []}
-        today = date.today().isoformat()
-        txs = p["transactions"] + [{"symbol": h.symbol, "side": "BUY", "quantity": h.shares, "price": h.price,
-                                    "trade_date": today} for h in body.holdings]
-        n = orch.save_portfolio(p["cash"], p["risk_profile"], p["horizon"], txs)
+    @app.post("/ui/builder/apply")
+    def ui_builder_apply(body: BuilderApplyIn, owner: str = Depends(auth)):
+        with orch.portfolio_lock(owner):
+            p = orch.store.portfolio(owner) or {"cash": 0.0, "risk_profile": "moderate",
+                                                "horizon": "medium", "transactions": []}
+            today = date.today().isoformat()
+            txs = p["transactions"] + [{"symbol": h.symbol, "side": "BUY", "quantity": h.shares, "price": h.price,
+                                        "trade_date": today} for h in body.holdings]
+            n = orch.save_portfolio(owner, p["cash"], p["risk_profile"], p["horizon"], txs)
         return {"status": "saved", "transactions": n}
 
     @app.get("/ui/agent/status", dependencies=[Depends(auth)])
     def ui_agent_status():
         return agent_client.status()
 
-    @app.post("/ui/agent/ask", dependencies=[Depends(auth)])
-    def ui_agent_ask(body: ChatIn):
+    @app.post("/ui/agent/ask")
+    def ui_agent_ask(body: ChatIn, owner: str = Depends(auth)):
         from backend.models.agent.client import AgentUnavailable
         try:
-            return ok(agent_client.ask(body.message, "", session=body.session_id))
+            return ok(agent_client.ask(body.message, "", session=owner + ":" + body.session_id))
         except AgentUnavailable as exc:
             raise HTTPException(503, str(exc)) from None
 
@@ -278,28 +279,31 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     def ui_fund(code: int):
         return ok(hub.fund(code))
 
-    @app.post("/portfolio/transactions", dependencies=[Depends(auth)])
-    def add_transaction(tx: TransactionIn):
-        p = orch.store.portfolio(orch.portfolio_name) or {"cash": 0.0, "risk_profile": "moderate",
-                                                         "horizon": "medium", "transactions": []}
-        txs = p["transactions"] + [{**tx.model_dump(), "trade_date": tx.trade_date.isoformat()}]
-        n = orch.save_portfolio(p["cash"], p["risk_profile"], p["horizon"], txs)
+    @app.post("/portfolio/transactions")
+    def add_transaction(tx: TransactionIn, owner: str = Depends(auth)):
+        with orch.portfolio_lock(owner):
+            p = orch.store.portfolio(owner) or {"cash": 0.0, "risk_profile": "moderate",
+                                                "horizon": "medium", "transactions": []}
+            txs = p["transactions"] + [{**tx.model_dump(), "trade_date": tx.trade_date.isoformat()}]
+            n = orch.save_portfolio(owner, p["cash"], p["risk_profile"], p["horizon"], txs)
         return {"status": "saved", "transactions": n}
 
-    @app.delete("/portfolio/transactions/{index}", dependencies=[Depends(auth)])
-    def delete_transaction(index: int):
-        p = orch.store.portfolio(orch.portfolio_name)
-        if p is None or not 0 <= index < len(p["transactions"]):
-            raise HTTPException(404, f"no transaction #{index}")
-        txs = [t for i, t in enumerate(p["transactions"]) if i != index]
-        n = orch.save_portfolio(p["cash"], p["risk_profile"], p["horizon"], txs)
+    @app.delete("/portfolio/transactions/{index}")
+    def delete_transaction(index: int, owner: str = Depends(auth)):
+        with orch.portfolio_lock(owner):
+            p = orch.store.portfolio(owner)
+            if p is None or not 0 <= index < len(p["transactions"]):
+                raise HTTPException(404, f"no transaction #{index}")
+            txs = [t for i, t in enumerate(p["transactions"]) if i != index]
+            n = orch.save_portfolio(owner, p["cash"], p["risk_profile"], p["horizon"], txs)
         return {"status": "deleted", "transactions": n}
 
-    @app.post("/portfolio/cash", dependencies=[Depends(auth)])
-    def set_cash(body: CashIn):
-        p = orch.store.portfolio(orch.portfolio_name) or {"risk_profile": "moderate", "horizon": "medium",
-                                                         "transactions": []}
-        orch.save_portfolio(body.cash, body.risk_profile, body.horizon, p["transactions"])
+    @app.post("/portfolio/cash")
+    def set_cash(body: CashIn, owner: str = Depends(auth)):
+        with orch.portfolio_lock(owner):
+            p = orch.store.portfolio(owner) or {"risk_profile": "moderate", "horizon": "medium",
+                                                "transactions": []}
+            orch.save_portfolio(owner, body.cash, body.risk_profile, body.horizon, p["transactions"])
         return {"status": "saved"}
 
     @app.get("/search", dependencies=[Depends(auth)])
@@ -319,14 +323,14 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
         return ok({"symbol": t, "provider_symbol": resolve_symbol(t), "last_close": float(df["close"].iloc[-1]),
                    "as_of": str(df.index[-1].date()), "profile": {k: info.get(k, "Data unavailable") for k in keep}})
 
-    @app.get("/stocks/{t}/analysis", dependencies=[Depends(auth)])
-    def analysis(t: str, horizon: Literal["short", "medium", "long"] = "medium"):
-        a = orch.analysis(session(), ticker(t), horizon=horizon)
+    @app.get("/stocks/{t}/analysis")
+    def analysis(t: str, horizon: Literal["short", "medium", "long"] = "medium", owner: str = Depends(auth)):
+        a = orch.analysis(session(owner), ticker(t), horizon=horizon)
         return ok({**a.to_dict(), "text": R.render_analysis(a)})
 
-    @app.get("/stocks/{t}/chart", dependencies=[Depends(auth)])
-    def chart(t: str, bars: int = Query(default=260, ge=30, le=1500)):
-        a = orch.analysis(session(), ticker(t))
+    @app.get("/stocks/{t}/chart")
+    def chart(t: str, bars: int = Query(default=260, ge=30, le=1500), owner: str = Depends(auth)):
+        a = orch.analysis(session(owner), ticker(t))
         df = orch.service().history(t).iloc[-bars:]
         close = orch.service().history(t)["close"]
         sma50, sma200 = close.rolling(50).mean().iloc[-bars:], close.rolling(200).mean().iloc[-bars:]
@@ -348,72 +352,73 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
         res = S.compare(df, strategies, start=start)
         return ok({k: v for k, v in res.items() if k != "results"})
 
-    @app.get("/stocks/{t}/{domain}", dependencies=[Depends(auth)])
-    def domain(t: str, domain: str):
+    @app.get("/stocks/{t}/{domain}")
+    def domain(t: str, domain: str, owner: str = Depends(auth)):
         dom = DOMAIN_ALIASES.get(domain, domain)
         if dom not in DOMAINS:
             raise HTTPException(404, f"unknown domain {domain!r}; choose from {sorted(DOMAINS)}")
-        a = orch.analysis(session(), ticker(t))
+        a = orch.analysis(session(owner), ticker(t))
         return ok({"symbol": a.symbol, "analysis_timestamp": a.analysis_timestamp,
                    "result": a.results[dom].to_dict(), "text": R.render_domain(a, dom)})
 
-    @app.get("/compare", dependencies=[Depends(auth)])
-    def compare(symbols: str = Query(description="comma-separated, 2-6 tickers")):
+    @app.get("/compare")
+    def compare(symbols: str = Query(description="comma-separated, 2-6 tickers"), owner: str = Depends(auth)):
         syms = [ticker(s) for s in symbols.split(",") if s.strip()]
         if not 2 <= len(syms) <= 6:
             raise HTTPException(400, "compare needs 2 to 6 symbols")
-        analyses = [orch.analysis(session(), s) for s in syms]
+        analyses = [orch.analysis(session(owner), s) for s in syms]
         return ok({"text": R.render_compare(analyses),
                    "items": [{"symbol": a.symbol, "decision": a.decision.to_dict()} for a in analyses]})
 
-    @app.get("/screener", dependencies=[Depends(auth)])
+    @app.get("/screener")
     def screener(budget: float = Query(gt=0, lt=1e10),
                  risk_profile: Literal["conservative", "moderate", "aggressive"] = "moderate",
                  horizon: Literal["short", "medium", "long"] = "medium",
-                 exclude: str = "", include: str = ""):
-        positions, _, _ = orch.holdings()
+                 exclude: str = "", include: str = "", owner: str = Depends(auth)):
+        positions, _, _ = orch.holdings(owner)
         res = screen(orch.service(), budget, risk_profile, horizon, positions,
                      include_sectors=[s for s in include.split(",") if s],
                      exclude_sectors=[s for s in exclude.split(",") if s])
         return ok({**{k: v for k, v in res.items() if k != "also_scored"}, "text": R.render_screen(res)})
 
-    @app.get("/portfolio", dependencies=[Depends(auth)])
-    def portfolio():
-        p = orch.store.portfolio(orch.portfolio_name)
+    @app.get("/portfolio")
+    def portfolio(owner: str = Depends(auth)):
+        p = orch.store.portfolio(owner)
         if p is None:
             raise HTTPException(404, "no portfolio stored; POST /portfolio first")
         return ok(p)
 
-    @app.post("/portfolio", dependencies=[Depends(auth)])
-    def set_portfolio(body: PortfolioIn):
-        n = orch.save_portfolio(body.cash, body.risk_profile, body.horizon, [
-            {**t.model_dump(), "trade_date": t.trade_date.isoformat()} for t in body.transactions])
+    @app.post("/portfolio")
+    def set_portfolio(body: PortfolioIn, owner: str = Depends(auth)):
+        with orch.portfolio_lock(owner):
+            n = orch.save_portfolio(owner, body.cash, body.risk_profile, body.horizon, [
+                {**t.model_dump(), "trade_date": t.trade_date.isoformat()} for t in body.transactions])
         return {"status": "saved", "transactions": n}
 
-    @app.get("/portfolio/analysis", dependencies=[Depends(auth)])
-    def portfolio_analysis():
-        rep, *_ = orch.portfolio_report(session())
+    @app.get("/portfolio/analysis")
+    def portfolio_analysis(owner: str = Depends(auth)):
+        rep, *_ = orch.portfolio_report(session(owner))
         d = rep.to_dict()
         return ok({**d, "text": R.render_portfolio(d)})
 
-    @app.get("/ui/portfolio/history", dependencies=[Depends(auth)])
-    def ui_portfolio_history():
-        return ok(hub.portfolio_history())
+    @app.get("/ui/portfolio/history")
+    def ui_portfolio_history(owner: str = Depends(auth)):
+        return ok(hub.portfolio_history(owner))
 
-    @app.get("/portfolio/holdings", dependencies=[Depends(auth)])
-    def holdings():
-        rep, *_ = orch.portfolio_report(session())
+    @app.get("/portfolio/holdings")
+    def holdings(owner: str = Depends(auth)):
+        rep, *_ = orch.portfolio_report(session(owner))
         return ok({"as_of": rep.as_of, "holdings": rep.holdings})
 
-    @app.get("/portfolio/risk", dependencies=[Depends(auth)])
-    def portfolio_risk():
-        rep, *_ = orch.portfolio_report(session())
+    @app.get("/portfolio/risk")
+    def portfolio_risk(owner: str = Depends(auth)):
+        rep, *_ = orch.portfolio_report(session(owner))
         return ok({"as_of": rep.as_of, "risk": rep.risk, "concentration": rep.concentration,
                    "sector_exposure_pct": rep.sector_exposure_pct, "flags": rep.flags})
 
-    @app.post("/portfolio/what-if", dependencies=[Depends(auth)])
-    def portfolio_what_if(body: WhatIfIn):
-        rep, positions, cash, prices, meta = orch.portfolio_report(session())
+    @app.post("/portfolio/what-if")
+    def portfolio_what_if(body: WhatIfIn, owner: str = Depends(auth)):
+        rep, positions, cash, prices, meta = orch.portfolio_report(session(owner))
         syms = [ticker(s) for s in body.symbols]
         for s in syms:
             prices.setdefault(s, orch.service().history(s)["close"])
@@ -423,17 +428,17 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
         res = what_if(positions, cash, prices, scenarios, meta.get("risk_profile", "moderate"))
         return ok({**res, "text": R.render_what_if(res)})
 
-    @app.post("/chat", dependencies=[Depends(auth)])
-    def chat(body: ChatIn):
-        return ok(orch.handle(body.message, body.session_id).to_dict())
+    @app.post("/chat")
+    def chat(body: ChatIn, owner: str = Depends(auth)):
+        return ok(orch.handle(body.message, owner, body.session_id).to_dict())
 
     @app.get("/reports", dependencies=[Depends(auth)])
     def reports(symbol: Optional[str] = None):
         return ok(orch.store.reports(ticker(symbol) if symbol else None))
 
-    @app.post("/reports/{t}", dependencies=[Depends(auth)])
-    def make_report(t: str):
-        a = orch.analysis(session(), ticker(t))
+    @app.post("/reports/{t}")
+    def make_report(t: str, owner: str = Depends(auth)):
+        a = orch.analysis(session(owner), ticker(t))
         body = R.render_report(a)
         return {"id": orch.store.save_report(a.symbol, body), "report": body}
 
@@ -446,13 +451,13 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
         orch.store.acknowledge_alert(alert_id)
         return {"status": "acknowledged", "id": alert_id}
 
-    @app.get("/signals", dependencies=[Depends(auth)])
+    @app.get("/signals")
     def signals(capital: float = Query(default=0.0, ge=0, lt=1e10),
                 strategy: Literal["momentum", "lowvol", "blend"] = "momentum",
-                risk: Literal["full", "balanced", "defensive"] = "balanced"):
+                risk: Literal["full", "balanced", "defensive"] = "balanced", owner: str = Depends(auth)):
         from backend.api.nlu import Intent
         from backend.advisory.signals.advisor import render
-        s = session()
+        s = session(owner)
         s.risk_profile = {"full": "aggressive", "defensive": "conservative"}.get(risk, "moderate")
         words = {"lowvol": "low volatility", "blend": "blend", "momentum": ""}[strategy]
         p = orch._signal_plan(s, Intent(name="signals", amount=capital or None, raw=words))

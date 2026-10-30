@@ -24,7 +24,7 @@ from backend.database.sources.panel import CACHE_DIR, index_constituents, univer
 from backend.database.sources.provider import DataUnavailable
 from backend.knowledge_base.lessons import knowledge_base
 from backend.api.nlu import ALIASES
-from backend.api.orchestrator import Orchestrator
+from backend.api.orchestrator import Orchestrator, Session
 from backend.advisory.signals import factors as F
 from backend.advisory.signals.advisor import N_DEFAULT, STOP_EVIDENCE, STOP_PCT, exposure_for, market_state, next_rebalance
 
@@ -353,14 +353,13 @@ class Hub:
                 "history_check": checked, "history": {"dates": [str(d.date()) for d in nav.index], "nav": [float(x) for x in nav]}}
 
     # --- verdict --------------------------------------------------------------------------
-    def verdict(self, symbol: str) -> Dict[str, Any]:
+    def verdict(self, symbol: str, s: Session) -> Dict[str, Any]:
         sym = symbol.upper()
-        s = self.orch.session("api")      # shared with /stocks/{t}/analysis, so one computation serves both
         a = self.orch.analysis(s, sym)
         d = a.decision
         rank_tbl = self.ranking()
         m = market_state(self.bench(), self.bench().index[-1])
-        positions, _, _ = self.orch.holdings()
+        positions, _, _ = self.orch.holdings(s.portfolio)
         held = sym in positions and positions[sym].quantity > 0
         why_buy: List[str] = []
         why_not: List[str] = []
@@ -441,10 +440,10 @@ class Hub:
             + (f" {STOP_EVIDENCE}" if tone == "positive" else ""),
         }
 
-    def portfolio_history(self) -> Dict[str, Any]:
+    def portfolio_history(self, portfolio: str) -> Dict[str, Any]:
         """Daily value of the holdings as they actually were, rebuilt from transactions,
         next to the money put in. Cash is excluded (its history isn't recorded)."""
-        p = self.orch.store.portfolio(self.orch.portfolio_name)
+        p = self.orch.store.portfolio(portfolio)
         if not p or not p["transactions"]:
             return {"dates": [], "value": [], "invested": []}
         txs = sorted(p["transactions"], key=lambda t: t["trade_date"])
@@ -581,24 +580,25 @@ class Hub:
             self._writer = remote_models.writer()
         return self._writer
 
-    def analyst_inputs(self, symbol: str) -> Dict[str, Any]:
+    def analyst_inputs(self, symbol: str, s: Session) -> Dict[str, Any]:
         """What the analyst note is written from, as analyst.facts takes it; models/external/compare_writers.py
         scores the writers on the same inputs."""
         sym = symbol.upper()
         t = self.technical(sym, bars=21, closed=True)
-        v = self.verdict(sym)
+        v = self.verdict(sym, s)
         return {"symbol": sym, "close": t["close"][-1], "as_of": t["as_of"], "alfa": self.ai_forecast(sym, "alfa"),
                 "gru": self.ai_forecast(sym, "gru"), "band": t["cone"][-1],
                 "verdict": {"stop": t["stop"], "rank": v["momentum_rank"], "universe": v["universe_size"],
                             "verdict": v["verdict"]}}
 
-    def analyst_note(self, symbol: str) -> Dict[str, Any]:
+    def analyst_note(self, symbol: str, s: Session) -> Dict[str, Any]:
         """Our models' numbers for one stock, written up by the language model and checked (advisory/analyst.py)."""
         from backend.advisory import analyst
         from backend.models.external.llm import LLMUnavailable
-        inputs = self.analyst_inputs(symbol)
+        inputs = self.analyst_inputs(symbol, s)
         f = analyst.facts(**inputs)
-        key = (inputs["symbol"], inputs["as_of"], inputs["close"])
+        # the note quotes the verdict, and a holder's (HOLD / ADD) is not everyone else's (BUY)
+        key = (inputs["symbol"], inputs["as_of"], inputs["close"], inputs["verdict"]["verdict"])
         cache = self.__dict__.setdefault("_analyst_cache", {})
         if key not in cache:
             if not self.ml_enabled():

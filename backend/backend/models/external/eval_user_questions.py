@@ -75,6 +75,7 @@ def main():
     ap.add_argument("--skip-hhem", action="store_true")
     args = ap.parse_args()
     from backend.cli import DEFAULT_DB, _orchestrator
+    from backend.config import DEFAULT_PORTFOLIO
     from backend.models.agent.present import present
     from backend.models.agent.run.ask import build, listed_names, reference_from, writer_from
     asked = json.loads(QUESTIONS.read_text())
@@ -93,7 +94,7 @@ def main():
         agent_seconds = time.time() - started
         shown = present(turn, names, sources)
         started = time.time()
-        reply = orch.handle(item["q"], f"eval-{len(rows)}")
+        reply = orch.handle(item["q"], DEFAULT_PORTFOLIO, f"eval-{len(rows)}")
         kind = agent_kind(turn)
         row = {**item, "agent_kind": kind, "agent_ok": agent_ok(item["agent"], kind), "agent_shown": shown,
                "agent_grade": grade(plain(shown)) if turn.spoke else None, "agent_seconds": round(agent_seconds, 1),

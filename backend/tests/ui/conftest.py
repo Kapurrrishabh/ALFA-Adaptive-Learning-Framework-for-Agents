@@ -44,7 +44,7 @@ def base_url(tmp_path_factory):
     import backend.advisory.calculators.performance as perf
     from backend.api.app import create_app
     from backend.api.orchestrator import Orchestrator
-    from backend.config import resolve_symbol
+    from backend.config import DEFAULT_PORTFOLIO, resolve_symbol
     from backend.database.sources import insider
     from backend.database.sources.panel import panel_from_frames
     from backend.database.sources.provider import DataUnavailable
@@ -76,7 +76,7 @@ def base_url(tmp_path_factory):
         mp.setattr(gru_line, "WEIGHTS", missing / "path_gru.npz")
         mp.setattr(insider, "load", no_insider)
         orch = Orchestrator(provider, Store(":memory:"), use_rss_news=False)
-        orch.save_portfolio(0.0, "moderate", "medium", [{"symbol": "TEST", "side": "BUY", "quantity": 10,
+        orch.save_portfolio(DEFAULT_PORTFOLIO, 0.0, "moderate", "medium", [{"symbol": "TEST", "side": "BUY", "quantity": 10,
                                                          "price": float(prices["close"].iloc[-120]), "trade_date": str(prices.index[-120].date())}])
         app = create_app(orch, api_key=KEY)
         hub = app.state.hub
