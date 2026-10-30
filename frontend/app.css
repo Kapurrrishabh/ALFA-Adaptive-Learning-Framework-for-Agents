@@ -1,9 +1,9 @@
 :root {
   color-scheme: light;
   --bg: #ffffff; --bg-2: #f3f7f6; --bg-3: #e7eeec; --card: #ffffff;
-  --ink: #0f1b1a; --ink-2: #3a4947; --muted: #6b7a78; --line: #e2e9e7;
+  --ink: #0f1b1a; --ink-2: #3a4947; --muted: #5f6d6b; --line: #e2e9e7;
   --brand: #0f766e; --brand-2: #0b5f59; --brand-soft: #e2f3f0; --on-brand: #ffffff; --gold: #a87a1c;
-  --up: #059669; --down: #e5484d; --down-soft: #fdecec; --warn: #d98e04; --warn-soft: #fff4e0;
+  --up: #047857; --down: #c62a2f; --down-soft: #fdecec; --warn: #8a5a00; --warn-soft: #fff4e0;
   --shadow: 0 1px 2px rgba(16, 40, 36, .04), 0 6px 20px rgba(16, 40, 36, .07);
   --radius: 16px;
   --serif: "Instrument Serif", "Iowan Old Style", Palatino, Georgia, serif;
@@ -82,10 +82,10 @@ h2 { font-size: 18px; margin: 0 0 12px; }
 .btn.small { padding: 5px 10px; font-size: 12.5px; }
 .tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
 .tabs button { background: none; border: 0; padding: 10px 12px; color: var(--muted); font-weight: 600; border-bottom: 2px solid transparent; }
-.tabs button.active { color: var(--brand); border-color: var(--brand); }
+.tabs [aria-selected="true"] { color: var(--brand); border-color: var(--brand); }
 .seg { display: inline-flex; background: var(--bg-2); border-radius: 10px; padding: 3px; gap: 2px; }
 .seg button { border: 0; background: none; padding: 5px 11px; border-radius: 8px; color: var(--muted); font-weight: 600; font-size: 12.5px; }
-.seg button.active { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
+.seg [aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
 
 /* index cards */
 .index-card { display: flex; flex-direction: column; gap: 4px; }
@@ -110,6 +110,8 @@ h2 { font-size: 18px; margin: 0 0 12px; }
 .banner.good { background: var(--brand-soft); border-color: transparent; }
 .banner.bad { background: var(--down-soft); border-color: transparent; }
 .banner .big { font-size: 22px; }
+/* muted grey on the dark green tint is 4.2:1, under the 4.5:1 small text needs */
+.banner .muted { color: var(--ink-2); }
 
 /* stock page */
 .price { font-size: 30px; font-weight: 700; }
@@ -222,8 +224,8 @@ details p { color: var(--ink-2); margin: 8px 0 0; }
 .overlay-toggles input { accent-color: var(--brand); margin: 0; }
 .legend-line { display: inline-block; width: 16px; height: 0; border-top: 2px solid; vertical-align: middle; }
 .pattern-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 14px; }
-.pattern-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; cursor: pointer; }
-.pattern-card.sel { border-color: var(--pattern); box-shadow: 0 0 0 2px color-mix(in srgb, var(--pattern) 25%, transparent); }
+.pattern-card { display: grid; align-content: start; text-align: left; color: inherit; background: none; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.pattern-card[aria-pressed="true"] { border-color: var(--pattern); box-shadow: 0 0 0 2px color-mix(in srgb, var(--pattern) 25%, transparent); }
 .pattern-card .nm { font-weight: 700; text-transform: capitalize; }
 .edge-badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
 .edge-badge.no { background: var(--down-soft); color: var(--down); }
@@ -233,6 +235,7 @@ details p { color: var(--ink-2); margin: 8px 0 0; }
 :root[data-theme="dark"] { --series-3: #3ddc84; --series-4: #dcb862; }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin: 4px 0 8px; }
 .legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.legend-dash { margin-right: 6px; vertical-align: middle; }
 .kpi .v { font-size: 22px; font-weight: 700; }
 .verdict-line { padding: 10px 14px; border-radius: 10px; background: var(--bg-2); font-size: 13px; color: var(--ink-2); margin-top: 10px; }
 
@@ -243,7 +246,7 @@ details p { color: var(--ink-2); margin: 8px 0 0; }
 .chips-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .mode-tabs { display: flex; gap: 4px; background: var(--bg-2); padding: 4px; border-radius: 12px; width: fit-content; margin-bottom: 12px; }
 .mode-tabs button { border: 0; background: none; padding: 7px 14px; border-radius: 9px; font-weight: 600; color: var(--muted); }
-.mode-tabs button.active { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
+.mode-tabs [aria-selected="true"] { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
 .gauge { position: relative; height: 14px; border-radius: 7px; overflow: hidden; display: flex; margin: 14px 0 6px; }
 .gauge span { height: 100%; }
 .gauge-marker { position: absolute; top: -6px; width: 3px; height: 26px; background: var(--ink); border-radius: 2px; transform: translateX(-50%); }
@@ -281,7 +284,7 @@ details p { color: var(--ink-2); margin: 8px 0 0; }
 .ctl .k { font-size: 12px; color: var(--muted); font-weight: 600; }
 .big-input { font-size: 22px; font-weight: 700; padding: 10px 14px; width: 100%; max-width: 280px; }
 input[type=range] { accent-color: var(--brand); width: 100%; }
-.chip.off { text-decoration: line-through; opacity: .5; }
+.chip[aria-pressed="true"] { text-decoration: line-through; color: var(--muted); }
 .wbar { position: relative; min-width: 110px; height: 22px; background: var(--bg-2); border-radius: 6px; overflow: hidden; }
 .wbar span { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--series-1) 30%, transparent); }
 .wbar em { position: relative; font-style: normal; font-size: 12px; padding: 0 8px; line-height: 22px; }
