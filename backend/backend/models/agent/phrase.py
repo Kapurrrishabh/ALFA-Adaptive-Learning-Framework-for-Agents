@@ -153,6 +153,8 @@ def _unentailed(text, sources, entails):
     # and kept on its sentence it failed 3 of 21 faithful writer replies. The figure check still reads them.
     claims = [claim for claim in (_BRACKETED.sub("", part).strip() for part in sentences(text))
               if re.search(r"\w", claim)]
+    if not claims:
+        return ["it states nothing a passage could support"]
     # the passages' sentences first: short, they entail most true claims, and whole passages took three times as long
     for premises in ([part for source in sources for part in sentences(source)], sources + [" ".join(sources)]):
         premises = list(dict.fromkeys(premises))

@@ -1119,6 +1119,12 @@ def test_a_source_in_brackets_is_not_read_as_a_claim(market, router, reply):
     assert turn.served == reply and turn.phrased_by == "test-lm"
 
 
+def test_a_reply_that_only_names_a_source_serves_the_plain_answer(market, router):
+    from backend.models.agent import phrase
+    turn = agent(market, router, reference=news_reference(FakeWriter("(Mint, 6 Oct 2026)"))).answer(ASKED_YES_NO)
+    assert turn.served == phrase.recent_plain(None, None, [NEWS]) and "states nothing" in turn.unphrased_because
+
+
 def test_a_sentence_that_joins_two_passages_is_entailed_by_them_together(market, router):
     """"The Sensex rose 410 points, while Wipro shares fell 3%" scored 0.0 against each of its two passages alone."""
     slid = Chunk("Mint, 6 Oct 2026: TCS shares slid while results were due.", [], "https://n.test/tcs", "2026-10-06")
