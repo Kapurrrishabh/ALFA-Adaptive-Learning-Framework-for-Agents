@@ -1,4 +1,5 @@
 import re
+from dataclasses import replace
 from datetime import time
 from pathlib import Path
 
@@ -14,8 +15,10 @@ from backend.config import FORECAST_DAYS
 from backend.api.orchestrator import Orchestrator
 from backend.advisory.calculators.screener import screen
 from backend.advisory.service import AnalysisService
+from backend.advisory.statistics.validation import event_study
+from backend.database.sources import synthetic
 
-from .conftest import NOW
+from .conftest import END, NOW
 from .test_funds import NAV_TEXT, growing, mfapi_json
 from .test_nlu_llm import _Picker
 
@@ -55,6 +58,61 @@ def test_rendered_analysis_states_timestamps_and_labels_model_outputs(service):
     assert "### 12. Final evidence-based summary" in text
 
 
+def test_rendered_forecast_range_states_the_interval_it_was_built_for(service):
+    a = service.analyze("TEST")
+    for e in a.results["forecast"].details["horizons"].values():
+        e["expected_range"]["probability"] = 0.9
+    assert "90% range" in R.render_analysis(a)
+
+
+def test_a_drill_down_explains_the_jargon_its_own_lines_use(service):
+    risk = R.render_domain(service.analyze("TEST"), "risk")
+    assert "Drawdown: a fall from a peak." in risk and "EBIT:" not in risk
+
+
+# every return on a flat price is zero, so this is the verdict pattern and candle checks give a null result
+NO_EDGE = event_study(pd.Series(100.0, index=range(300)), pd.Series(True, index=range(300)), 10, 1)["verdict"]
+
+
+@pytest.mark.parametrize("domain, verdict, called_chance", [
+    ("historical", "not a statistically significant difference", True),
+    ("historical", "a statistically significant difference", False),
+    ("pattern", NO_EDGE, True)])
+def test_a_drill_down_calls_a_result_chance_only_when_it_is_not_significant(service, domain, verdict, called_chance):
+    a = service.analyze("TEST")
+    r = a.results[domain]
+    r.evidence = [replace(e, claim=f"{e.claim.split(' — ')[0]} — {verdict}.") for e in r.evidence]
+    assert ("could easily be chance" in R.render_domain(a, domain)) == called_chance
+
+
+def test_the_analysis_and_its_drill_down_give_operating_margin_one_meaning(service):
+    a = service.analyze("TEST")
+    meaning = re.search(r"Operating margin \((.+?)\):", R.render_analysis(a)).group(1)
+    assert f"Operating margin: {meaning}." in R.render_domain(a, "fundamental")
+
+
+def test_every_reply_that_explains_volatility_reads_the_one_meaning(orch, monkeypatch):
+    monkeypatch.setitem(R.TERM_MEANINGS, "Volatility", "a meaning only this test writes")
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    replies = [orch.handle(q, "terms").text for q in
+               ("Analyze TEST", "how risky is TEST?", "Compare TEST with PEER", "Is the market in a downtrend?")]
+    assert all("a meaning only this test writes" in r for r in replies)
+
+
+@pytest.mark.parametrize("question, most", [("help", 8), ("Is the market in a downtrend?", 8),
+                                            ("Analyze TEST", 9), ("how risky is TEST?", 9)])
+def test_chat_replies_read_at_plain_language_grade(orch, monkeypatch, question, most):
+    from backend.models.external.eval_user_questions import grade, plain
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    assert grade(plain(orch.handle(question, "plain").text)) <= most
+
+
+def test_the_market_reply_quotes_the_backtested_volatility_target(orch, monkeypatch):
+    import backend.advisory.signals.strategies as strategies
+    monkeypatch.setattr(strategies, "VOL_TARGET", 0.25)
+    assert "To aim for 25% volatility" in orch.handle("Is the market in a downtrend?", "vol").text
+
+
 def test_full_report_has_all_18_sections(service):
     body = R.render_report(service.analyze("TEST"))
     for n in range(1, 19):
@@ -80,6 +138,21 @@ def test_multi_turn_conversation_keeps_context(orch):
     assert r.intent == "compare" and "TEST" in r.text and "PEER" in r.text
     r = orch.handle("Why?", "s")
     assert r.intent == "explain_decision" and r.text.startswith("Why TEST")
+
+
+def test_why_reply_rounds_each_area_score_and_confidence_to_two_decimals(orch):
+    orch.handle("Analyze TEST", "places")
+    votes = orch.handle("why?", "places").text.split("How each area voted:")[1].split("Main ")[0]
+    assert not re.search(r"\d\.\d{3}", votes)
+
+
+def test_why_a_negative_score_heads_its_evidence_as_negatives(orch, local_provider):
+    local_provider.frames["FALL.NS"] = synthetic.ohlcv(900, seed=3, drift=-0.003, end=END)
+    orch.known.add("FALL")
+    orch.handle("Analyze FALL", "fall")
+    reply = orch.handle("why?", "fall")
+    assert reply.data["payload"]["decision"]["score"] < 0
+    assert "Main negatives:" in reply.text and "+ [FACT]" not in reply.text
 
 
 def test_budget_question_uses_the_session_stock(orch):
@@ -1044,7 +1117,7 @@ def test_an_unrecognised_question_is_routed_by_the_language_model(orch, monkeypa
 def test_a_question_the_language_model_cannot_place_says_so_instead_of_guessing(orch, monkeypatch):
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
     reply = orch.handle("what is the weather in Mumbai?", "route2")
-    assert reply.data["no_answer"] and "don't have a reference entry" in reply.text
+    assert reply.data["no_answer"] and "don't have a lesson" in reply.text
 
 
 def test_chat_works_without_a_language_model(orch, monkeypatch):

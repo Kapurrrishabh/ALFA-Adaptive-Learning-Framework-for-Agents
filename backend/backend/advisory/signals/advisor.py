@@ -95,12 +95,12 @@ def market_state(bench: pd.Series, asof: pd.Timestamp) -> Dict[str, object]:
     last_me = float(me.iloc[-1])
     trend_up = last_me > sma10
     r = np.log(bench / bench.shift(1)).loc[:asof]
-    ewma_vol = float(np.sqrt((r ** 2).ewm(halflife=20).mean().iloc[-1] * F.YEAR))
-    vol_expo = min(1.0, 0.15 / ewma_vol) if ewma_vol > 0 else 1.0
+    ewma_vol = float(np.sqrt((r ** 2).ewm(halflife=S.VOL_HALF_LIFE).mean().iloc[-1] * F.YEAR))
+    vol_expo = min(1.0, S.VOL_TARGET / ewma_vol) if ewma_vol > 0 else 1.0
     r24 = float(b.iloc[-1] / b.iloc[-2 * F.YEAR] - 1) if len(b) > 2 * F.YEAR else None
-    roll = (r.rolling(126).std() * np.sqrt(F.YEAR)).dropna()
+    roll = (r.rolling(S.CRASH_VOL_DAYS).std() * np.sqrt(F.YEAR)).dropna()
     vol_q = float((roll < roll.iloc[-1]).mean()) if len(roll) else None
-    crash_risk = bool(r24 is not None and r24 < 0 and vol_q is not None and vol_q >= 0.8)
+    crash_risk = bool(r24 is not None and r24 < 0 and vol_q is not None and vol_q >= S.CRASH_VOL_QUANTILE)
     return {"benchmark_last": round(float(b.iloc[-1]), 2), "month_end_close": round(last_me, 2),
             "sma_10m": round(sma10, 2), "trend": "up" if trend_up else "down",
             "ewma_vol_pct": round(ewma_vol * 100, 1), "vol_target_exposure": round(vol_expo, 2),
