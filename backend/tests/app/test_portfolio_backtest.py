@@ -283,12 +283,14 @@ def zerodha_holdings(*holdings):
                      "Combined": sheet("Combined", combined, [{**h, "Instrument Type": "-"} for h in holdings])})
 
 
-def rewritten(data, change, compression=zipfile.ZIP_DEFLATED):
-    """The workbook `data` with each part's bytes passed through change(name, part)."""
+def rewritten(data, change, compression=zipfile.ZIP_DEFLATED, added=()):
+    """The workbook `data` with each part's bytes passed through change(name, part), plus the `added` (name, part)s."""
     out = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(data)) as src, zipfile.ZipFile(out, "w", compression) as dst:
         for entry in src.infolist():
             dst.writestr(entry.filename, change(entry.filename, src.read(entry)))
+        for name, part in added:
+            dst.writestr(name, part)
     return out.getvalue()
 
 
@@ -329,6 +331,13 @@ def test_an_unknown_layout_is_refused_with_the_layouts_we_read():
 def test_a_quantity_that_is_not_a_number_is_refused_with_its_row():
     with pytest.raises(ValueError, match="Row 9: Quantity Available is 'abc'"):
         importers.parse(zerodha_holdings({**HOLDING, "Quantity Available": "abc"}))
+
+
+def test_a_number_too_long_for_a_float_is_refused_with_its_row():
+    too_long = b"<v>" + b"9" * 400 + b"</v>"         # openpyxl cannot write a number this long, so it goes in by hand
+    huge = rewritten(zerodha_holdings(HOLDING), lambda _, part: part.replace(b"<v>14</v>", too_long))
+    with pytest.raises(ValueError, match="Row 9: Quantity Available is 9999"):
+        importers.parse(huge)
 
 
 def test_an_excel_file_that_unpacks_past_the_limit_is_refused():
@@ -374,6 +383,38 @@ def test_a_workbook_with_more_sheets_than_we_read_is_refused():
         importers.parse(workbook(sheets))
 
 
+def test_a_workbook_with_a_chart_sheet_is_refused():
+    import openpyxl
+    book = openpyxl.Workbook()
+    book.create_chartsheet("Chart")
+    out = io.BytesIO()
+    book.save(out)
+    with pytest.raises(ValueError, match="'Chart' is a chart"):
+        importers.parse(out.getvalue())
+
+
+def test_two_sheets_naming_one_part_are_refused():
+    twice = rewritten(workbook({"A": [["a"]]}), lambda _, part: re.sub(rb"<sheet .*?/>", lambda m: m[0] * 2, part))
+    with pytest.raises(ValueError, match="two of its sheets name one part"):
+        importers.parse(twice)
+
+
+def test_many_cells_sharing_one_long_text_are_refused():
+    """Every cell points at one text in the shared strings part, which openpyxl never writes, so it is put in here."""
+    texts = (f'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>'
+             f'{"a " * importers.MAX_CELL_CHARS}</t></si></sst>').encode()
+    row = b"<row>" + b'<c t="s"><v>0</v></c>' * importers.MAX_COLUMNS + b"</row>"
+
+    def share(name, part):
+        if name == "[Content_Types].xml":
+            return part.replace(b"</Types>", b'<Override PartName="/xl/sharedStrings.xml" ContentType="application/'
+                                b'vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>')
+        return re.sub(rb"<sheetData>.*</sheetData>", b"<sheetData>" + row * 100 + b"</sheetData>", part)
+    shared = rewritten(workbook({"Sheet1": [["a"]]}), share, added=[("xl/sharedStrings.xml", texts)])
+    with pytest.raises(ValueError, match=f"we read cells of up to {importers.MAX_CELL_CHARS}"):
+        importers.parse(shared)
+
+
 def not_a_workbook(_):
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as archive:
@@ -381,10 +422,19 @@ def not_a_workbook(_):
     return out.getvalue()
 
 
+def encrypted(good):
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(good)) as src, zipfile.ZipFile(out, "w") as archive:
+        for entry in src.infolist():
+            archive.writestr(entry.filename, src.read(entry))
+        archive.getinfo("xl/workbook.xml").flag_bits |= 1     # zipfile writes this flag when it closes
+    return out.getvalue()
+
+
 @pytest.mark.parametrize("damage", [
     lambda good: rewritten(good, lambda name, part: part[:-20] if name.endswith("sheet1.xml") else part),
     lambda good: rewritten(good, lambda _, part: part, zipfile.ZIP_STORED).replace(b"SYNTHA", b"SYNTHZ", 1),
-    not_a_workbook], ids=["broken XML", "bad checksum", "not a workbook"])
+    not_a_workbook, encrypted], ids=["broken XML", "bad checksum", "not a workbook", "encrypted part"])
 def test_a_damaged_workbook_is_refused_as_a_bad_file(damage):
     with pytest.raises(ValueError, match="damaged or is not a workbook"):
         importers.parse(damage(zerodha_holdings(HOLDING)))
@@ -409,7 +459,7 @@ CSV_HEADER = "symbol_or_isin,side,quantity,price,trade_date\n"
 def test_a_csv_file_over_the_size_limit_is_refused():
     text = CSV_HEADER + "INFY,BUY,1,,\n" * (importers.MAX_TEXT_BYTES // 12)
     with pytest.raises(ValueError, match="This CSV file is"):
-        importers.parse(text.encode())
+        importers.parse(text.encode() + b"\xff")      # not UTF-8 either: the size is checked before decoding
 
 
 def test_a_csv_field_too_long_to_read_is_refused_with_its_line():

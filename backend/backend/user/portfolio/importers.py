@@ -21,13 +21,14 @@ from backend.config import canonical_symbol
 from backend.database.sources.amfi import name_words
 from backend.database.sources.panel import Listing
 
-# provisional, from hostile files built and read on a Mac (2026-10-30): openpyxl can need 120 times an .xlsx's
-# unzipped size (a styles part of empty formats), so 1 MB keeps a read near 120 MB. A tradebook takes about 680
-# bytes a trade unzipped and 110 as CSV, so about 1,400 and 8,800 trades fit
+# provisional (2026-10-30): the worst hostile .xlsx we built took 120 times its unzipped size in memory (a styles
+# part of empty formats); that is a measurement, not a bound. A trade takes about 680 bytes unzipped and 110 as CSV,
+# so about 1,400 and 8,800 trades fit
 MAX_TEXT_BYTES = 1_000_000
 MAX_ROWS = 20_000           # more rows than 1 MB of real trades holds
 MAX_COLUMNS = 26            # A to Z: every layout's columns sit well inside it
 MAX_SHEETS = 10             # broker workbooks have one to three
+MAX_CELL_CHARS = 500        # provisional: headers, titles and names run under 100; many .xlsx cells can share one text
 # what damaged workbooks raised when fuzzed (2026-10-30); anything else is our bug, so it stays a server error
 DAMAGED = (LookupError, SyntaxError, TypeError, OSError, NotImplementedError, zipfile.BadZipFile, zlib.error)
 SHORTER_RANGE = "Download a shorter date range and upload each file."
@@ -90,13 +91,13 @@ def parse(data: bytes) -> Statement:
         raise ImportUnsupported("PDF statements aren't switched on for this server")
     if data.startswith(b"PK\x03\x04"):
         return _statement(_sheets(data))
+    if len(data) > MAX_TEXT_BYTES:
+        raise ValueError(f"This CSV file is {math.ceil(len(data) / 1e3):,} KB; we read files of up to "
+                         f"{MAX_TEXT_BYTES // 1000:,} KB. {SHORTER_RANGE}")
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
         raise ValueError("This file is not an Excel file (.xlsx), a PDF or a CSV file saved as UTF-8.") from None
-    if len(data) > MAX_TEXT_BYTES:
-        raise ValueError(f"This CSV file is {math.ceil(len(data) / 1e3):,} KB; we read files of up to "
-                         f"{MAX_TEXT_BYTES // 1000:,} KB. {SHORTER_RANGE}")
     reader = csv.reader(io.StringIO(text))
     try:
         rows = _first_rows(reader, before=0)
@@ -147,8 +148,11 @@ def _sheets(data: bytes) -> Dict[str, List[Sequence[object]]]:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             unzipped = sum(entry.file_size for entry in archive.infolist())
+            locked = [entry.filename for entry in archive.infolist() if entry.flag_bits & 1]
     except zipfile.BadZipFile as exc:
         raise ValueError(f"This file starts like an Excel file but cannot be opened ({exc}).") from exc
+    if locked:      # Excel's own passwords make a different kind of file, so only a hand-made zip gets here
+        raise ValueError(f"This Excel file is damaged or is not a workbook ({locked[0]!r} is encrypted).")
     # zipfile never inflates an entry past its declared size, so their sum bounds each pass over the file
     if unzipped > MAX_TEXT_BYTES:
         raise ValueError(f"This Excel file unpacks to {math.ceil(unzipped / 1e3):,} KB; we read files of up to "
@@ -158,10 +162,17 @@ def _sheets(data: bytes) -> Dict[str, List[Sequence[object]]]:
         reader = ExcelReader(io.BytesIO(data), read_only=True, data_only=True, keep_links=False)
         reader.read_manifest()
         reader.read_workbook()
-        # openpyxl parses a sheet's part once for each sheet that names it, and many sheets can name one part
         if len(reader.parser.sheets) > MAX_SHEETS:
             raise ValueError(f"This workbook has {len(reader.parser.sheets):,} sheets; we read files with up to "
                              f"{MAX_SHEETS}. Upload the file as your broker gave it.")
+        # openpyxl parses a part once for each sheet that names it, and even in read-only mode reads a chart
+        # sheet's drawings once per reference, with no cap on either
+        found = list(reader.parser.find_sheets())
+        if len({rel.target for _, rel in found}) < len(found):
+            raise ValueError("This Excel file is damaged or is not a workbook (two of its sheets name one part).")
+        chart = next((sheet.name for sheet, rel in found if "chartsheet" in rel.Type), None)
+        if chart is not None:
+            raise ValueError(f"Sheet {chart!r} is a chart, not a table. Upload the file as your broker gave it.")
         reader.read()
         book = reader.wb
         try:
@@ -189,8 +200,9 @@ def _first_rows(rows: Iterable[Sequence[object]], before: int) -> List[Sequence[
 
 
 def _statement(sheets: Dict[str, List[Sequence[object]]]) -> Statement:
+    texts = {title: [[_text(value) for value in row] for row in rows] for title, rows in sheets.items()}
     fits = [(layout, title, rows, fit) for title, rows in sheets.items() for layout in LAYOUTS
-            if (fit := _fit(layout, rows)) is not None]
+            if (fit := _fit(layout, texts[title])) is not None]
     if not fits:
         raise ValueError(f"This file doesn't match a layout we read. We read {'; '.join(map(_describe, LAYOUTS))}.")
     if len(fits) > 1:
@@ -199,17 +211,16 @@ def _statement(sheets: Dict[str, List[Sequence[object]]]) -> Statement:
                          + ". Upload one statement at a time.")
     layout, title, rows, (as_of, header, columns) = fits[0]
     read = [layout.read(_cells(row, columns), line) for line, row in enumerate(rows[header + 1:], start=header + 2)
-            if any(_text(value) for value in row)]
+            if any(texts[title][line - 1])]
     others = [t for t in sheets if t != title]
     warnings = [f"Only the {title!r} sheet was read, not {' or '.join(map(repr, others))}."] if others else []
     return Statement(layout.source, as_of, read, warnings)
 
 
-def _fit(layout: Layout, rows: List[Sequence[object]]) -> Optional[Tuple[Optional[date], int, Dict[str, int]]]:
-    """(the statement's date, the header's index, each column's position) when the rows have the layout's header,
-    below its title if it has one."""
-    for header, row in enumerate(rows):
-        cells = [_text(value) for value in row]
+def _fit(layout: Layout, texts: List[List[Optional[str]]]) -> Optional[Tuple[Optional[date], int, Dict[str, int]]]:
+    """(the statement's date, the header's index, each column's position) when the rows' `texts` have the layout's
+    header, below its title if it has one."""
+    for header, cells in enumerate(texts):
         if all(column in cells for column in layout.columns):
             break
     else:
@@ -218,7 +229,7 @@ def _fit(layout: Layout, rows: List[Sequence[object]]) -> Optional[Tuple[Optiona
     if layout.title is None:
         return None, header, columns
     title, form = layout.title
-    found = next((c for row in rows[:header] for c in map(_text, row) if c and c.startswith(title + " ")), None)
+    found = next((c for row in texts[:header] for c in row if c and c.startswith(title + " ")), None)
     if found is None:
         return None
     try:
@@ -237,8 +248,11 @@ def _cells(row: Sequence[object], columns: Dict[str, int]) -> Cell:
 
 
 def _text(value: object) -> Optional[str]:
-    text = "" if value is None else " ".join(str(value).split())
-    return text or None
+    text = "" if value is None else str(value)
+    if len(text) > MAX_CELL_CHARS:
+        raise ValueError(f"A cell starting {text[:20]!r} has {len(text):,} characters; we read cells of up to "
+                         f"{MAX_CELL_CHARS}. Upload the file as your broker gave it.")
+    return " ".join(text.split()) or None
 
 
 def _number(cell: Cell, column: str, line: int, required: bool) -> Optional[float]:
@@ -249,7 +263,7 @@ def _number(cell: Cell, column: str, line: int, required: bool) -> Optional[floa
         return None
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):     # a long .xlsx number arrives as an int too big for a float
         number = math.nan
     if not 0 <= number < math.inf:
         raise ValueError(f"Row {line}: {column} is {value!r}, not a number of 0 or more.")
