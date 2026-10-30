@@ -1,5 +1,5 @@
 """The web app in a real browser: the navs at three widths, every page's basics, leaving a page mid-load,
-the search box and the theme toggle."""
+the search box, the theme toggle, and the shared dialog, toasts, and error and empty states."""
 import re
 
 import pytest
@@ -17,6 +17,7 @@ PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signal
 # Chrome logs a failed fetch without its address, so failures are read from the responses; an API 404 is how a missing model shows up
 UNNAMED_FETCH_ERROR = "Failed to load resource"
 LONG_NAME = "Parag Parikh Flexi Cap Fund Direct Plan Growth"
+EMOJI = re.compile("[\u2600-\u27bf\U0001f300-\U0001faff]")
 
 
 class Tab:
@@ -73,7 +74,8 @@ def browser():
 
 @pytest.fixture(scope="module")
 def visits(browser, base_url):
-    """What each page showed at each width: its h1 texts, the errors it logged, and whether it scrolled sideways."""
+    """What each page showed at each width: its h1 texts, the errors it logged, whether it scrolled sideways,
+    and the text of its empty states and banners."""
     out = {}
     for width in WIDTHS:
         tab = Tab(browser, base_url, width)
@@ -82,7 +84,8 @@ def visits(browser, base_url):
             seen = len(tab.errors)
             tab.go(f"#/{name}")
             out[(width, name)] = {"h1": tab.page.locator("h1").all_inner_texts(), "errors": tab.errors[seen:],
-                                  "sideways": tab.page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth")}
+                                  "sideways": tab.page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"),
+                                  "states": tab.page.locator("#view .empty, #view .banner").all_inner_texts()}
         tab.context.close()
     return out
 
@@ -105,6 +108,11 @@ def test_no_page_logs_an_error(visits, width):
 @pytest.mark.parametrize("width", WIDTHS)
 def test_no_page_scrolls_sideways(visits, width):
     assert [name for name in PAGES if visits[(width, name)]["sideways"]] == []
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+def test_no_empty_state_or_banner_shows_an_emoji(visits, width):
+    assert {name: visits[(width, name)]["states"] for name in PAGES if EMOJI.search("".join(visits[(width, name)]["states"]))} == {}
 
 
 @pytest.mark.parametrize("name", NO_PAGE)
@@ -298,3 +306,265 @@ def test_a_chart_tab_hidden_during_a_theme_change_fits_its_width_when_shown(brow
 def test_a_chart_tab_hidden_during_a_theme_change_takes_the_new_colours_when_shown(browser, base_url):
     tab, stale = hide_a_chart_tab_during_a_theme_change(browser, base_url)
     assert tab.page.evaluate(ATTRIBUTES_WITH, [".card:has(> .mode-tabs)", stale]) == []
+
+
+DIALOGS = {"transaction": {"page": "#/stock/TEST", "opener": "+ Add to portfolio", "action": "Save", "writes_to": "**/portfolio/transactions"},
+           "delete": {"page": "#/portfolio", "opener": "Delete", "action": "Delete", "writes_to": "**/portfolio/transactions/0"},
+           "builder": {"page": "#/builder", "opener": "Add all to my portfolio", "action": "Add to portfolio", "writes_to": "**/ui/builder/apply"}}
+
+
+def open_dialog(tab, which):
+    """One of DIALOGS, opened with a click as a person would."""
+    tab.go(DIALOGS[which]["page"])
+    tab.page.click(f"button:text-is('{DIALOGS[which]['opener']}')")
+    dialog = tab.page.get_by_role("dialog")
+    dialog.wait_for(timeout=5000)
+    return dialog
+
+
+def writes_from(tab, which, **response):
+    """The methods of the writes the dialog sends, each answered with response, so the server never sees them."""
+    sent = []
+    tab.page.route(DIALOGS[which]["writes_to"], lambda route: (sent.append(route.request.method), route.fulfill(**response)))
+    return sent
+
+
+def click_main_button(dialog, which):
+    dialog.get_by_role("button", name=DIALOGS[which]["action"], exact=True).click()
+
+
+def focus_stays_in_a_dialog(tab, key):
+    inside = []
+    for _ in range(10):   # more than the dialog's eight controls, so focus has to wrap
+        tab.page.keyboard.press(key)
+        inside.append(tab.page.evaluate("document.activeElement.closest('[role=dialog]') !== null"))
+    return all(inside)
+
+
+def save_with_enter(tab):
+    """Press Enter where the dialog left focus, and return the transaction it sent; the server never sees it."""
+    writes_from(tab, "transaction", json={"status": "saved", "transactions": 2})
+    with tab.page.expect_request(DIALOGS["transaction"]["writes_to"]) as sent:
+        tab.page.keyboard.press("Enter")
+    return sent.value.post_data_json
+
+
+@pytest.mark.parametrize("key", ["Tab", "Shift+Tab"])
+def test_tabbing_never_leaves_the_dialog(browser, base_url, key):
+    tab = Tab(browser, base_url, 1366)
+    open_dialog(tab, "transaction")
+    assert focus_stays_in_a_dialog(tab, key)
+
+
+def test_escape_closes_the_dialog(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    dialog = open_dialog(tab, "transaction")
+    tab.page.keyboard.press("Escape")
+    assert dialog.count() == 0
+
+
+def test_closing_the_dialog_gives_focus_back_to_the_button_that_opened_it(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    open_dialog(tab, "transaction")
+    tab.page.keyboard.press("Escape")
+    assert tab.page.evaluate("document.activeElement.textContent") == "+ Add to portfolio"
+
+
+def test_enter_in_the_transaction_dialog_saves_it(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    open_dialog(tab, "transaction")
+    assert save_with_enter(tab)["symbol"] == "TEST"
+
+
+def test_the_transaction_dialog_sends_the_fees(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    open_dialog(tab, "transaction").get_by_label("Fees (₹)").fill("20")
+    assert save_with_enter(tab)["fees"] == 20
+
+
+def test_a_quantity_the_server_refuses_is_explained_at_the_quantity(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    quantity = open_dialog(tab, "transaction").get_by_label("Quantity", exact=True)
+    quantity.fill("0")
+    quantity.press("Enter")
+    sync_api.expect(quantity).to_have_accessible_description(re.compile("greater than 0"))
+
+
+def test_the_transaction_dialog_dates_a_trade_by_the_day_in_india(browser, base_url):
+    tab = Tab(browser, base_url, 1366, timezone_id="UTC")
+    two_am_on_the_30th_in_india = "2026-10-29T20:30:00Z"
+    tab.page.clock.set_fixed_time(two_am_on_the_30th_in_india)
+    assert open_dialog(tab, "transaction").get_by_label("Date", exact=True).input_value() == "2026-10-30"
+
+
+def test_deleting_a_transaction_asks_in_the_apps_own_dialog(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    open_dialog(tab, "delete")
+    assert tab.page.get_by_role("dialog", name="Delete this transaction?").is_visible()
+
+
+@pytest.mark.parametrize("which, says", [("delete", r"^BUY 10 TEST at .+ on \d{4}-\d{2}-\d{2}\.$"), ("builder", r"^This adds \d+ BUY transactions")])
+def test_a_confirmation_dialog_is_described_by_what_it_will_write(browser, base_url, which, says):
+    tab = Tab(browser, base_url, 1366)
+    sync_api.expect(open_dialog(tab, which)).to_have_accessible_description(re.compile(says))
+
+
+@pytest.mark.parametrize("which", ["delete", "builder"])
+@pytest.mark.parametrize("key", ["Escape", "Enter"])
+def test_the_first_key_pressed_in_a_confirmation_writes_nothing(browser, base_url, which, key):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    sent = writes_from(tab, which, json={})
+    open_dialog(tab, which)
+    tab.page.keyboard.press(key)
+    tab.settle()
+    assert sent == []
+
+
+@pytest.mark.parametrize("which, method", [("delete", "DELETE"), ("builder", "POST")])
+def test_confirming_sends_the_write(browser, base_url, which, method):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    sent = writes_from(tab, which, json={})
+    click_main_button(open_dialog(tab, which), which)
+    tab.settle()
+    assert sent == [method]
+
+
+def a_dialog_whose_write_failed(browser, base_url, which):
+    """The dialog after its main button was clicked while the server answered 500."""
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    writes_from(tab, which, **SERVER_ERROR)
+    dialog = open_dialog(tab, which)
+    click_main_button(dialog, which)
+    sync_api.expect(dialog.locator(".dialog-error")).to_have_text("Something went wrong on our side.")
+    return tab, dialog
+
+
+@pytest.mark.parametrize("which", ["transaction", "delete"])
+def test_escape_closes_a_dialog_whose_write_failed(browser, base_url, which):
+    tab, dialog = a_dialog_whose_write_failed(browser, base_url, which)
+    tab.page.keyboard.press("Escape")
+    assert dialog.count() == 0
+
+
+@pytest.mark.parametrize("which", ["transaction", "delete"])
+def test_tabbing_never_leaves_a_dialog_whose_write_failed(browser, base_url, which):
+    tab, _ = a_dialog_whose_write_failed(browser, base_url, which)
+    assert focus_stays_in_a_dialog(tab, "Tab")
+
+
+@pytest.mark.parametrize("refusal", [{"loc": ["body"], "msg": "That trade is dated after today"}, {"msg": "That trade is dated after today"}],
+                         ids=["whole-form", "no-place"])
+def test_a_refusal_no_field_can_show_is_shown_in_the_dialog(browser, base_url, refusal):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    writes_from(tab, "transaction", status=422, json={"detail": [{"loc": ["body", "quantity"], "msg": "Input should be greater than 0"}, refusal]})
+    dialog = open_dialog(tab, "transaction")
+    tab.page.keyboard.press("Enter")
+    sync_api.expect(dialog.locator(".dialog-error")).to_have_text("That trade is dated after today")
+
+
+def a_dialog_whose_write_is_running(browser, base_url, which):
+    """The dialog once its main button was clicked and the browser moved focus off that disabled button,
+    and its write, held unanswered until the test answers it."""
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    held = []
+    tab.page.route(DIALOGS[which]["writes_to"], lambda route: held.append(route))
+    dialog = open_dialog(tab, which)
+    click_main_button(dialog, which)
+    tab.wait_until(lambda: held and not tab.page.evaluate("document.activeElement.disabled"))
+    return tab, dialog, held[0]
+
+
+@pytest.mark.parametrize("which", ["transaction", "delete"])
+def test_escape_closes_a_dialog_whose_write_is_running(browser, base_url, which):
+    tab, dialog, _ = a_dialog_whose_write_is_running(browser, base_url, which)
+    tab.page.keyboard.press("Escape")
+    assert dialog.count() == 0
+
+
+@pytest.mark.parametrize("which", ["transaction", "delete"])
+def test_tabbing_never_leaves_a_dialog_whose_write_is_running(browser, base_url, which):
+    tab, _, _ = a_dialog_whose_write_is_running(browser, base_url, which)
+    assert focus_stays_in_a_dialog(tab, "Tab")
+
+
+def test_a_write_that_ends_after_escape_leaves_focus_where_it_was_moved(browser, base_url):
+    tab, _, write = a_dialog_whose_write_is_running(browser, base_url, "transaction")
+    tab.page.keyboard.press("Escape")
+    tab.page.focus("#q")
+    write.fulfill(json={"status": "saved", "transactions": 2})
+    tab.settle()
+    assert tab.page.evaluate("document.activeElement.id") == "q"
+
+
+@pytest.mark.parametrize("closing", ["Escape", "leaving the page"])
+def test_a_write_that_fails_after_its_dialog_closed_says_so(browser, base_url, closing):
+    tab, _, write = a_dialog_whose_write_is_running(browser, base_url, "transaction")
+    if closing == "Escape":
+        tab.page.keyboard.press("Escape")
+    else:
+        tab.page.evaluate("location.hash = '#/explore'")
+    write.fulfill(**SERVER_ERROR)
+    sync_api.expect(tab.page.locator(".toasts")).to_contain_text("Save failed: Something went wrong on our side.")
+
+
+def test_leaving_the_page_closes_its_dialog(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    dialog = open_dialog(tab, "transaction")
+    tab.go("#/explore")
+    assert dialog.count() == 0
+
+
+SERVER_ERROR = {"status": 500, "body": "Internal Server Error"}
+
+
+def explore_answered_with(browser, base_url, **response):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    tab.page.route("**/ui/explore", lambda route: route.fulfill(**response))
+    tab.go("#/explore")
+    return tab
+
+
+def test_a_server_error_says_it_is_on_our_side(browser, base_url):
+    assert "Something went wrong on our side." in explore_answered_with(browser, base_url, **SERVER_ERROR).page.inner_text("#view")
+
+
+def test_a_server_error_never_shows_http_500(browser, base_url):
+    assert "HTTP 500" not in explore_answered_with(browser, base_url, **SERVER_ERROR).page.inner_text("#view")
+
+
+def test_a_server_error_shows_no_emoji(browser, base_url):
+    assert not EMOJI.search(explore_answered_with(browser, base_url, **SERVER_ERROR).page.inner_text("#view"))
+
+
+def test_try_again_after_a_server_error_loads_the_page(browser, base_url):
+    tab = explore_answered_with(browser, base_url, **SERVER_ERROR)
+    tab.page.unroute("**/ui/explore")
+    tab.page.click("#view button:text-is('Try again')")
+    tab.settle()
+    assert tab.page.locator("#view .welcome").count() == 1
+
+
+def test_a_saved_key_that_is_not_a_key_asks_to_sign_in(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.page.evaluate("localStorage.setItem('si-key', 'not a key')")
+    tab.go("#/explore")
+    assert "Please sign in." in tab.page.inner_text("#view")
+
+
+def test_a_rate_limit_shows_the_servers_words_with_the_limit(browser, base_url):
+    limit = "rate limit of 120 requests/minute exceeded"
+    assert limit in explore_answered_with(browser, base_url, status=429, json={"detail": limit}).page.inner_text("#view")
+
+
+def test_two_toasts_do_not_overlap(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.page.evaluate("() => { toast('Saved to portfolio'); toast('Added to your portfolio'); }")
+    first, second = tab.page.locator(".toast").evaluate_all("els => els.map((el) => el.getBoundingClientRect().toJSON())")
+    assert first["bottom"] <= second["top"] or second["bottom"] <= first["top"]
+
+
+def test_toasts_on_a_phone_leave_the_bottom_nav_uncovered(browser, base_url):
+    tab = Tab(browser, base_url, 390)
+    tab.page.evaluate("() => { toast('Saved to portfolio'); toast('Added to your portfolio'); }")
+    toasts, nav = tab.page.locator(".toasts").bounding_box(), tab.page.locator("#bnav").bounding_box()
+    assert toasts["y"] + toasts["height"] <= nav["y"], (toasts, nav)
