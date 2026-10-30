@@ -1,5 +1,6 @@
 import io
 import re
+import tracemalloc
 import zipfile
 from datetime import date
 from types import SimpleNamespace
@@ -244,6 +245,11 @@ def test_reits_come_from_the_nifty_500_list(nse_directory):
     assert nse_directory["INE041025011"] == Listing("EMBASSY", "nifty500")
 
 
+def test_index_constituents_refuses_a_list_that_is_not_an_index(nse_directory):
+    with pytest.raises(ValueError, match="unknown NSE list 'equity_l'"):
+        panel.index_constituents("equity_l")
+
+
 def workbook(sheets):
     """An .xlsx built here, so no real statement or personal data enters the repo."""
     import openpyxl
@@ -277,17 +283,24 @@ def zerodha_holdings(*holdings):
                      "Combined": sheet("Combined", combined, [{**h, "Instrument Type": "-"} for h in holdings])})
 
 
+def rewritten(data, change, compression=zipfile.ZIP_DEFLATED):
+    """The workbook `data` with each part's bytes passed through change(name, part)."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as src, zipfile.ZipFile(out, "w", compression) as dst:
+        for entry in src.infolist():
+            dst.writestr(entry.filename, change(entry.filename, src.read(entry)))
+    return out.getvalue()
+
+
 def test_holdings_rows_leave_the_buy_date_empty():
     rows = importers.parse(zerodha_holdings(HOLDING)).rows
     assert [(r.symbol, r.quantity, r.trade_date) for r in rows] == [("SYNTHA", 14, None)]
 
 
 def test_a_sheet_that_understates_its_size_is_still_read_in_full():
-    out = io.BytesIO()
-    with zipfile.ZipFile(io.BytesIO(zerodha_holdings(HOLDING, HOLDING))) as src, zipfile.ZipFile(out, "w") as dst:
-        for entry in src.infolist():
-            dst.writestr(entry, re.sub(rb'<dimension ref="[^"]*"/>', b'<dimension ref="A1"/>', src.read(entry)))
-    assert len(importers.parse(out.getvalue()).rows) == 2
+    understated = rewritten(zerodha_holdings(HOLDING, HOLDING),
+                            lambda _, part: re.sub(rb'<dimension ref="[^"]*"/>', b'<dimension ref="A1"/>', part))
+    assert len(importers.parse(understated).rows) == 2
 
 
 def test_the_sheets_left_unread_are_named():
@@ -322,10 +335,59 @@ def test_an_excel_file_that_unpacks_past_the_limit_is_refused():
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
         with archive.open("xl/worksheets/sheet1.xml", "w") as part:
-            for _ in range(importers.MAX_UNZIPPED // 2**20 + 1):
+            for _ in range(importers.MAX_TEXT_BYTES // 2**20 + 1):
                 part.write(bytes(2**20))
     with pytest.raises(ValueError, match="unpacks to"):
         importers.parse(out.getvalue())
+
+
+def test_a_wide_sparse_sheet_is_read_without_its_empty_cells():
+    import openpyxl
+    book = openpyxl.Workbook()
+    for row in range(1, 2001):
+        book.active.cell(row=row, column=16384, value=1)        # column XFD, Excel's last
+    out = io.BytesIO()
+    book.save(out)
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError, match="doesn't match a layout"):
+            importers.parse(out.getvalue())
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 20e6          # padding each row out to column XFD peaked at 263 MB
+
+
+def test_a_sheet_that_skips_to_a_far_row_is_refused():
+    import openpyxl
+    book = openpyxl.Workbook()
+    book.active.cell(row=importers.MAX_ROWS + 1, column=1, value="x")
+    out = io.BytesIO()
+    book.save(out)
+    with pytest.raises(ValueError, match=f"more than {importers.MAX_ROWS:,} rows"):
+        importers.parse(out.getvalue())
+
+
+def test_a_workbook_with_more_sheets_than_we_read_is_refused():
+    sheets = {f"Sheet{i}": [["a"]] for i in range(importers.MAX_SHEETS + 1)}
+    with pytest.raises(ValueError, match=f"has {importers.MAX_SHEETS + 1} sheets"):
+        importers.parse(workbook(sheets))
+
+
+def not_a_workbook(_):
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        archive.writestr("notes.txt", "not a workbook")
+    return out.getvalue()
+
+
+@pytest.mark.parametrize("damage", [
+    lambda good: rewritten(good, lambda name, part: part[:-20] if name.endswith("sheet1.xml") else part),
+    lambda good: rewritten(good, lambda _, part: part, zipfile.ZIP_STORED).replace(b"SYNTHA", b"SYNTHZ", 1),
+    not_a_workbook], ids=["broken XML", "bad checksum", "not a workbook"])
+def test_a_damaged_workbook_is_refused_as_a_bad_file(damage):
+    with pytest.raises(ValueError, match="damaged or is not a workbook"):
+        importers.parse(damage(zerodha_holdings(HOLDING)))
 
 
 def test_a_pdf_statement_is_unsupported_rather_than_misread():
@@ -339,6 +401,21 @@ def test_the_csv_template_reads_back_what_was_written():
     rows = importers.parse(text.encode()).rows
     assert [(r.isin, r.symbol, r.side, r.quantity, r.price, r.trade_date) for r in rows] == [
         ("INE009A01021", None, "BUY", 10, 1500.5, date(2024, 1, 15)), (None, "TCS.NS", "SELL", 2, None, None)]
+
+
+CSV_HEADER = "symbol_or_isin,side,quantity,price,trade_date\n"
+
+
+def test_a_csv_file_over_the_size_limit_is_refused():
+    text = CSV_HEADER + "INFY,BUY,1,,\n" * (importers.MAX_TEXT_BYTES // 12)
+    with pytest.raises(ValueError, match="This CSV file is"):
+        importers.parse(text.encode())
+
+
+def test_a_csv_field_too_long_to_read_is_refused_with_its_line():
+    text = CSV_HEADER + '"' + "a" * 200_000 + '",BUY,1,,\n'
+    with pytest.raises(ValueError, match="Line 2 of this CSV file cannot be read"):
+        importers.parse(text.encode())
 
 
 def test_a_tradebook_keeps_each_trades_side_and_date():
@@ -356,9 +433,9 @@ NAMES = {"RELIANCE": "Reliance Industries", "TATAMOTORS": "Tata Motors", "TATAST
          "TATAPOWER": "Tata Power Co.", "TATACOMM": "Tata Communications"}
 
 
-def file_row(isin=None, symbol=None, name=None):
-    return importers.Row(line=2, name=name, isin=isin, symbol=symbol, quantity=1.0, price=None, trade_date=None,
-                         side="BUY", note=None)
+def file_row(isin=None, symbol=None, name=None, quantity=1.0):
+    return importers.Row(line=2, name=name, isin=isin, symbol=symbol, quantity=quantity, price=None,
+                         trade_date=None, side="BUY", note=None)
 
 
 def test_an_isin_maps_to_its_listed_symbol():
@@ -367,8 +444,18 @@ def test_an_isin_maps_to_its_listed_symbol():
 
 
 def test_the_trading_series_is_stripped_from_a_symbol():
-    found, = importers.match([file_row(isin="INE999Z01019", symbol="SYNTHB-BE")], DIRECTORY, NAMES)
+    found, = importers.match([file_row(symbol="SYNTHB-BE")], DIRECTORY, NAMES)
     assert found.listing == Listing("SYNTHB", "equity_l")
+
+
+def test_a_symbol_whose_isin_the_lists_lack_is_only_offered():
+    found, = importers.match([file_row(isin="INE999Z01019", symbol="SYNTHB")], DIRECTORY, NAMES)
+    assert (found.state, found.listing, found.choices) == ("check", None, [Listing("SYNTHB", "equity_l")])
+
+
+def test_a_holding_with_no_free_shares_is_only_offered():
+    found, = importers.match([file_row(isin="INE002A01018", quantity=0.0)], DIRECTORY, NAMES)
+    assert (found.state, found.choices) == ("check", [Listing("RELIANCE", "equity_l")])
 
 
 def test_an_unknown_isin_is_not_found():

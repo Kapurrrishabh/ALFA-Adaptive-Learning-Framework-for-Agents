@@ -8,20 +8,29 @@ from __future__ import annotations
 
 import csv
 import io
+import itertools
 import math
 import re
 import zipfile
+import zlib
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from backend.config import canonical_symbol
 from backend.database.sources.amfi import name_words
 from backend.database.sources.panel import Listing
 
-# provisional: 1,000 trades unzip to 0.7 MB; 50 MB is about 75,000 trades, which took 4 s and 62 MB to read on a
-# Mac (2026-10-30). It is there to stop a small upload unpacking into gigabytes
-MAX_UNZIPPED = 50_000_000
+# provisional, from hostile files built and read on a Mac (2026-10-30): openpyxl can need 120 times an .xlsx's
+# unzipped size (a styles part of empty formats), so 1 MB keeps a read near 120 MB. A tradebook takes about 680
+# bytes a trade unzipped and 110 as CSV, so about 1,400 and 8,800 trades fit
+MAX_TEXT_BYTES = 1_000_000
+MAX_ROWS = 20_000           # more rows than 1 MB of real trades holds
+MAX_COLUMNS = 26            # A to Z: every layout's columns sit well inside it
+MAX_SHEETS = 10             # broker workbooks have one to three
+# what damaged workbooks raised when fuzzed (2026-10-30); anything else is our bug, so it stays a server error
+DAMAGED = (LookupError, SyntaxError, TypeError, OSError, NotImplementedError, zipfile.BadZipFile, zlib.error)
+SHORTER_RANGE = "Download a shorter date range and upload each file."
 MAX_CHOICES = 3
 STATES = ("matched", "check", "not_found")
 ISIN = re.compile(r"^IN[A-Z0-9]{10}$")
@@ -75,7 +84,8 @@ class Layout:
 
 
 def parse(data: bytes) -> Statement:
-    """A broker export or our template, told apart by its first bytes and its header, never its file name."""
+    """A broker export or our template, told apart by its first bytes and its header, never its file name. A file it
+    cannot read raises ValueError, which the route answers with 400; any other error is a bug."""
     if data.startswith(b"%PDF"):
         raise ImportUnsupported("PDF statements aren't switched on for this server")
     if data.startswith(b"PK\x03\x04"):
@@ -84,20 +94,35 @@ def parse(data: bytes) -> Statement:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
         raise ValueError("This file is not an Excel file (.xlsx), a PDF or a CSV file saved as UTF-8.") from None
-    return _statement({"": list(csv.reader(io.StringIO(text)))})
+    if len(data) > MAX_TEXT_BYTES:
+        raise ValueError(f"This CSV file is {math.ceil(len(data) / 1e3):,} KB; we read files of up to "
+                         f"{MAX_TEXT_BYTES // 1000:,} KB. {SHORTER_RANGE}")
+    reader = csv.reader(io.StringIO(text))
+    try:
+        rows = _first_rows(reader, before=0)
+    except csv.Error as exc:
+        raise ValueError(f"Line {reader.line_num} of this CSV file cannot be read: {exc}.") from exc
+    return _statement({"": rows})
 
 
 def match(rows: Sequence[Row], directory: Dict[str, Listing], names: Dict[str, str]) -> List[Match]:
-    """Each row to an NSE listing by ISIN, else by symbol. A name alone is never enough: it only offers choices,
-    from `names` (symbol -> company name)."""
+    """Each row to an NSE listing by its ISIN, or by its symbol when it has none. Anything less sure is only offered
+    in `choices`: a symbol whose ISIN the lists lack, a name (from `names`, symbol -> company name), and any row
+    with a quantity of 0, which Zerodha shows when every share is pledged."""
     by_symbol: Dict[str, Listing] = {}
     for listing in directory.values():
         by_symbol.setdefault(listing.symbol, listing)
     out = []
     for row in rows:
-        listing = directory.get(row.isin) or by_symbol.get(SERIES.sub("", canonical_symbol(row.symbol or "")))
-        choices = [] if listing or not row.name else _choices(row.name, by_symbol, names)
-        out.append(Match(row, "matched" if listing else "check" if choices else "not_found", listing, choices))
+        by_its_symbol = by_symbol.get(SERIES.sub("", canonical_symbol(row.symbol or "")))
+        listing = directory.get(row.isin) if row.isin else by_its_symbol
+        if listing and row.quantity:
+            out.append(Match(row, "matched", listing, []))
+            continue
+        # an ISIN the lists lack can be an old one (a split changes it) or another share that now has the symbol
+        offered = listing or by_its_symbol
+        choices = [offered] if offered else _choices(row.name, by_symbol, names) if row.name else []
+        out.append(Match(row, "check" if choices else "not_found", None, choices))
     return out
 
 
@@ -124,23 +149,43 @@ def _sheets(data: bytes) -> Dict[str, List[Sequence[object]]]:
             unzipped = sum(entry.file_size for entry in archive.infolist())
     except zipfile.BadZipFile as exc:
         raise ValueError(f"This file starts like an Excel file but cannot be opened ({exc}).") from exc
-    # zipfile never inflates an entry past its declared size, so their sum bounds the work
-    if unzipped > MAX_UNZIPPED:
-        raise ValueError(f"This Excel file unpacks to {unzipped / 1e6:,.0f} MB; files over "
-                         f"{MAX_UNZIPPED / 1e6:,.0f} MB are refused.")
-    import openpyxl
+    # zipfile never inflates an entry past its declared size, so their sum bounds each pass over the file
+    if unzipped > MAX_TEXT_BYTES:
+        raise ValueError(f"This Excel file unpacks to {math.ceil(unzipped / 1e3):,} KB; we read files of up to "
+                         f"{MAX_TEXT_BYTES // 1000:,} KB. {SHORTER_RANGE}")
+    from openpyxl.reader.excel import ExcelReader      # what openpyxl.load_workbook runs
     try:
-        book = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-    except KeyError as exc:                 # how openpyxl reports a zip that lacks a workbook's parts
-        raise ValueError(f"This file is a zip archive but not an Excel workbook ({exc}).") from exc
-    try:
-        sheets = {}
-        for sheet in book.worksheets:
-            sheet.reset_dimensions()        # some exports state a wrong size, which read-only mode would trust
-            sheets[sheet.title] = list(sheet.iter_rows(values_only=True))
-        return sheets
-    finally:
-        book.close()
+        reader = ExcelReader(io.BytesIO(data), read_only=True, data_only=True, keep_links=False)
+        reader.read_manifest()
+        reader.read_workbook()
+        # openpyxl parses a sheet's part once for each sheet that names it, and many sheets can name one part
+        if len(reader.parser.sheets) > MAX_SHEETS:
+            raise ValueError(f"This workbook has {len(reader.parser.sheets):,} sheets; we read files with up to "
+                             f"{MAX_SHEETS}. Upload the file as your broker gave it.")
+        reader.read()
+        book = reader.wb
+        try:
+            sheets, rows_read = {}, 0
+            for sheet in book.worksheets:
+                sheet.reset_dimensions()    # some exports state a wrong size, which read-only mode would trust
+                # without max_col, openpyxl pads every row out to its last cell, even one in column XFD
+                sheets[sheet.title] = _first_rows(sheet.iter_rows(max_col=MAX_COLUMNS, values_only=True),
+                                                  before=rows_read)
+                rows_read += len(sheets[sheet.title])
+            return sheets
+        finally:
+            book.close()
+    except DAMAGED as exc:
+        raise ValueError(f"This Excel file is damaged or is not a workbook ({type(exc).__name__}: {exc}).") from exc
+
+
+def _first_rows(rows: Iterable[Sequence[object]], before: int) -> List[Sequence[object]]:
+    """The rows, refused once they and the `before` rows of earlier sheets pass MAX_ROWS; stops reading there, as
+    openpyxl makes a blank row for every row number a sheet skips."""
+    kept = list(itertools.islice(rows, MAX_ROWS + 1 - before))
+    if before + len(kept) > MAX_ROWS:
+        raise ValueError(f"This file has more than {MAX_ROWS:,} rows, counting blank ones. {SHORTER_RANGE}")
+    return kept
 
 
 def _statement(sheets: Dict[str, List[Sequence[object]]]) -> Statement:
