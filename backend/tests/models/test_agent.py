@@ -1122,7 +1122,8 @@ def test_a_question_not_about_money_is_refused_even_when_a_passage_matches(marke
                                       "what does it mean when the macd line rises above the signal line ?",
                                       "does volume rise before a breakout ?", "why are small caps rallying ?",
                                       "are fiis and diis buying ?", "how do i read a candlestick chart ?",
-                                      "what is cagr ?", "what is xirr ?", "what is a hammer candle ?"])
+                                      "what is cagr ?", "what is xirr ?", "what is a hammer candle ?",
+                                      "do breakouts need volume ?"])
 def test_market_words_alone_put_a_question_about_money(question):
     """Each of the first five found its lesson or a headline and was refused as not about money."""
     assert finance.about_money(question)
@@ -1134,7 +1135,9 @@ def test_market_words_alone_put_a_question_about_money(question):
                                       "what are the top songs on the music charts ?", "show me a chart of the weather",
                                       "how do i make a pie chart in excel ?", "what is stochastic gradient descent ?",
                                       "what is the volume of a sphere ?", "how do i turn up the volume on my phone ?",
-                                      "how do i treat an acne breakout ?"])
+                                      "how do i treat an acne breakout ?",
+                                      "how many candles go on a cake, one candle a year ?",
+                                      "why do weather charts put the key below the chart ?"])
 def test_a_question_about_something_else_is_not_about_money(question):
     assert not finance.about_money(question)
 

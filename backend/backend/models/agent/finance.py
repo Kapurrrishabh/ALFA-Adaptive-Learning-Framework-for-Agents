@@ -256,5 +256,5 @@ _PAIRED = re.compile(r"\b(volume|breakouts?|charts?|candles?|hammer)\b", re.I)
 def about_money(text, lesson=""):
     """Whether a question is about money: by its words, or because the curated `lesson` found for it uses every one of
     them. One shared word is not enough: "how do candles burn" found the lesson on candle anatomy."""
-    return (_MONEY.search(text) is not None or len({word.lower() for word in _PAIRED.findall(text)}) > 1
+    return (_MONEY.search(text) is not None or len(lessons.stems(" ".join(_PAIRED.findall(text)))) > 1
             or bool(lesson) and lessons.covers(lesson, text))
