@@ -133,8 +133,26 @@ def _index(name: str) -> Set[str]:
     return set(w + [a + b for a, b in zip(w, w[1:])])
 
 
-def _plan_order(s: Scheme) -> tuple:
-    return s.plan != DIRECT, not s.is_growth, s.plan or "", s.option or "", s.code
+def _plan_words(s: Scheme) -> List[str]:
+    return _words(f"{s.plan or ''} {s.option or ''}")
+
+
+def _plan_order(s: Scheme, asked: List[str]) -> tuple:
+    named = all(any(w.startswith(t) for w in _plan_words(s)) for t in asked)
+    return not named, s.plan != DIRECT, not s.is_growth, s.plan or "", s.option or "", s.code
+
+
+def _matched(tokens: List[str], words: Set[str], searchable: Set[str]) -> Tuple[bool, int]:
+    """(whether every query word starts a searchable word, how many are whole words of the fund's name). Two
+    neighbouring query words may also be found as one: "mid cap" finds "DSP Midcap Fund"."""
+    found = [any(w.startswith(t) for w in searchable) for t in tokens]
+    whole = [t in words for t in tokens]
+    for i, pair in enumerate(a + b for a, b in zip(tokens, tokens[1:])):
+        if any(w.startswith(pair) for w in searchable):
+            found[i] = found[i + 1] = True
+        if pair in words:
+            whole[i] = whole[i + 1] = True
+    return all(found), sum(whole)
 
 
 def query_words(query: str) -> List[str]:
@@ -148,7 +166,8 @@ def query_words(query: str) -> List[str]:
 def search(schemes: List[Scheme], query: str, limit: int = 10) -> List[Dict[str, object]]:
     """Funds whose name or fund house has a word starting with each word of `query`, or the scheme with that ISIN.
     Best first: more words matched whole in the fund's name, then shorter names. Each fund lists its plans,
-    Direct and Growth first; a plan is ambiguous when AMFI labels another code of the fund the same way."""
+    the ones the query names first ("direct growth"), then Direct and Growth; a plan is ambiguous when AMFI
+    labels another code of the fund the same way."""
     q = query.strip()
     tokens = query_words(q)
     if ISIN.match(q.upper()):
@@ -160,15 +179,18 @@ def search(schemes: List[Scheme], query: str, limit: int = 10) -> List[Dict[str,
     for (amc, fund), plans in funds.items():
         words = _index(fund)
         searchable = words | _index(amc)
-        if all(any(w.startswith(t) for w in searchable) for t in tokens):
-            whole = sum(t in words for t in tokens)
+        # a query may name the plan too: "HDFC Mid Cap Fund - Direct Plan - Growth Option"
+        plan_words = {w for s in plans for w in _plan_words(s)}
+        found, whole = _matched(tokens, words, searchable | plan_words)
+        if found:
+            asked = [t for t in tokens if not any(w.startswith(t) for w in searchable)]
             # a note in brackets, like "(erstwhile Bluechip Fund)", does not make the name longer
-            ranked.append(((-whole, len(_words(NOTE.sub("", fund))), fund), amc, fund, plans))
+            ranked.append(((-whole, len(_words(NOTE.sub("", fund))), fund), amc, fund, sorted(plans, key=lambda s: _plan_order(s, asked))))
     ranked.sort(key=lambda r: r[0])
     return [{"fund": fund, "amc": amc, "category": plans[0].category, "scheme_type": plans[0].scheme_type,
              "plans": [{"code": s.code, "plan": s.plan, "option": s.option, "nav": s.nav, "nav_date": s.nav_date,
                         "is_ambiguous": sum((o.plan, o.option) == (s.plan, s.option) for o in plans) > 1}
-                       for s in sorted(plans, key=_plan_order)]}
+                       for s in plans]}
             for _, amc, fund, plans in ranked[:limit]]
 
 

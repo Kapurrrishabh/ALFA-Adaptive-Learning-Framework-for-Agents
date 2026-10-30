@@ -24,6 +24,13 @@ NAV_TEXT = "\r\n".join([
     "118989;INF179K01XQ0;-;HDFC Mid Cap Fund;Direct Plan;Growth Option;210.5120;29-Oct-2026", " ",
     "Open Ended Schemes(Other Scheme - Index Funds)", " ", "HDFC Mutual Fund", " ",
     "150001;INF179KC1BA3;-;HDFC NIFTY Midcap 150 Index Fund;Direct Plan;Growth Option;18.2000;29-Oct-2026", " ",
+    "Open Ended Schemes(Equity Scheme - Mid Cap Fund)", " ", "DSP Mutual Fund", " ",
+    "119071;INF740K01PL6;-;DSP Midcap Fund;Direct Plan;Growth;150.1000;29-Oct-2026",
+    "119072;INF740K01PM4;-;DSP Midcap Fund;Direct Plan;Income Distribution cum Capital Withdrawal;60.1000;29-Oct-2026", " ",
+    "Open Ended Schemes(Debt Scheme - Medium Duration Fund)", " ", "DSP Mutual Fund", " ",
+    "119100;INF740K01QX9;-;DSP Income Fund;Direct Plan;Growth;40.5000;29-Oct-2026", " ",
+    "Open Ended Schemes(Equity Scheme - Large & Mid Cap Fund)", " ", "DSP Mutual Fund", " ",
+    "119218;INF740K01QD1;-;DSP Large & Mid Cap Fund;Direct Plan;Growth;600.2000;29-Oct-2026", " ",
     "Open Ended Schemes(Equity Scheme - Large Cap Fund)", " ", "ICICI Prudential Mutual Fund", " ",
     "120586;INF109K016L0;-;ICICI Prudential Large Cap Fund (erstwhile Bluechip Fund);Direct Plan;Growth;113.1700;29-Oct-2026",
     " ", "Open Ended Schemes(Fund of Funds Scheme (Overseas) - Fund of Funds Scheme (Overseas))", " ",
@@ -152,6 +159,20 @@ def test_a_fund_name_written_with_extra_spaces_is_one_fund_holding_all_its_plans
 
 def test_whole_word_matches_rank_before_longer_names():
     assert [f["fund"] for f in amfi.search(CURRENT, "hdfc midcap")] == ["HDFC Mid Cap Fund", "HDFC NIFTY Midcap 150 Index Fund"]
+
+
+def test_two_query_words_find_a_name_that_writes_them_as_one():
+    assert [f["fund"] for f in amfi.search(CURRENT, "dsp mid cap")] == ["DSP Midcap Fund", "DSP Large & Mid Cap Fund"]
+
+
+@pytest.mark.parametrize("query", ["hdfc mid cap regular idcw", "HDFC Mid Cap Fund - Regular Plan - IDCW Option"])
+def test_a_plan_the_query_names_comes_first_and_does_not_hide_the_fund(query):
+    hit = amfi.search(CURRENT, query)[0]
+    assert hit["fund"] == "HDFC Mid Cap Fund" and hit["plans"][0]["code"] == 105759
+
+
+def test_a_word_of_a_funds_name_outranks_the_same_word_in_another_funds_plan():
+    assert [f["fund"] for f in amfi.search(CURRENT, "dsp income")] == ["DSP Income Fund", "DSP Midcap Fund"]
 
 
 def test_a_note_in_brackets_does_not_push_a_fund_below_a_shorter_name():
