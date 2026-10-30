@@ -12,7 +12,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, NamedTuple, Optional
 
 import pandas as pd
 
@@ -28,6 +28,16 @@ INDEX_LISTS = {
     "nifty500": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
     "midcap150": "https://archives.nseindia.com/content/indices/ind_niftymidcap150list.csv",
 }
+NSE_LISTS = {
+    **INDEX_LISTS,
+    "equity_l": "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+    "etf": "https://archives.nseindia.com/content/equities/eq_etfseclist.csv",
+    "sme": "https://archives.nseindia.com/emerge/corporates/content/SME_EQUITY_L.csv",
+}
+# (symbol, ISIN) columns, read in this order: an ISIN found earlier is kept, so a company that moved up from
+# SME keeps its main-board symbol. nifty500 is here for the REITs, which EQUITY_L leaves out
+ISIN_COLUMNS = {"equity_l": ("SYMBOL", "ISIN NUMBER"), "etf": ("Symbol", "ISINNumber"),
+                "sme": ("SYMBOL", "ISIN_NUMBER"), "nifty500": ("Symbol", "ISIN Code")}
 CACHE_DIR = DATA / "cache"
 CACHE_TTL_S = 12 * 3600
 BATCH = 50
@@ -54,34 +64,55 @@ class Panel:
 def index_constituents(index: str = "nifty500") -> pd.DataFrame:
     """Today's constituents (symbol, sector). Using today's list for history
     is survivorship-biased; callers must say so."""
-    df = _constituents_file(index)
+    df = _constituents_file(index, INDEX_LISTS)
     return pd.DataFrame({"symbol": df["Symbol"].str.strip(), "sector": df["Industry"].str.strip()})
 
 
 def company_names(index: str = "nifty500") -> Dict[str, str]:
     """symbol -> the company's name as people write it: "Infosys Ltd." becomes "Infosys"."""
-    df = _constituents_file(index)
+    df = _constituents_file(index, INDEX_LISTS)
     return {sym.strip(): re.sub(r"\s+(Ltd\.?|Limited)$", "", name.strip())
             for sym, name in zip(df["Symbol"], df["Company Name"])}
 
 
-def _constituents_file(index: str) -> pd.DataFrame:
-    """The exchange's constituent list, refreshed weekly and kept in the cache."""
-    if index not in INDEX_LISTS:
-        raise ValueError(f"unknown index {index!r}; choose from {sorted(INDEX_LISTS)}")
+class Listing(NamedTuple):
+    symbol: str
+    kind: str        # the NSE list it was found in: a key of ISIN_COLUMNS
+
+
+def isin_directory() -> Dict[str, Listing]:
+    """ISIN -> NSE symbol, for every listed share, ETF, SME share and REIT."""
+    directory: Dict[str, Listing] = {}
+    for kind, (symbol, isin) in ISIN_COLUMNS.items():
+        df = _constituents_file(kind, NSE_LISTS)
+        missing = sorted({symbol, isin} - set(df.columns))
+        if missing:
+            raise DataUnavailable(f"NSE's {kind} list has no {missing} column; its header is {list(df.columns)}. "
+                                  "The format changed: update panel.ISIN_COLUMNS.")
+        for s, i in zip(df[symbol].str.strip(), df[isin].str.strip()):
+            directory.setdefault(i, Listing(s, kind))
+    return directory
+
+
+def _constituents_file(name: str, lists: Dict[str, str]) -> pd.DataFrame:
+    """One of NSE's `lists`, refreshed weekly and kept in the cache."""
+    if name not in lists:
+        raise ValueError(f"unknown NSE list {name!r}; choose from {sorted(lists)}")
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = CACHE_DIR / f"{index}.csv"
+    path = CACHE_DIR / f"{name}.csv"
     if not path.exists() or time.time() - path.stat().st_mtime > 7 * 86400:
         import httpx
-        resp = httpx.get(INDEX_LISTS[index], headers={"User-Agent": "Mozilla/5.0"}, timeout=30,
+        resp = httpx.get(lists[name], headers={"User-Agent": "Mozilla/5.0"}, timeout=30,
                          follow_redirects=True)
-        if resp.status_code == 200 and "Symbol" in resp.text[:300]:
+        if resp.status_code == 200 and "symbol" in resp.text[:300].lower():
             path.write_text(resp.text)
         elif path.exists():
-            log.warning("constituent refresh failed (HTTP %s); using cached list", resp.status_code)
+            log.warning("NSE %s list refresh failed (HTTP %s); using cached list", name, resp.status_code)
         else:
-            raise DataUnavailable(f"could not download {index} constituents: HTTP {resp.status_code}")
-    return pd.read_csv(path)
+            raise DataUnavailable(f"could not download NSE's {name} list: HTTP {resp.status_code}")
+    df = pd.read_csv(path)
+    df.columns = df.columns.str.strip()      # EQUITY_L writes " ISIN NUMBER"
+    return df
 
 
 def load_panel(symbols: List[str], sectors: Optional[Dict[str, str]] = None, period: str = "10y",

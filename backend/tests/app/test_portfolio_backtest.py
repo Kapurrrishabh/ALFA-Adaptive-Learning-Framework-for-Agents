@@ -1,9 +1,20 @@
+import io
+import re
+import sys
+import tracemalloc
+import zipfile
+from datetime import date
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from backend.advisory.calculators.backtest import strategies as S
 from backend.advisory.calculators.backtest.engine import BacktestConfig, run
+from backend.database.sources import panel
+from backend.database.sources.panel import Listing
+from backend.user.portfolio import importers
 from backend.user.portfolio.portfolio import Transaction, analyze, build_positions, risk_decomposition, what_if
 from backend.advisory.statistics.model_registry import ModelRegistry, PromotionError
 
@@ -189,3 +200,388 @@ def test_registry_rejects_a_candidate_that_does_not_beat_the_base_rate(store):
                  metrics={"brier_skill": -0.05}, backtest=None, limitations="")
     with pytest.raises(PromotionError, match="does not beat the baseline"):
         reg.approve("forecast", "neg", "rishabh")
+
+
+# Laid out as NSE's files are: EQUITY_L's capitals and spaced headers, the ETF list's CRLF, SME's trailing comma
+NSE_FILES = {
+    "EQUITY_L.csv":
+        "SYMBOL,NAME OF COMPANY, SERIES, DATE OF LISTING, PAID UP VALUE, MARKET LOT, ISIN NUMBER, FACE VALUE\n"
+        "RELIANCE,Reliance Industries Limited,EQ,29-NOV-1995,10,1,INE002A01018,10\n"
+        "MOVEDUP,Moved Up Limited,EQ,01-JAN-2024,10,1,INE111A01011,10\n",
+    "eq_etfseclist.csv":
+        "Symbol,Underlying Asset,SecurityName,DateofListing,MarketLot,ISINNumber,FaceValue,ETF Underlying,"
+        "Underlying Key\r\nNIFTYBEES,Nifty 50,NIPINDETFNIFTYBEES,08-Jan-02,1,INF204KB14I2,1,EQUITY,Nifty 50\r\n",
+    "SME_EQUITY_L.csv":
+        "SYMBOL,NAME_OF_COMPANY,SERIES,DATE_OF_LISTING,PAID_UP_VALUE,ISIN_NUMBER,FACE_VALUE,\n"
+        "MOVEDUPSM,Moved Up Limited,SM,01-JAN-2020,10,INE111A01011,10,\n",
+    "ind_nifty500list.csv":
+        "Company Name,Industry,Symbol,Series,ISIN Code\n"
+        "Reliance Industries Ltd.,Oil Gas & Consumable Fuels,RELIANCE,EQ,INE002A01018\n"
+        "Embassy Office Parks REIT,Realty,EMBASSY,RR,INE041025011\n",
+}
+
+
+@pytest.fixture
+def nse_directory(tmp_path, monkeypatch):
+    import httpx
+    monkeypatch.setattr(panel, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(httpx, "get",
+                        lambda url, **_: SimpleNamespace(status_code=200, text=NSE_FILES[url.rsplit("/", 1)[1]]))
+    return panel.isin_directory()
+
+
+def test_equity_l_is_read_despite_its_capitals_and_spaced_headers(nse_directory):
+    assert nse_directory["INE002A01018"] == Listing("RELIANCE", "equity_l")
+
+
+def test_an_etf_isin_maps_to_the_listed_etf(nse_directory):
+    assert nse_directory["INF204KB14I2"] == Listing("NIFTYBEES", "etf")
+
+
+def test_a_company_that_moved_up_from_sme_keeps_its_main_board_symbol(nse_directory):
+    assert nse_directory["INE111A01011"] == Listing("MOVEDUP", "equity_l")
+
+
+def test_reits_come_from_the_nifty_500_list(nse_directory):
+    assert nse_directory["INE041025011"] == Listing("EMBASSY", "nifty500")
+
+
+def test_index_constituents_refuses_a_list_that_is_not_an_index(nse_directory):
+    with pytest.raises(ValueError, match="unknown NSE list 'equity_l'"):
+        panel.index_constituents("equity_l")
+
+
+def workbook(sheets):
+    """An .xlsx built here, so no real statement or personal data enters the repo."""
+    import openpyxl
+    book = openpyxl.Workbook()
+    book.remove(book.active)
+    for title, rows in sheets.items():
+        sheet = book.create_sheet(title)
+        for row in rows:
+            sheet.append(row)
+    out = io.BytesIO()
+    book.save(out)
+    return out.getvalue()
+
+
+ZERODHA_COLUMNS = ["Symbol", "ISIN", "Sector", "Quantity Available", "Quantity Discrepant", "Quantity Long Term",
+                   "Quantity Pledged (Margin)", "Quantity Pledged (Loan)", "Average Price", "Previous Closing Price"]
+HOLDING = {"Symbol": "SYNTHA", "ISIN": "INE000D01019", "Sector": "SYNTHETIC", "Quantity Available": 14,
+           "Quantity Discrepant": 0, "Quantity Long Term": 0, "Quantity Pledged (Margin)": 0,
+           "Quantity Pledged (Loan)": 0, "Average Price": 412.39, "Previous Closing Price": 455.5}
+
+
+def zerodha_holdings(*holdings):
+    """Zerodha's holdings workbook as third-party descriptions lay it out: Equity, Mutual Funds and Combined sheets,
+    each with a client line, a dated title and a summary above its table."""
+    def sheet(kind, columns, rows):
+        return [["Client ID", "ZZ0000"], [], [f"{kind} Holdings Statement as on 2026-06-30"], [], ["Summary"],
+                ["Invested Value", 1000.0], [], columns] + [[h.get(c) for c in columns] for h in rows]
+    combined = ZERODHA_COLUMNS[:3] + ["Instrument Type"] + ZERODHA_COLUMNS[3:]
+    return workbook({"Equity": sheet("Equity", ZERODHA_COLUMNS, holdings),
+                     "Mutual Funds": sheet("Mutual Funds", [], []),
+                     "Combined": sheet("Combined", combined, [{**h, "Instrument Type": "-"} for h in holdings])})
+
+
+def rewritten(data, change, compression=zipfile.ZIP_DEFLATED, added=()):
+    """The workbook `data` with each part's bytes passed through change(name, part), plus the `added` (name, part)s."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as src, zipfile.ZipFile(out, "w", compression) as dst:
+        for entry in src.infolist():
+            dst.writestr(entry.filename, change(entry.filename, src.read(entry)))
+        for name, part in added:
+            dst.writestr(name, part)
+    return out.getvalue()
+
+
+def test_holdings_rows_leave_the_buy_date_empty():
+    rows = importers.parse(zerodha_holdings(HOLDING)).rows
+    assert [(r.symbol, r.quantity, r.trade_date) for r in rows] == [("SYNTHA", 14, None)]
+
+
+def test_a_sheet_that_understates_its_size_is_still_read_in_full():
+    understated = rewritten(zerodha_holdings(HOLDING, HOLDING),
+                            lambda _, part: re.sub(rb'<dimension ref="[^"]*"/>', b'<dimension ref="A1"/>', part))
+    assert len(importers.parse(understated).rows) == 2
+
+
+def test_the_sheets_left_unread_are_named():
+    assert importers.parse(zerodha_holdings(HOLDING)).warnings == [
+        "Only the 'Equity' sheet was read, not 'Mutual Funds' or 'Combined'."]
+
+
+def test_pledged_shares_are_shown_in_the_note_not_added_to_the_quantity():
+    row, = importers.parse(zerodha_holdings({**HOLDING, "Quantity Pledged (Margin)": 2})).rows
+    assert row.quantity == 14 and "2 pledged for margin" in row.note
+
+
+def test_a_groww_statement_is_dated_by_its_title():
+    statement = importers.parse(workbook({"Sheet1": [
+        ["Unique Client Code", "X1"], ["Holdings statement for stocks as on 01-09-2026"], [],
+        ["Stock Name", "ISIN", "Quantity", "Average buy price", "Closing price"],
+        ["RELIANCE INDUSTRIES LTD", "INE002A01018", 5, 1300.5, 1400]]}))
+    assert (statement.source, statement.as_of) == ("Groww stocks", date(2026, 9, 1))
+
+
+def test_an_unknown_layout_is_refused_with_the_layouts_we_read():
+    with pytest.raises(ValueError, match="Zerodha holdings: .*Groww stocks: .*Zerodha tradebook: .*CSV template: "):
+        importers.parse(workbook({"Sheet1": [["Name", "Shares"], ["Infosys", 3]]}))
+
+
+def test_a_quantity_that_is_not_a_number_is_refused_with_its_row():
+    with pytest.raises(ValueError, match="Row 9: Quantity Available is 'abc'"):
+        importers.parse(zerodha_holdings({**HOLDING, "Quantity Available": "abc"}))
+
+
+def test_a_number_too_long_for_a_float_is_refused_with_its_row():
+    too_long = b"<v>" + b"9" * 400 + b"</v>"         # openpyxl cannot write a number this long, so it goes in by hand
+    huge = rewritten(zerodha_holdings(HOLDING), lambda _, part: part.replace(b"<v>14</v>", too_long))
+    with pytest.raises(ValueError, match="Row 9: Quantity Available is 9999"):
+        importers.parse(huge)
+
+
+def test_an_excel_file_that_unpacks_past_the_limit_is_refused():
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        with archive.open("xl/worksheets/sheet1.xml", "w") as part:
+            for _ in range(importers.MAX_TEXT_BYTES // 2**20 + 1):
+                part.write(bytes(2**20))
+    with pytest.raises(ValueError, match="unpacks to"):
+        importers.parse(out.getvalue())
+
+
+def test_a_wide_sparse_sheet_is_read_without_its_empty_cells():
+    import openpyxl
+    book = openpyxl.Workbook()
+    for row in range(1, 2001):
+        book.active.cell(row=row, column=16384, value=1)        # column XFD, Excel's last
+    out = io.BytesIO()
+    book.save(out)
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError, match="doesn't match a layout"):
+            importers.parse(out.getvalue())
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 20e6          # padding each row out to column XFD peaked at 263 MB
+
+
+def test_a_sheet_that_skips_to_a_far_row_is_refused():
+    import openpyxl
+    book = openpyxl.Workbook()
+    book.active.cell(row=importers.MAX_ROWS + 1, column=1, value="x")
+    out = io.BytesIO()
+    book.save(out)
+    with pytest.raises(ValueError, match=f"more than {importers.MAX_ROWS:,} rows"):
+        importers.parse(out.getvalue())
+
+
+def test_a_workbook_with_more_sheets_than_we_read_is_refused():
+    sheets = {f"Sheet{i}": [["a"]] for i in range(importers.MAX_SHEETS + 1)}
+    with pytest.raises(ValueError, match=f"has {importers.MAX_SHEETS + 1} sheets"):
+        importers.parse(workbook(sheets))
+
+
+def chart_workbook():
+    import openpyxl
+    book = openpyxl.Workbook()
+    book.create_chartsheet("Chart")
+    out = io.BytesIO()
+    book.save(out)
+    return out.getvalue()
+
+
+def test_a_workbook_with_a_chart_sheet_is_refused():
+    with pytest.raises(ValueError, match="'Chart' is a chart"):
+        importers.parse(chart_workbook())
+
+
+def test_two_sheets_naming_one_part_are_refused():
+    twice = rewritten(workbook({"A": [["a"]]}), lambda _, part: re.sub(rb"<sheet .*?/>", lambda m: m[0] * 2, part))
+    with pytest.raises(ValueError, match="two of its sheets name one part"):
+        importers.parse(twice)
+
+
+def test_many_cells_sharing_one_long_text_do_not_each_get_a_copy():
+    """Every cell points at one text in the shared strings part, which openpyxl never writes, so it is put in here."""
+    texts = (f'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>'
+             f'{"a " * 10_000}</t></si></sst>').encode()
+    row = b"<row>" + b'<c t="s"><v>0</v></c>' * importers.MAX_COLUMNS + b"</row>"
+
+    def share(name, part):
+        if name == "[Content_Types].xml":
+            return part.replace(b"</Types>", b'<Override PartName="/xl/sharedStrings.xml" ContentType="application/'
+                                b'vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>')
+        return re.sub(rb"<sheetData>.*</sheetData>", b"<sheetData>" + row * 100 + b"</sheetData>", part)
+    shared = rewritten(workbook({"Sheet1": [["a"]]}), share, added=[("xl/sharedStrings.xml", texts)])
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError, match="doesn't match a layout"):
+            importers.parse(shared)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 20e6          # a tidied copy for each of the 2,600 cells peaked at 52 MB; one shared text, 1.1 MB
+
+
+@pytest.mark.parametrize("sheet", ["Combined", "Equity"], ids=["unread sheet", "above the header"])
+def test_a_long_cell_outside_the_rows_read_is_not_refused(sheet):
+    import openpyxl
+    book = openpyxl.load_workbook(io.BytesIO(zerodha_holdings(HOLDING)))
+    book[sheet]["A2"] = "Disclaimer: " + "x " * importers.MAX_CELL_CHARS
+    out = io.BytesIO()
+    book.save(out)
+    assert len(importers.parse(out.getvalue()).rows) == 1
+
+
+def test_a_long_cell_in_a_row_read_is_refused_with_its_row_and_column():
+    too_long = importers.MAX_CELL_CHARS + 1
+    with pytest.raises(ValueError, match=f"Row 9: Symbol has {too_long} characters"):
+        importers.parse(zerodha_holdings({**HOLDING, "Symbol": "S" * too_long}))
+
+
+def not_a_workbook(_):
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        archive.writestr("notes.txt", "not a workbook")
+    return out.getvalue()
+
+
+def encrypted(good, part="xl/workbook.xml"):
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(good)) as src, zipfile.ZipFile(out, "w") as archive:
+        for entry in src.infolist():
+            archive.writestr(entry.filename, src.read(entry))
+        archive.getinfo(part).flag_bits |= 1     # zipfile writes this flag when it closes
+    return out.getvalue()
+
+
+LONG = "N" * 10_000
+TOO_MANY_DIGITS = b"<v>" + b"9" * (sys.get_int_max_str_digits() + 1) + b"</v>"
+
+
+@pytest.mark.parametrize("damage", [
+    lambda good: rewritten(good, lambda name, part: part[:-20] if name.endswith("sheet1.xml") else part),
+    lambda good: rewritten(good, lambda _, part: part, zipfile.ZIP_STORED).replace(b"SYNTHA", b"SYNTHZ", 1),
+    not_a_workbook, encrypted,
+    lambda good: rewritten(good, lambda _, part: part.replace(b"<v>14</v>", TOO_MANY_DIGITS))],
+    ids=["broken XML", "bad checksum", "not a workbook", "encrypted part", "number past Python's digit limit"])
+def test_a_damaged_workbook_is_refused_as_a_bad_file(damage):
+    with pytest.raises(ValueError, match="damaged or is not a workbook"):
+        importers.parse(damage(zerodha_holdings(HOLDING)))
+
+
+@pytest.mark.parametrize("named", [
+    lambda: rewritten(chart_workbook(), lambda _, part: part.replace(b'name="Chart"', f'name="{LONG}"'.encode())),
+    lambda: encrypted(rewritten(zerodha_holdings(HOLDING), lambda _, part: part, added=[(LONG, b"")]), LONG),
+    lambda: rewritten(zerodha_holdings(HOLDING),
+                      lambda _, part: part.replace(b'"/xl/workbook.xml"', f'"/xl/{LONG}.xml"'.encode())),
+    lambda: workbook({"Sheet1": [[f"Holdings statement for stocks as on {LONG}"],
+                                 ["Stock Name", "ISIN", "Quantity", "Average buy price"]]}),
+    lambda: rewritten(workbook({"A": [CSV_HEADER.strip().split(",")], "B": [CSV_HEADER.strip().split(",")]}),
+                      lambda _, part: part.replace(b'name="A"', f'name="{LONG}"'.encode())),
+    lambda: rewritten(zerodha_holdings(HOLDING), lambda _, part: part.replace(b"<v>14</v>", TOO_MANY_DIGITS)
+                      .replace(b'name="Equity"', f'name="{LONG}"'.encode()))],
+    ids=["chart sheet", "encrypted part", "missing part", "title", "sheet of a second layout", "sheet of a bad cell"])
+def test_a_long_name_from_the_file_is_cut_short_in_the_refusal(named):
+    with pytest.raises(ValueError) as refused:
+        importers.parse(named())
+    assert len(str(refused.value)) < 1_000
+
+
+@pytest.mark.parametrize("sheet", [b"Equity", b"Combined"], ids=["sheet read", "sheet left unread"])
+def test_a_long_sheet_name_is_cut_short_in_the_warning(sheet):
+    renamed = rewritten(zerodha_holdings(HOLDING),
+                        lambda _, part: part.replace(b'name="%s"' % sheet, f'name="{LONG}"'.encode()))
+    warning, = importers.parse(renamed).warnings
+    assert len(warning) < 1_000
+
+
+def test_a_pdf_statement_is_unsupported_rather_than_misread():
+    with pytest.raises(importers.ImportUnsupported):
+        importers.parse(b"%PDF-1.7\n")
+
+
+def test_the_csv_template_reads_back_what_was_written():
+    text = ("\ufeffsymbol_or_isin,side,quantity,price,trade_date\n"      # Excel starts a UTF-8 CSV with a BOM
+            "INE009A01021,BUY,10,1500.5,2024-01-15\ntcs.ns,sell,2,,\n")
+    rows = importers.parse(text.encode()).rows
+    assert [(r.isin, r.symbol, r.side, r.quantity, r.price, r.trade_date) for r in rows] == [
+        ("INE009A01021", None, "BUY", 10, 1500.5, date(2024, 1, 15)), (None, "TCS.NS", "SELL", 2, None, None)]
+
+
+CSV_HEADER = "symbol_or_isin,side,quantity,price,trade_date\n"
+
+
+def test_a_csv_file_over_the_size_limit_is_refused():
+    text = CSV_HEADER + "INFY,BUY,1,,\n" * (importers.MAX_TEXT_BYTES // 12)
+    with pytest.raises(ValueError, match="This CSV file is"):
+        importers.parse(text.encode() + b"\xff")      # not UTF-8 either: the size is checked before decoding
+
+
+def test_a_csv_field_too_long_to_read_is_refused_with_its_line():
+    text = CSV_HEADER + '"' + "a" * 200_000 + '",BUY,1,,\n'
+    with pytest.raises(ValueError, match="Line 2 of this CSV file cannot be read"):
+        importers.parse(text.encode())
+
+
+def test_a_tradebook_keeps_each_trades_side_and_date():
+    text = ("symbol,isin,trade_date,exchange,segment,series,trade_type,auction,quantity,price,trade_id,order_id,"
+            "order_execution_time\n"
+            "INFY,INE009A01021,2024-03-01,NSE,EQ,EQ,sell,false,5,1600.25,1,2,2024-03-01T10:00:00\n")
+    row, = importers.parse(text.encode()).rows
+    assert (row.side, row.trade_date) == ("SELL", date(2024, 3, 1))
+
+
+DIRECTORY = {"INE002A01018": Listing("RELIANCE", "equity_l"), "INE000E01027": Listing("SYNTHB", "equity_l"),
+             "INE155A01022": Listing("TATAMOTORS", "equity_l"), "INE081A01020": Listing("TATASTEEL", "equity_l"),
+             "INE245A01021": Listing("TATAPOWER", "equity_l"), "INE151A01013": Listing("TATACOMM", "equity_l")}
+NAMES = {"RELIANCE": "Reliance Industries", "TATAMOTORS": "Tata Motors", "TATASTEEL": "Tata Steel",
+         "TATAPOWER": "Tata Power Co.", "TATACOMM": "Tata Communications"}
+
+
+def file_row(isin=None, symbol=None, name=None, quantity=1.0):
+    return importers.Row(line=2, name=name, isin=isin, symbol=symbol, quantity=quantity, price=None,
+                         trade_date=None, side="BUY", note=None)
+
+
+def test_an_isin_maps_to_its_listed_symbol():
+    found, = importers.match([file_row(isin="INE002A01018")], DIRECTORY, NAMES)
+    assert (found.state, found.listing) == ("matched", Listing("RELIANCE", "equity_l"))
+
+
+def test_the_trading_series_is_stripped_from_a_symbol():
+    found, = importers.match([file_row(symbol="SYNTHB-BE")], DIRECTORY, NAMES)
+    assert found.listing == Listing("SYNTHB", "equity_l")
+
+
+def test_a_symbol_whose_isin_the_lists_lack_is_only_offered():
+    found, = importers.match([file_row(isin="INE999Z01019", symbol="SYNTHB")], DIRECTORY, NAMES)
+    assert (found.state, found.listing, found.choices) == ("check", None, [Listing("SYNTHB", "equity_l")])
+
+
+def test_a_holding_with_no_free_shares_is_only_offered():
+    found, = importers.match([file_row(isin="INE002A01018", quantity=0.0)], DIRECTORY, NAMES)
+    assert (found.state, found.choices) == ("check", [Listing("RELIANCE", "equity_l")])
+
+
+def test_an_unknown_isin_is_not_found():
+    found, = importers.match([file_row(isin="INE999Z01019", symbol="GONE")], DIRECTORY, NAMES)
+    assert found.state == "not_found"
+
+
+def test_a_name_that_fits_one_company_is_still_only_offered():
+    found, = importers.match([file_row(isin="INE999Z01019", name="TATA MOTORS LTD")], DIRECTORY, NAMES)
+    assert (found.state, found.listing, found.choices) == ("check", None, [Listing("TATAMOTORS", "equity_l")])
+
+
+def test_a_name_offers_at_most_three_choices():
+    found, = importers.match([file_row(name="TATA LTD")], DIRECTORY, NAMES)
+    assert len(found.choices) == 3
+
+
+def test_every_row_is_counted_in_one_state():
+    rows = [file_row(isin="INE002A01018"), file_row(name="Tata Steel Limited"), file_row(symbol="GONE")]
+    assert importers.counts(importers.match(rows, DIRECTORY, NAMES)) == {"matched": 1, "check": 1, "not_found": 1}

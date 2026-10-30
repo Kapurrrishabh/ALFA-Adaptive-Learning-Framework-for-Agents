@@ -123,18 +123,18 @@ def current(schemes: List[Scheme], days: int = LIVE_DAYS) -> List[Scheme]:
     return [s for s in schemes if s.nav_date >= newest - timedelta(days=days)]
 
 
-def _words(text: str) -> List[str]:
+def name_words(text: str) -> List[str]:
     return re.findall(r"[a-z0-9]+", text.lower().replace("&", " and "))
 
 
 def _index(name: str) -> Set[str]:
     """A name's words plus each neighbouring pair joined, so "Mid Cap" also reads "midcap"."""
-    w = _words(name)
+    w = name_words(name)
     return set(w + [a + b for a, b in zip(w, w[1:])])
 
 
 def _plan_words(s: Scheme) -> List[str]:
-    return _words(f"{s.plan or ''} {s.option or ''}")
+    return name_words(f"{s.plan or ''} {s.option or ''}")
 
 
 def _plan_order(s: Scheme, asked: List[str]) -> tuple:
@@ -157,7 +157,7 @@ def _matched(tokens: List[str], words: Set[str], searchable: Set[str]) -> Tuple[
 
 def query_words(query: str) -> List[str]:
     """The words `search` looks for, with abbreviations spelt out. ValueError if there is too little to search."""
-    words = [t for w in _words(query) for t in SYNONYMS.get(w, w).split()]
+    words = [t for w in name_words(query) for t in SYNONYMS.get(w, w).split()]
     if len(query.strip()) < MIN_QUERY_CHARS or not words:
         raise ValueError(f"type at least {MIN_QUERY_CHARS} letters of the fund's name; got {query!r}")
     return words
@@ -185,7 +185,7 @@ def search(schemes: List[Scheme], query: str, limit: int = 10) -> List[Dict[str,
         if found:
             asked = [t for t in tokens if not any(w.startswith(t) for w in searchable)]
             # a note in brackets, like "(erstwhile Bluechip Fund)", does not make the name longer
-            ranked.append(((-whole, len(_words(NOTE.sub("", fund))), fund), amc, fund, sorted(plans, key=lambda s: _plan_order(s, asked))))
+            ranked.append(((-whole, len(name_words(NOTE.sub("", fund))), fund), amc, fund, sorted(plans, key=lambda s: _plan_order(s, asked))))
     ranked.sort(key=lambda r: r[0])
     return [{"fund": fund, "amc": amc, "category": plans[0].category, "scheme_type": plans[0].scheme_type,
              "plans": [{"code": s.code, "plan": s.plan, "option": s.option, "nav": s.nav, "nav_date": s.nav_date,
