@@ -1,5 +1,4 @@
-"""Sign-in with fastapi-users: Google (OpenID Connect) and email + password. The session is
-a cookie naming a database row, so signing out really ends it. Built here, mounted by app.py."""
+"""Sign-in with fastapi-users. The session is a cookie naming a database row, so signing out really ends it."""
 from __future__ import annotations
 
 import asyncio
@@ -25,13 +24,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.database.accounts import AccessToken, OAuthAccount, User, create_tables, purge_sessions, sessions
 
 PASSWORD_MIN = 15           # NIST SP 800-63B-4, for a password that is the only factor
-PASSWORD_MAX = 64           # NIST asks to allow at least 64
-SESSION_DAYS = 30           # PROVISIONAL: how long a sign-in lasts; shorten if people share devices
+PASSWORD_MAX = 64
+SESSION_SECONDS = 30 * 86400  # PROVISIONAL: how long a sign-in lasts; shorten if people share devices
 SECRET_MIN = 32
 LOOPBACK = ("127.0.0.1", "localhost")
 GOOGLE_DISCOVERY = "https://accounts.google.com/.well-known/openid-configuration"
-# The OWASP minimum for Argon2id: about 20 MB and 22 ms a hash (measured on a Mac), against
-# 64 MB and 63 ms at the library default. fastapi-users hashes on the event loop, one at a time.
+# OWASP's Argon2id minimum. Measured on an M4 Mac: a hash adds 20 MB to peak memory and uses 15 ms of CPU,
+# against 67 MB and 95 ms at the library default. fastapi-users hashes on the event loop, one at a time.
 HASHER = Argon2Hasher(memory_cost=19456, time_cost=2, parallelism=1)
 
 
@@ -41,7 +40,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             raise InvalidPasswordException(f"Use {PASSWORD_MIN} to {PASSWORD_MAX} characters (this one has "
                                            f"{len(password)}). A short sentence is easy to remember.")
         name = user.email.split("@")[0].lower()
-        if len(name) > 1 and name in password.lower():      # one letter would just ban that letter
+        if len(name) > 1 and name in password.lower():
             raise InvalidPasswordException(f"Your password must not contain {name!r}, the start of your email.")
 
     async def oauth_callback(self, oauth_name: str, access_token: str, account_id: str, account_email: str,
@@ -53,9 +52,6 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
 
 
 class GoogleOIDC(OpenID):
-    """Google with only the openid and email scopes. Building one fetches Google's discovery
-    document, so a server with Google set up fails at start when Google is unreachable."""
-
     def __init__(self, client_id: str, client_secret: str):
         super().__init__(client_id, client_secret, GOOGLE_DISCOVERY, name="google", base_scopes=["openid", "email"])
 
@@ -66,7 +62,6 @@ class GoogleOIDC(OpenID):
 
 
 def owner_of(user: User) -> str:
-    """The one place a user maps to the portfolio name their data is kept under."""
     return f"user:{user.id}"
 
 
@@ -75,7 +70,7 @@ class Accounts:
         self.public_url, self.secret, self.google = public_url, secret, google
         self.secure = urlsplit(public_url).scheme == "https"
         create_tables(db_path)
-        purge_sessions(db_path, datetime.now(timezone.utc) - timedelta(days=SESSION_DAYS))
+        purge_sessions(db_path, datetime.now(timezone.utc) - timedelta(seconds=SESSION_SECONDS))
         self._sessions = sessions(db_path)
         self._passwords = PasswordHelper(PasswordHash((HASHER,)))
 
@@ -88,11 +83,11 @@ class Accounts:
 
         def get_strategy(session: AsyncSession = Depends(get_session)) -> DatabaseStrategy:
             return DatabaseStrategy(SQLAlchemyAccessTokenDatabase(session, AccessToken),
-                                    lifetime_seconds=SESSION_DAYS * 86400)
+                                    lifetime_seconds=SESSION_SECONDS)
 
         # __Host- makes the browser refuse the cookie unless it is Secure, host-only and on path /
         transport = CookieTransport(cookie_name="__Host-stockintel" if self.secure else "stockintel",
-                                    cookie_max_age=SESSION_DAYS * 86400, cookie_path="/", cookie_secure=self.secure,
+                                    cookie_max_age=SESSION_SECONDS, cookie_path="/", cookie_secure=self.secure,
                                     cookie_httponly=True, cookie_samesite="lax")
         self.backend = AuthenticationBackend(name="cookie", transport=transport, get_strategy=get_strategy)
         self.users = FastAPIUsers[User, uuid.UUID](get_user_manager, [self.backend])
@@ -106,10 +101,12 @@ class Accounts:
                                f"{SECRET_MIN}; make one with `openssl rand -hex 32`.")
         public_url = os.environ.get("STOCKINTEL_PUBLIC_URL", "")
         parts = urlsplit(public_url)
-        if public_url != f"{parts.scheme}://{parts.netloc}" or not parts.hostname or not (
+        port = "" if parts.port in (None, {"https": 443, "http": 80}.get(parts.scheme)) else f":{parts.port}"
+        if public_url != f"{parts.scheme}://{parts.hostname}{port}" or not parts.hostname or not (
                 parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in LOOPBACK)):
-            raise RuntimeError(f"STOCKINTEL_PUBLIC_URL is {public_url!r}; set it to the address people open, with "
-                               "no path or trailing slash, like https://you.duckdns.org (http only for 127.0.0.1 "
+            raise RuntimeError(f"STOCKINTEL_PUBLIC_URL is {public_url!r}; set it to the address people open, as a "
+                               "browser's Origin header writes it (lower case; no user name, path, trailing slash "
+                               "or default port), like https://you.duckdns.org (http only for 127.0.0.1 "
                                "or localhost).")
         client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
         client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
@@ -123,8 +120,7 @@ class Accounts:
         return UserManager(SQLAlchemyUserDatabase(session, User, OAuthAccount), self._passwords)
 
     def include(self, app: FastAPI, dependencies: Sequence[params.Depends]) -> None:
-        """Password sign-in at /auth/cookie, and Google at /auth/google when it is set up. The
-        users router stays out: its PATCH /me changes email and password."""
+        """The users router stays out: its PATCH /me changes email and password."""
         app.include_router(self.users.get_auth_router(self.backend, requires_verification=True),
                            prefix="/auth/cookie", dependencies=dependencies)
         if self.google is not None:
@@ -136,7 +132,6 @@ class Accounts:
                 prefix="/auth/google", dependencies=dependencies)
 
     def create_user(self, email: str, password: str, *, verified: bool) -> User:
-        """For the command line and tests; it runs its own event loop."""
         async def create() -> User:
             async with self._sessions() as session:
                 return await self._manager(session).create(

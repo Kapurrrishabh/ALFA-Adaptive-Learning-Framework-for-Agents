@@ -1,5 +1,4 @@
-"""Sign-in tables for fastapi-users (user, oauth_account, accesstoken), kept in the same
-SQLite file as the portfolios so one backup holds both."""
+"""Sign-in tables for fastapi-users, in the same SQLite file as the portfolios so one backup holds both."""
 from __future__ import annotations
 
 import sqlite3
@@ -63,7 +62,6 @@ def sessions(path: str) -> async_sessionmaker[AsyncSession]:
 
 
 def scrub_copy(conn: sqlite3.Connection) -> None:
-    """Delete the sign-in sessions from a copy of the database, so a backup never holds one."""
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
                     (AccessToken.__tablename__,)).fetchone():
         with conn:

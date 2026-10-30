@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from fastapi_users import InvalidPasswordException
 from httpx_oauth.oauth2 import BaseOAuth2, OAuth2Token
 
-from backend.api.accounts import PASSWORD_MAX, PASSWORD_MIN, Accounts, GoogleOIDC, owner_of
+from backend.api.accounts import Accounts, GoogleOIDC, owner_of
 from backend.database.accounts import scrub_copy
 
 # https, because the client only sends a Secure cookie back over https
@@ -96,6 +96,10 @@ def test_login_sets_a_host_only_secure_http_only_lax_cookie(client, accounts):
     assert not [a for a in attributes if a.lower().startswith("domain")]
 
 
+def test_the_login_cookie_lasts_30_days(client, accounts):
+    assert "Max-Age=2592000" in sign_in(client, accounts).headers["set-cookie"]
+
+
 def test_loopback_http_gets_a_plain_cookie_without_secure(db_path):
     local = Accounts(db_path, "http://127.0.0.1:8931", SECRET, None)
     cookie = sign_in(client_for(local), local).headers["set-cookie"]
@@ -137,11 +141,12 @@ def test_expired_sessions_are_purged_at_start(client, accounts, db_path, google)
     assert rows(db_path, "accesstoken") == 0
 
 
-def test_a_session_of_a_user_no_longer_verified_gets_403(client, accounts, db_path):
+@pytest.mark.parametrize("column, status", [("is_verified", 403), ("is_active", 401)])
+def test_a_session_of_a_user_no_longer_verified_or_active_is_refused(client, accounts, db_path, column, status):
     sign_in(client, accounts)
     with closing(sqlite3.connect(db_path)) as conn, conn:
-        conn.execute('UPDATE "user" SET is_verified = 0')
-    assert client.get("/probe").status_code == 403
+        conn.execute(f'UPDATE "user" SET {column} = 0')
+    assert client.get("/probe").status_code == status
 
 
 def test_an_unverified_user_cannot_log_in(client, accounts):
@@ -165,8 +170,9 @@ def test_google_tokens_are_not_stored(client, db_path):
         assert conn.execute("SELECT access_token, refresh_token FROM oauth_account").fetchall() == [("", None)]
 
 
-def test_an_unverified_google_email_is_refused(client, google):
-    google.profile["email_verified"] = False
+@pytest.mark.parametrize("verified", [False, "false"])
+def test_an_unverified_google_email_is_refused(client, google, verified):
+    google.profile["email_verified"] = verified
     r = google_sign_in(client)
     assert (r.status_code, r.json()["detail"]) == (400, "OAUTH_NOT_AVAILABLE_EMAIL")
 
@@ -204,6 +210,9 @@ def set_env(monkeypatch, env):
     ({"STOCKINTEL_PUBLIC_URL": None}, "STOCKINTEL_PUBLIC_URL"),
     ({"STOCKINTEL_PUBLIC_URL": "http://you.duckdns.org"}, "STOCKINTEL_PUBLIC_URL"),
     ({"STOCKINTEL_PUBLIC_URL": "https://you.duckdns.org/"}, "STOCKINTEL_PUBLIC_URL"),
+    ({"STOCKINTEL_PUBLIC_URL": "https://a@you.duckdns.org"}, "STOCKINTEL_PUBLIC_URL"),
+    ({"STOCKINTEL_PUBLIC_URL": "https://you.duckdns.org:443"}, "STOCKINTEL_PUBLIC_URL"),
+    ({"STOCKINTEL_PUBLIC_URL": "https://You.duckdns.org"}, "STOCKINTEL_PUBLIC_URL"),
     ({"GOOGLE_CLIENT_ID": "client-id"}, "GOOGLE_CLIENT_SECRET"),
     ({"GOOGLE_CLIENT_SECRET": "client-secret"}, "GOOGLE_CLIENT_ID"),
 ])
@@ -229,14 +238,14 @@ def test_the_stored_hash_uses_the_owasp_argon2_cost(accounts, db_path):
         assert "$m=19456,t=2,p=1$" in conn.execute('SELECT hashed_password FROM "user"').fetchone()[0]
 
 
-@pytest.mark.parametrize("password", ["q" * (PASSWORD_MIN - 1), "q" * (PASSWORD_MAX + 1),
+@pytest.mark.parametrize("password", ["q" * 14, "q" * 65,
                                       "my name is asha, hello", "MY NAME IS ASHA, HELLO"])
 def test_a_weak_password_is_refused(accounts, password):
     with pytest.raises(InvalidPasswordException):
         accounts.create_user(EMAIL, password, verified=True)
 
 
-@pytest.mark.parametrize("length", [PASSWORD_MIN, PASSWORD_MAX])
+@pytest.mark.parametrize("length", [15, 64])
 def test_passwords_at_the_length_limits_are_accepted(accounts, length):
     assert accounts.create_user(EMAIL, "q" * length, verified=True).email == EMAIL
 
