@@ -50,7 +50,10 @@ function md(text) {
 }
 // one colour variable per GRU path, so the theme switch recolours them
 const GRU_PATH_COLORS = { low: "--down", middle: "--series-1", high: "--up" };
-function toast(msg) { const t = h("div", { class: "toast" }, msg); document.body.append(t); setTimeout(() => t.remove(), 2600); }
+const uid = (prefix) => prefix + Math.random().toString(36).slice(2);
+// one live region made at load, so a screen reader hears even the first toast; toasts stack inside it
+const toasts = h("div", { class: "toasts", role: "status" }); document.body.append(toasts);
+function toast(msg) { const t = h("div", { class: "toast" }, msg); toasts.append(t); setTimeout(() => t.remove(), 2600); }
 
 // ---------- auth + api ----------
 // a header carries plain ASCII only; Render shows a hidden secret as "••••" until it is revealed
@@ -70,9 +73,9 @@ async function api(path, opts = {}) {
   if (key && !KEY_RE.test(key)) { localStorage.removeItem("si-key"); askKey(); throw new Error("The saved key is not a valid key; please paste it again"); }
   const res = await fetch(path, { ...opts, headers: { "X-API-Key": key, "Content-Type": "application/json", ...(opts.headers || {}) } });
   const body = await res.json().catch(() => ({}));
-  if (res.status === 401) { askKey(); throw new Error("Please log in with your StockIntel key"); }
+  if (res.status === 401) askKey();
   const detail = Array.isArray(body.detail) ? body.detail.map((d) => d.msg).join("; ") : body.detail;
-  if (!res.ok) throw Object.assign(new Error(detail || body.error || `HTTP ${res.status}`), { status: res.status });
+  if (!res.ok) throw Object.assign(new Error(detail || body.error || `HTTP ${res.status}`), { status: res.status, detail: body.detail });
   return body;
 }
 function askKey() {
@@ -108,7 +111,7 @@ const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v
     clearTimeout(timer);
     const v = q.value.trim(); if (!v) { items = []; return close(); }
     timer = setTimeout(async () => {
-      let found; try { found = await api("/ui/search?q=" + encodeURIComponent(v)); } catch (e) { if (v === q.value.trim()) toast(`Search failed: ${e.message}`); return; }
+      let found; try { found = await api("/ui/search?q=" + encodeURIComponent(v)); } catch (e) { if (v === q.value.trim()) toast(`Search failed: ${errorWords(e)}`); return; }
       if (v !== q.value.trim()) return;
       items = found; itemsFor = v; sel = -1; draw();
     }, 150);
@@ -127,14 +130,15 @@ const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v
 // ---------- charts ----------
 // user-space bounds: a bounding-box filter drops perfectly flat lines (zero-height box)
 function glow(svg, W, H, sd = 3) {
-  const id = "glow" + Math.random().toString(36).slice(2), f = s("filter", { id, filterUnits: "userSpaceOnUse", x: 0, y: 0, width: W, height: H });
+  const id = uid("glow"), f = s("filter", { id, filterUnits: "userSpaceOnUse", x: 0, y: 0, width: W, height: H });
   const merge = s("feMerge"); merge.append(s("feMergeNode", { in: "b" }), s("feMergeNode", { in: "SourceGraphic" }));
   f.append(s("feGaussianBlur", { stdDeviation: sd, result: "b" }), merge); svg.append(f); return `url(#${id})`;
 }
 const ICONS = { home: "M3 11l9-8 9 8M5 10v10h14V10", compass: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM15.5 8.5l-2 5-5 2 2-5z",
   layers: "M12 3l9 5-9 5-9-5zM3 13l9 5 9-5M3 17.5l9 5 9-5", sparkle: "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z",
   pie: "M12 3v9h9a9 9 0 1 1-9-9zM15 3.5A9 9 0 0 1 20.5 9H15z", candles: "M7 3v18M17 3v18M5 7h4v9H5zM15 5h4v7h-4z",
-  chat: "M4 5h16v11H9l-5 4z", chart: "M4 20V4M4 20h16M7 15l4-5 3 3 6-7", book: "M12 6.5C10 5 7 4.5 4 5v14c3-.5 6 0 8 1.5 2-1.5 5-2 8-1.5V5c-3-.5-6 0-8 1.5zM12 6.5v14" };
+  chat: "M4 5h16v11H9l-5 4z", chart: "M4 20V4M4 20h16M7 15l4-5 3 3 6-7", book: "M12 6.5C10 5 7 4.5 4 5v14c3-.5 6 0 8 1.5 2-1.5 5-2 8-1.5V5c-3-.5-6 0-8 1.5zM12 6.5v14",
+  falling: "M4 20V4M4 20h16M7 6l4 5 3-3 6 7", alert: "M12 3.5L2.5 20h19zM12 10v4M12 17h.01" };
 function icon(name) { const svg = s("svg", { viewBox: "0 0 24 24", width: 22, height: 22, fill: "none", stroke: "currentColor", "stroke-width": 1.7, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" });
   svg.append(s("path", { d: ICONS[name] })); return svg; }
 function ring(frac, label, color = css("--brand"), size = 84) {
@@ -154,7 +158,7 @@ function areaChart(container, dates, values, { height = 280, showAxis = true } =
   const x = (i) => m.l + (values.length === 1 ? pw / 2 : (i / (values.length - 1)) * pw), y = (v) => m.t + ph - ((v - lo) / (hi - lo)) * ph;
   const up = values[values.length - 1] >= values[0], color = up ? css("--up") : css("--down");
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Price chart, ${up ? "up" : "down"} over the period` });
-  const gid = "g" + Math.random().toString(36).slice(2);
+  const gid = uid("g");
   const defs = s("defs"); const grad = s("linearGradient", { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 });
   grad.append(s("stop", { offset: "0%", "stop-color": color, "stop-opacity": 0.32 }), s("stop", { offset: "100%", "stop-color": color, "stop-opacity": 0 }));
   defs.append(grad); svg.append(defs);
@@ -414,7 +418,7 @@ function intradayPanel(ctx, sym) {
     note.textContent = `${d.interval} candles · blue line = VWAP (average price paid today) · levels from the daily analysis · ${d.note}`;
   };
   let cached = null;
-  const load = async () => { plot.replaceChildren(skel(360)); try { cached = await api(`/ui/stock/${encodeURIComponent(sym)}/intraday?range=${rng}`, { signal: ctx.signal }); draw(cached); } catch (e) { plot.replaceChildren(errorBox(e)); } };
+  const load = async () => { plot.replaceChildren(skel(360)); try { cached = await api(`/ui/stock/${encodeURIComponent(sym)}/intraday?range=${rng}`, { signal: ctx.signal }); draw(cached); } catch (e) { plot.replaceChildren(ErrorState(e, load)); } };
   wrap.append(h("div", { class: "spread" }, h("div", { class: "legend" }, h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1)" }), " VWAP"),
     h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--up);border-top-style:dashed" }), " support"), h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--down);border-top-style:dashed" }), " resistance"),
     h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--cone);border-top-style:dotted" }), " 5-day 80% range")), seg), plot, note);
@@ -510,12 +514,12 @@ function technicalPanel(ctx, sym, opts = {}) {
   features().then((f) => { if (f.gru) { names.gru = "Our GRU forecast (dashed)"; layers.gru = true; toggles.prepend(toggle("gru")); }
     if (f.alfa) { names.alfa = "Our return model (ALFA)"; layers.alfa = true; toggles.prepend(toggle("alfa")); }
     if (f.ml) { names.ai = "AI forecast (Chronos)"; layers.ai = false; toggles.append(toggle("ai")); }
-    if (f.kronos) { names.kronos = "AI candles (Kronos, experimental)"; toggles.append(toggle("kronos")); } loadAi(); }).catch((e) => ctx.live() && toast(e.message));
+    if (f.kronos) { names.kronos = "AI candles (Kronos, experimental)"; toggles.append(toggle("kronos")); } loadAi(); }).catch((e) => ctx.live() && toast(errorWords(e)));
   const AI_LAYERS = [["alfa", "alfa"], ["gru", "gru"], ["ai", "chronos"], ["kronos", "kronos"]];
   const loadAi = () => { for (const [k, model] of AI_LAYERS) if (layers[k] && !(model in ai)) {
     ai[model] = null;
     api(`/ui/stock/${encodeURIComponent(sym)}/ai?model=${model}`, { signal: ctx.signal }).then((r) => { ai[model] = r; draw(); drawCards(); })
-      .catch((e) => { delete ai[model]; if (ctx.live()) toast(`${model}: ${e.message}`); }); } };
+      .catch((e) => { delete ai[model]; if (ctx.live()) toast(`${model}: ${errorWords(e)}`); }); } };
   const seg = h("div", { class: "seg" }, ...[["1M", 21], ["3M", 63], ["6M", 126], ["1Y", 252], ["2Y", 500]].map(([lab, b]) => h("button", { class: b === bars ? "active" : "", onclick: (e) => { bars = b; for (const x of seg.children) x.classList.remove("active"); e.target.classList.add("active"); load(); } }, lab)));
   const draw = () => { if (!data) return; candleChart(plot, { ...data, fan: layers.ai && ai.chronos, alfa: layers.alfa && ai.alfa, gru: layers.gru && ai.gru, ghost: layers.kronos && ai.kronos }, layers, selected, (k) => { selected = selected === k ? null : k; draw(); drawCards(); }); };
   const drawCards = () => {
@@ -538,7 +542,7 @@ function technicalPanel(ctx, sym, opts = {}) {
     const recent = new Set(data.dates.slice(-RECENT_MARKERS)); data.markers = data.markers.filter((mk) => recent.has(mk.date));
     // one pattern at a time reads clearly; start with the most confident, cards switch it
     selected = data.patterns.length ? data.patterns.reduce((best, p, k) => p.confidence > data.patterns[best].confidence ? k : best, 0) : null;
-    draw(); drawCards(); } catch (e) { plot.replaceChildren(errorBox(e)); } };
+    draw(); drawCards(); } catch (e) { plot.replaceChildren(ErrorState(e, load)); } };
   wrap.append(h("div", { class: "spread" }, h("div", { class: "row", style: "font-size:12px;color:var(--muted)" },
     h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1)" }), " 50-day"), h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-2)" }), " 200-day"),
     h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--pattern)" }), " pattern"),
@@ -683,7 +687,7 @@ function bandRecords(coverage) {
 }
 
 async function pagePerformance(view, ctx) {
-  let d; try { d = await api("/ui/performance", { signal: ctx.signal }); } catch (e) { view.append(e.status !== 404 ? errorBox(e) : h("div", { class: "card empty" }, h("div", { class: "big" }, "📊"), h("h2", {}, "Performance results not built yet"), h("p", {}, "Run `stockintel build-performance` once (about 30 seconds), then reload."))); return; }
+  let d; try { d = await api("/ui/performance", { signal: ctx.signal }); } catch (e) { view.append(e.status !== 404 ? ErrorState(e, route) : EmptyState("chart", "Performance results not built yet", "Run `stockintel build-performance` once (about 30 seconds), then reload.", null)); return; }
   view.append(h("div", { class: "card" }, h("h2", {}, "How well does StockIntel actually work?"),
     h("p", { class: "muted", style: "margin-top:-6px" }, `Every number below is out of sample — tested on data the method never saw. Built ${new Date(d.built_at).toLocaleString("en-IN")}.`)));
   // 1. momentum
@@ -756,9 +760,52 @@ const stockRow = (r, right) => h("a", { href: `#/stock/${encodeURIComponent(r.sy
     h("div", { style: "min-width:0" }, h("div", { class: "t" }, r.name || r.symbol), h("div", { class: "s" }, r.symbol))),
   h("div", { class: "right" }, right));
 const priceChange = (price, chgPct) => [h("div", { class: "num" }, inr(price)), h("div", { class: `num ${cls(chgPct)}`, style: "font-size:12.5px" }, pct(chgPct))];
-function errorBox(e) { return h("div", { class: "card empty" }, h("div", { class: "big" }, "⚠"), h("p", {}, e.message || String(e))); }
+const onOurSide = (e) => !e.status || e.status >= 500;
+// a 4xx's own words say what to change, so they lead; a 5xx or network text is for us, so it waits behind Details
+function errorWords(e) {
+  return e.status === 401 ? "Please sign in." : e.status === 403 ? "Confirm your email first." : onOurSide(e) ? "Something went wrong on our side." : e.message;
+}
+function ErrorState(e, retry) {
+  const words = errorWords(e), raw = e.message || String(e);
+  return h("div", { class: "card empty" }, h("div", { class: "big" }, icon("alert")), h("p", {}, words),
+    words !== raw ? h("details", {}, h("summary", {}, "Details"), h("p", {}, raw)) : null,
+    e.status === 401 ? h("button", { class: "btn primary", onclick: () => askKey() }, "Sign in")
+      : onOurSide(e) ? h("button", { class: "btn", onclick: () => retry() }, "Try again") : null);
+}
+function EmptyState(ic, title, text, actions) {
+  return h("div", { class: "card empty" }, h("div", { class: "big" }, icon(ic)), h("h2", {}, title), text && h("p", {}, text), actions);
+}
 // keeps the card's title (its first child), so a failed request never leaves a skeleton or a blank chart
-const showCardError = (card) => (e) => card.replaceChildren(card.firstChild, h("p", { class: "muted" }, e.message));
+const showCardError = (card) => (e) => card.replaceChildren(card.firstChild, ErrorState(e, route));
+function Field(label, input, hint) {
+  input.id = input.id || uid("field");
+  const note = hint ? h("span", { class: "hint", id: `${input.id}-hint` }, hint) : null, error = h("span", { class: "field-error", id: `${input.id}-error` });
+  input.setAttribute("aria-describedby", note ? `${note.id} ${error.id}` : error.id);
+  const field = h("div", { class: "field" }, h("label", { for: input.id }, label), input, note, error);
+  field.showError = (msg) => { error.textContent = msg || ""; if (msg) input.setAttribute("aria-invalid", "true"); else input.removeAttribute("aria-invalid"); };
+  return field;
+}
+function Dialog(title, body, [label, run]) {
+  const opener = document.activeElement, titleId = uid("dialog");
+  const main = h("button", { class: "btn primary", type: "submit" }, label), problem = h("p", { class: "dialog-error", role: "alert" });
+  const close = () => { bg.remove(); if (opener && opener.isConnected) opener.focus(); };
+  const form = h("form", { class: "form", novalidate: true, onsubmit: async (e) => {
+    e.preventDefault(); main.disabled = true; problem.textContent = ""; for (const f of form.querySelectorAll(".field")) f.showError(null);
+    try { await run(); close(); } catch (err) {
+      const refused = (Array.isArray(err.detail) ? err.detail : []).map((d) => [form.elements.namedItem(String(d.loc.at(-1))), d.msg]).filter(([input]) => input);
+      for (const [input, msg] of refused) input.closest(".field").showError(msg);
+      if (refused.length) refused[0][0].focus(); else problem.textContent = errorWords(err);
+    } finally { main.disabled = false; } } },
+    h("h2", { id: titleId }, title), body, problem,
+    h("div", { class: "row", style: "justify-content:flex-end" }, h("button", { class: "btn", type: "button", onclick: close }, "Cancel"), main));
+  const box = h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-labelledby": titleId, tabindex: "-1" }, form);
+  const bg = h("div", { class: "modal-bg", onclick: (e) => { if (e.target === bg) close(); }, onkeydown: (e) => {
+    if (e.key === "Escape") return close();
+    if (e.key !== "Tab") return;
+    const stops = [...box.querySelectorAll("input, select, button")].filter((el) => !el.disabled), at = stops.indexOf(document.activeElement);
+    e.preventDefault(); stops[e.shiftKey ? (at <= 0 ? stops.length : at) - 1 : (at + 1) % stops.length].focus(); } }, box);
+  document.body.append(bg); (form.querySelector("input, select") || main).focus();
+}
 
 // ---------- pages ----------
 async function pageExplore(view, ctx) {
@@ -770,13 +817,13 @@ async function pageExplore(view, ctx) {
   const idx = h("div", { class: "grid cols-4" }, [1, 2, 3, 4].map(() => h("div", { class: "card" }, skel(14, "50%"), skel(22, "70%"))));
   const body = h("div", { class: "grid cols-2", style: "margin-top:18px" }, h("div", { class: "card" }, skel(200)), h("div", { class: "card" }, skel(200)));
   view.append(idx, body);
-  let d; try { d = await api("/ui/explore", { signal: ctx.signal }); } catch (e) { view.replaceChildren(errorBox(e)); return; }
+  let d; try { d = await api("/ui/explore", { signal: ctx.signal }); } catch (e) { view.replaceChildren(ErrorState(e, route)); return; }
   idx.replaceChildren(...d.indices.map((ix) => h("div", { class: "card index-card" },
     h("div", { class: "spread" }, h("span", { class: "name" }, ix.name), h("span", { class: "muted", style: "font-size:11px" }, `${ix.spark.length} sessions`)), h("div", { class: "spread" }, h("div", {}, h("div", { class: "val num" }, num(ix.value)),
       h("div", { class: `num ${cls(ix.change)}` }, `${ix.change > 0 ? "+" : ""}${num(ix.change)} (${pct(ix.change_pct)})`)), spark(ctx, ix.spark)))));
   const m = d.market, good = m.trend === "up";
   const banner = h("div", { class: `banner ${good ? "good" : "bad"}`, style: "margin-top:18px" },
-    h("div", { class: "big" }, good ? "📈" : "📉"),
+    h("div", { class: `big ${good ? "up" : "down"}` }, icon(good ? "chart" : "falling")),
     h("div", {}, h("b", {}, good ? "Market trend is UP" : "Market trend is DOWN"),
       h("div", { class: "muted" }, `Nifty month-end ${num(m.month_end_close, 0)} vs 10-month average ${num(m.sma_10m, 0)} · volatility ${m.ewma_vol_pct}% · 24-month return ${pct(m.return_24m_pct, 1)}` +
         (m.momentum_crash_risk ? " · momentum crash-risk regime: size positions at half" : ""))));
@@ -821,13 +868,13 @@ async function pageStock(view, ctx) {
   const analystCard = h("div", { class: "card analyst" }, h("div", { class: "panel-title" }, "Analyst note"), h("p", { class: "muted" }, "Our models are writing this up…"), skel(16), skel(16, "85%"));
   view.append(h("div", { class: "grid cols-2" }, h("div", { class: "grid" }, head, chartCard, analystCard), h("div", { class: "grid", style: "align-content:start" }, verdictCard, askCard(sym))),
     h("div", { style: "margin-top:18px" }, analytics), h("div", { style: "margin-top:18px" }, tabsCard));
-  let o; try { o = await api(`/ui/stock/${encodeURIComponent(sym)}`, { signal: ctx.signal }); } catch (e) { view.replaceChildren(errorBox(e)); return; }
+  let o; try { o = await api(`/ui/stock/${encodeURIComponent(sym)}`, { signal: ctx.signal }); } catch (e) { view.replaceChildren(ErrorState(e, route)); return; }
   const chip = (k, v, c = "") => h("div", { class: "stat-chip" }, h("div", { class: "k" }, k), h("div", { class: `v num ${c}` }, v));
   head.replaceChildren(
     h("div", { class: "spread stock-head" }, h("div", { class: "stack" }, h("div", { class: "avatar", style: "width:48px;height:48px;font-size:15px" }, initials(o.symbol)),
       h("div", {}, h("h2", {}, o.name), h("div", { class: "muted" }, [o.symbol, o.sector, o.in_nifty200 ? "Nifty 200" : null].filter(Boolean).join(" · ")))),
       h("div", { class: "row" }, h("button", { class: "btn", onclick: () => addTxModal(o.symbol, o.price) }, "+ Add to portfolio"),
-        h("button", { class: "btn", onclick: async (e) => { e.target.disabled = true; e.target.textContent = "Writing…"; try { const r = await api(`/reports/${encodeURIComponent(o.symbol)}`, { method: "POST" }); location.hash = `#/report/${r.id}`; } catch (err) { toast(err.message); e.target.disabled = false; e.target.textContent = "Research report"; } } }, "Research report"))),
+        h("button", { class: "btn", onclick: async (e) => { e.target.disabled = true; e.target.textContent = "Writing…"; try { const r = await api(`/reports/${encodeURIComponent(o.symbol)}`, { method: "POST" }); location.hash = `#/report/${r.id}`; } catch (err) { toast(errorWords(err)); e.target.disabled = false; e.target.textContent = "Research report"; } } }, "Research report"))),
     h("div", { class: "row", style: "margin-top:14px;align-items:baseline" }, h("div", { class: "price num" }, inr(o.price)),
       h("div", { class: `num ${cls(o.change)}`, style: "font-size:16px;font-weight:600" }, `${o.change > 0 ? "+" : ""}${num(o.change)} (${pct(o.change_pct)}) today`)),
     h("div", { class: "chips-row" }, chip("1M", pct(o.returns["1M"], 1), cls(o.returns["1M"])), chip("1Y", pct(o.returns["1Y"], 1), cls(o.returns["1Y"])),
@@ -840,7 +887,7 @@ async function pageStock(view, ctx) {
   show("Technical");
   const panes = { Overview: () => overviewPane(o), Research: () => researchPane(ctx, sym), News: () => newsPane(ctx, sym), Insider: () => insiderPane(ctx, sym) };
   const tabs = h("div", { class: "tabs" }); const pane = h("div");
-  const showPane = (k) => { for (const b of tabs.children) b.classList.toggle("active", b.textContent === k); pane.replaceChildren(skel(100)); Promise.resolve(panes[k]()).then((el) => pane.replaceChildren(el)).catch((e) => pane.replaceChildren(errorBox(e))); };
+  const showPane = (k) => { for (const b of tabs.children) b.classList.toggle("active", b.textContent === k); pane.replaceChildren(skel(100)); Promise.resolve(panes[k]()).then((el) => pane.replaceChildren(el)).catch((e) => pane.replaceChildren(ErrorState(e, () => showPane(k)))); };
   tabs.append(...Object.keys(panes).map((k) => h("button", { onclick: () => showPane(k) }, k)));
   tabsCard.replaceChildren(tabs, pane); showPane("Overview");
   api(`/ui/stock/${encodeURIComponent(sym)}/analyst`, { signal: ctx.signal }).then((a) => analystCard.replaceChildren(h("div", { class: "panel-title" }, "Analyst note"),
@@ -849,7 +896,7 @@ async function pageStock(view, ctx) {
       : `Computed note: ${a.draft_rejected.join("; ")}.`)))
     .catch(showCardError(analystCard));
   try { const v = await api(`/ui/stock/${encodeURIComponent(sym)}/verdict`, { signal: ctx.signal }); renderVerdict(verdictCard, v); analytics.setGauge(v); }
-  catch (e) { verdictCard.replaceChildren(h("h3", {}, "Should I buy?"), h("p", { class: "muted" }, e.message)); analytics.setGaugeError(e); }
+  catch (e) { showCardError(verdictCard)(e); analytics.setGaugeError(e); }
 }
 
 function renderVerdict(card, v) {
@@ -927,7 +974,7 @@ function askCard(sym) {
     log.append(h("div", { class: "bubble me", style: "max-width:100%" }, q));
     const bot = h("div", { class: "bubble bot", style: "max-width:100%" }, "Thinking…"); log.append(bot);
     try { const r = await api("/chat", { method: "POST", body: JSON.stringify({ message: msg, session_id: "stock-" + sym.replace(/[^A-Za-z0-9]/g, "") }) }); bot.replaceChildren(md(r.text)); }
-    catch (e) { bot.textContent = e.message; }
+    catch (e) { bot.textContent = errorWords(e); }
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
   return h("div", { class: "card" }, h("h3", {}, `Ask about ${sym}`),
@@ -938,30 +985,31 @@ function askCard(sym) {
 function addTxModal(sym, price) {
   const f = { symbol: h("input", { value: sym || "", placeholder: "Symbol, e.g. TCS" }), side: h("select", {}, h("option", {}, "BUY"), h("option", {}, "SELL")),
     quantity: h("input", { type: "number", min: "1", value: "1" }), price: h("input", { type: "number", step: "0.05", value: price ? price.toFixed(2) : "" }),
-    trade_date: h("input", { type: "date", value: new Date().toISOString().slice(0, 10) }) };
-  const bg = h("div", { class: "modal-bg", onclick: (e) => { if (e.target === bg) bg.remove(); } });
+    // India's date, as en-CA writes it (YYYY-MM-DD); toISOString's UTC date is still yesterday before 05:30 IST
+    trade_date: h("input", { type: "date", value: new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()) }),
+    fees: h("input", { type: "number", min: "0", step: "0.01", value: "0" }) };
+  for (const [name, input] of Object.entries(f)) input.name = name;
   const save = async () => {
-    try { await api("/portfolio/transactions", { method: "POST", body: JSON.stringify({ symbol: f.symbol.value.trim().toUpperCase(), side: f.side.value, quantity: +f.quantity.value, price: +f.price.value, trade_date: f.trade_date.value }) });
-      bg.remove(); toast("Saved to portfolio"); if (location.hash.startsWith("#/portfolio")) route(); } catch (e) { toast(e.message); }
+    await api("/portfolio/transactions", { method: "POST", body: JSON.stringify({ symbol: f.symbol.value.trim().toUpperCase(), side: f.side.value, quantity: +f.quantity.value, price: +f.price.value, trade_date: f.trade_date.value, fees: +f.fees.value }) });
+    toast("Saved to portfolio"); if (location.hash.startsWith("#/portfolio")) route();
   };
-  bg.append(h("div", { class: "modal form" }, h("h2", {}, "Add transaction"),
-    h("label", {}, "Stock", f.symbol), h("div", { class: "grid cols-2", style: "grid-template-columns:1fr 1fr" }, h("label", {}, "Type", f.side), h("label", {}, "Date", f.trade_date)),
-    h("div", { class: "grid", style: "grid-template-columns:1fr 1fr" }, h("label", {}, "Quantity", f.quantity), h("label", {}, "Price per share (₹)", f.price)),
-    h("div", { class: "row", style: "justify-content:flex-end" }, h("button", { class: "btn", onclick: () => bg.remove() }, "Cancel"), h("button", { class: "btn primary", onclick: save }, "Save"))));
-  document.body.append(bg); f.quantity.focus();
+  Dialog("Add transaction", [
+    Field("Stock", f.symbol), h("div", { class: "grid cols-2", style: "grid-template-columns:1fr 1fr" }, Field("Type", f.side), Field("Date", f.trade_date)),
+    h("div", { class: "grid", style: "grid-template-columns:1fr 1fr" }, Field("Quantity", f.quantity), Field("Price per share (₹)", f.price)),
+    Field("Fees (₹)", f.fees, "Brokerage and other charges for the whole trade. Leave 0 if you paid none.")], ["Save", save]);
+  f.quantity.focus();
 }
 
 async function pagePortfolio(view, ctx) {
   view.append(h("div", { class: "card" }, skel(60)));
   let p, rep = null;
-  try { p = await api("/portfolio", { signal: ctx.signal }); } catch (e) { if (e.status !== 404) { view.replaceChildren(errorBox(e)); return; } }
+  try { p = await api("/portfolio", { signal: ctx.signal }); } catch (e) { if (e.status !== 404) { view.replaceChildren(ErrorState(e, route)); return; } }
   if (!p || !p.transactions.length) {
-    view.replaceChildren(h("div", { class: "card empty" }, h("div", { class: "big" }, "💼"), h("h2", {}, "Your portfolio is empty"),
-      h("p", {}, "Add the stocks you own (quantity, average price, date) to track P&L, risk and get sell signals."),
+    view.replaceChildren(EmptyState("pie", "Your portfolio is empty", "Add the stocks you own (quantity, average price, date) to track P&L, risk and get sell signals.",
       h("button", { class: "btn primary", onclick: () => addTxModal("", null) }, "+ Add your first stock")));
     return;
   }
-  try { rep = await api("/portfolio/analysis", { signal: ctx.signal }); } catch (e) { view.replaceChildren(errorBox(e)); return; }
+  try { rep = await api("/portfolio/analysis", { signal: ctx.signal }); } catch (e) { view.replaceChildren(ErrorState(e, route)); return; }
   const upl = rep.unrealized_pl;
   const summary = h("div", { class: "card" }, h("div", { class: "spread" }, h("div", {}, h("div", { class: "muted" }, "Current value"), h("div", { class: "price num" }, inr(rep.total_value)),
     h("div", { class: `num ${cls(upl)}`, style: "font-weight:600" }, `${upl > 0 ? "+" : ""}${inr(upl)} (${pct(rep.unrealized_pl_pct)}) total returns`)),
@@ -983,7 +1031,7 @@ async function pagePortfolio(view, ctx) {
   api("/ui/portfolio/history", { signal: ctx.signal }).then((ph) => { if (!ph.dates.length) { histHost.replaceChildren(h("p", { class: "muted" }, "No history yet.")); return; }
     const draw = () => { lineChart(histHost, ph.dates, [{ name: "Holdings value", short: "Value", values: ph.value, color: "--series-1" }, { name: "Money invested", short: "Invested", values: ph.invested, color: "--series-4", dashed: true }], { fmt: (v) => compactInr(v), height: 260 });
       histHost.prepend(legend([["Holdings value", "--series-1"], ["Money invested", "--series-4", true]])); };
-    draw(); ctx.redraw(draw); }).catch((e) => histHost.replaceChildren(errorBox(e)));
+    draw(); ctx.redraw(draw); }).catch((e) => histHost.replaceChildren(ErrorState(e, route)));
   const r = rep.risk || {};
   const risk = h("div", { class: "card" }, h("h3", {}, "Risk"),
     r.portfolio_vol_pct != null ? h("div", { class: "kv" }, h("span", { class: "k" }, "Volatility"), h("span", { class: "num" }, `${num(r.portfolio_vol_pct, 1)}% a year`),
@@ -996,7 +1044,8 @@ async function pagePortfolio(view, ctx) {
   const txs = h("div", { class: "card" }, h("h3", {}, "Transactions"), h("table", {},
     h("tr", {}, h("th", {}, "Date"), h("th", {}, "Stock"), h("th", {}, "Type"), h("th", { class: "r" }, "Qty"), h("th", { class: "r" }, "Price"), h("th", {})),
     ...p.transactions.map((t, i) => h("tr", {}, h("td", {}, t.trade_date), h("td", {}, t.symbol), h("td", { class: t.side === "BUY" ? "up" : "down" }, t.side), h("td", { class: "r num" }, num(t.quantity, 0)), h("td", { class: "r num" }, inr(t.price)),
-      h("td", { class: "r" }, h("button", { class: "btn small", onclick: async () => { if (!confirm(`Delete ${t.side} ${t.quantity} ${t.symbol}?`)) return; try { await api(`/portfolio/transactions/${i}`, { method: "DELETE" }); route(); } catch (e) { toast(e.message); } } }, "Delete"))))));
+      h("td", { class: "r" }, h("button", { class: "btn small", onclick: () => Dialog("Delete this transaction?", h("p", {}, `${t.side} ${num(t.quantity, 0)} ${t.symbol} at ${inr(t.price)} on ${t.trade_date}.`),
+        ["Delete", async () => { await api(`/portfolio/transactions/${i}`, { method: "DELETE" }); route(); }]) }, "Delete"))))));
   view.replaceChildren(summary, h("div", { style: "margin-top:18px" }, histCard), h("div", { class: "grid cols-2", style: "margin-top:18px" }, h("div", { class: "grid" }, holdings, txs), h("div", { class: "grid", style: "align-content:start" }, alloc, risk)),
     h("p", { class: "footer-note" }, `As of ${rep.as_of}. ${rep.assumptions.join(" ")}`));
 }
@@ -1009,7 +1058,7 @@ async function pageSignals(view, ctx) {
   const run = async () => {
     localStorage.setItem("si-cap", cap.value);
     out.replaceChildren(h("div", { class: "card" }, h("p", { class: "muted" }, "Ranking the Nifty 200… (the first run downloads every stock's history, so it takes longer)"), skel(200)));
-    let p; try { p = await api(`/signals?capital=${+cap.value || 0}&strategy=${strat.value}&risk=${risk.value}`, { signal: ctx.signal }); } catch (e) { out.replaceChildren(errorBox(e)); return; }
+    let p; try { p = await api(`/signals?capital=${+cap.value || 0}&strategy=${strat.value}&risk=${risk.value}`, { signal: ctx.signal }); } catch (e) { out.replaceChildren(ErrorState(e, run)); return; }
     const m = p.market;
     const groups = { SELL: "Sell", TRIM: "Trim", BUY: "Buy", ADD: "Add", HOLD: "Hold" };
     const cards = [];
@@ -1044,20 +1093,20 @@ async function pageChat(view, ctx) {
   const useAgent = h("input", { type: "checkbox" }); useAgent.checked = localStorage.getItem("si-agent") === "1";
   useAgent.addEventListener("change", () => localStorage.setItem("si-agent", useAgent.checked ? "1" : "0"));
   const agentRow = h("label", { class: "agent-toggle", hidden: true }, useAgent, "Also ask my self-learning agent (a second opinion that stays quiet when unsure)");
-  api("/ui/agent/status", { signal: ctx.signal }).then((st) => { agentRow.hidden = !st.available; }).catch((e) => ctx.live() && toast(e.message));
+  api("/ui/agent/status", { signal: ctx.signal }).then((st) => { agentRow.hidden = !st.available; }).catch((e) => ctx.live() && toast(errorWords(e)));
   const send = async (q) => {
     q = (q || input.value).trim(); if (!q) return; input.value = "";
     bubble("me", q); history.push({ who: "me", text: q });
     const b = bubble("bot", "Thinking…");
     try { const r = await api("/chat", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) });
       b.replaceChildren(md(r.text), h("span", { class: "meta" }, `${r.intent}${r.tools_used.length ? " · " + r.tools_used.join(", ") : ""}`)); history.push({ who: "bot", text: r.text, meta: r.intent }); }
-    catch (e) { b.textContent = e.message; }
+    catch (e) { b.textContent = errorWords(e); }
     if (useAgent.checked && !agentRow.hidden) { const a = bubble("bot agent", "Asking the self-learning agent…");
       try { const t = await api("/ui/agent/ask", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) });
         const meta = `self-learning agent${t.as_of ? ` · data as of ${t.as_of}` : ""} · ` + (t.spoke ? (t.confidence == null ? "from its sources" : `confidence ${num(t.confidence)}`) : `held back: ${t.because}`)
           + (t.phrased_by ? ` · worded by ${t.phrased_by.split("/").pop()}` : t.unphrased_because ? ` · in its own words (${t.unphrased_because})` : "");
         a.replaceChildren(md(t.shown || t.served), h("span", { class: "meta" }, meta)); history.push({ who: "bot agent", text: t.shown || t.served, meta }); }
-      catch (e) { a.textContent = `Self-learning agent: ${e.message}`; } }
+      catch (e) { a.textContent = `Self-learning agent: ${errorWords(e)}`; } }
     sessionStorage.setItem("si-chat-log", JSON.stringify(history.slice(-40))); log.scrollTop = log.scrollHeight;
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
@@ -1078,7 +1127,7 @@ async function pageLearn(view, ctx) {
   const doSearch = async () => {
     if (!q.value.trim()) { results.replaceChildren(); return; }
     try { const r = await api("/knowledge?q=" + encodeURIComponent(q.value), { signal: ctx.signal }); results.replaceChildren(h("div", { class: "card", style: "margin-top:14px" }, h("h3", {}, "Results"),
-      r.results.length ? r.results.map((x) => h("details", { open: true }, h("summary", {}, x.title), h("p", {}, x.text))) : h("p", { class: "muted" }, "No lesson found. Try asking in Ask AI."))); } catch (e) { results.replaceChildren(errorBox(e)); }
+      r.results.length ? r.results.map((x) => h("details", { open: true }, h("summary", {}, x.title), h("p", {}, x.text))) : h("p", { class: "muted" }, "No lesson found. Try asking in Ask AI."))); } catch (e) { results.replaceChildren(ErrorState(e, doSearch)); }
   };
   q.addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
   view.append(h("div", { class: "card" }, h("p", { class: "muted", style: "margin-top:0" }, "Plain-English lessons on how markets, ratios and risk work — and exactly how this app makes its calls."),
@@ -1092,7 +1141,7 @@ async function pageReports(view, ctx) {
   const list = await api("/reports", { signal: ctx.signal });
   view.append(h("div", { class: "card" }, h("p", { class: "muted", style: "margin-top:0" }, "18-section reports generated from the engines. Open any stock and press “Research report” to create one."),
     list.length ? h("div", { class: "list" }, ...list.map((r) => h("a", { href: `#/report/${r.id}` }, h("div", { class: "stack" }, h("div", { class: "avatar" }, initials(r.symbol)), h("div", {}, h("div", { class: "t" }, r.symbol), h("div", { class: "s" }, new Date(r.created_at).toLocaleString("en-IN")))), h("span", { class: "muted" }, "Open →"))))
-      : h("div", { class: "empty" }, h("div", { class: "big" }, "📄"), h("p", {}, "No reports yet."))));
+      : EmptyState("book", "No reports yet", null, null)));
 }
 
 function mdToNodes(md) {
@@ -1110,7 +1159,7 @@ function mdToNodes(md) {
 }
 async function pageReport(view, ctx) {
   const list = await api("/reports", { signal: ctx.signal }); const r = list.find((x) => String(x.id) === ctx.arg);
-  if (!r) { view.append(errorBox(new Error("Report not found"))); return; }
+  if (!r) { view.append(EmptyState("book", "Report not found", null, null)); return; }
   view.append(h("div", { class: "card md" }, h("div", { class: "row", style: "justify-content:space-between" }, h("a", { class: "btn small", href: "#/reports" }, "← All reports"),
     h("div", { class: "row" }, h("a", { class: "btn small", href: `#/stock/${encodeURIComponent(r.symbol)}` }, `Open ${r.symbol}`), h("button", { class: "btn small", onclick: () => window.print() }, "Print / PDF"))), ...mdToNodes(r.body)));
 }
@@ -1174,7 +1223,7 @@ async function pageHome(view, ctx) {
     feature("chart", "Track record", "How well each method did on data it never saw — including the ones that don't work.", "#/performance")));
   view.append(h("p", { class: "footer-note" }, "Decision support, not investment advice. Verify figures against NSE/BSE filings before acting."));
   if (!hasKey) return;
-  let d; try { d = await api("/ui/performance", { signal: ctx.signal }); } catch (e) { stats.replaceChildren(h("p", { class: "muted", style: "margin-top:14px" }, e.status !== 404 ? `Track record unavailable: ${e.message}` : "Run `stockintel build-performance` once to show the measured track record here.")); return; }
+  let d; try { d = await api("/ui/performance", { signal: ctx.signal }); } catch (e) { stats.replaceChildren(h("p", { class: "muted", style: "margin-top:14px" }, e.status !== 404 ? `Track record unavailable: ${errorWords(e)}` : "Run `stockintel build-performance` once to show the measured track record here.")); return; }
   const live = d.momentum.live_check, band = bandRecords(d.forecast.coverage)[0];
   const edge = d.patterns.filter((r) => Math.abs(r.z || 0) >= d.bonferroni_z).length, ch5 = d.open_models && d.open_models.chronos.horizons.find((x) => x.horizon === 5);
   const gap = live.bars[0].cagr - live.bars[1].cagr, gapText = `${gap > 0 ? "+" : ""}${num(gap, 1)} pts/yr`;
@@ -1206,7 +1255,7 @@ async function pageBuilder(view, ctx) {
   const sectors = h("div", { class: "chips" });
   api("/ui/sectors", { signal: ctx.signal }).then((list) => sectors.replaceChildren(...list.map((sec) => { const b = h("button", { class: `chip ${state.exclude.includes(sec) ? "off" : ""}` }, sec);
     b.addEventListener("click", () => { b.classList.toggle("off"); set({ exclude: state.exclude.includes(sec) ? state.exclude.filter((x) => x !== sec) : [...state.exclude, sec] }); }); return b; })))
-    .catch((e) => sectors.replaceChildren(errorBox(e)));
+    .catch((e) => sectors.replaceChildren(ErrorState(e, route)));
   view.append(h("div", { class: "card" }, h("p", { class: "muted", style: "margin-top:0" }, "Pick an amount and a style; the basket rebuilds as you change anything. Stocks come from the Nifty 200."),
     h("div", { class: "grid cols-2 builder-controls" },
       h("div", { class: "grid", style: "align-content:start" }, h("label", { class: "ctl" }, h("span", { class: "k" }, "Amount to invest (₹)"), cap), capChips,
@@ -1220,17 +1269,16 @@ async function pageBuilder(view, ctx) {
     const my = ++seq;
     out.replaceChildren(h("div", { class: "card" }, h("p", { class: "muted" }, "Picking stocks and sizing positions… (the first run downloads every stock's history, so it takes longer)"), skel(220)));
     let b; try { b = await api(`/ui/builder?capital=${state.capital}&strategy=${state.strategy}&risk=${state.risk}&n=${state.n}&exclude=${encodeURIComponent(state.exclude.join(","))}`, { signal: ctx.signal }); }
-    catch (e) { if (my === seq) out.replaceChildren(errorBox(e)); return; }
+    catch (e) { if (my === seq) out.replaceChildren(ErrorState(e, build)); return; }
     if (my === seq) renderBuild(b);
   };
   const renderBuild = (b) => {
     const warn = b.warnings.length ? h("div", { class: "card" }, h("h3", {}, "Heads-up"), h("ul", { class: "checks con" }, ...b.warnings.map((w) => h("li", {}, w)))) : null;
-    if (!b.holdings.length) { out.replaceChildren(h("div", { class: "card empty" }, h("div", { class: "big" }, "🧱"), h("p", {}, "No stock to buy with these settings.")), warn || ""); return; }
+    if (!b.holdings.length) { out.replaceChildren(EmptyState("layers", "No stock to buy with these settings", null, null), warn || ""); return; }
     const r = b.risk, maxW = Math.max(...b.holdings.map((x) => x.weight_pct));
-    const apply = async () => {
-      if (!confirm(`Add ${b.holdings.length} BUY transactions dated today to your portfolio? Do this after you have actually bought them.`)) return;
-      try { await api("/ui/builder/apply", { method: "POST", body: JSON.stringify({ holdings: b.holdings.map((x) => ({ symbol: x.symbol, shares: x.shares, price: x.price })) }) });
-        toast("Added to your portfolio"); location.hash = "#/portfolio"; } catch (e) { toast(e.message); } };
+    const apply = () => Dialog("Add these stocks to your portfolio?", h("p", {}, `This adds ${b.holdings.length} BUY transactions dated today. Do this after you have actually bought them.`), ["Add to portfolio", async () => {
+      await api("/ui/builder/apply", { method: "POST", body: JSON.stringify({ holdings: b.holdings.map((x) => ({ symbol: x.symbol, shares: x.shares, price: x.price })) }) });
+      toast("Added to your portfolio"); location.hash = "#/portfolio"; }]);
     const kpi = (k, v, sub, c = "") => h("div", { class: "stat kpi" }, h("div", { class: "k" }, k), h("div", { class: `v num ${c}` }, v), h("div", { class: "muted", style: "font-size:12px" }, sub));
     const kpis = h("div", { class: "card" }, h("div", { class: "grid cols-4" }, kpi("Invested", inr(b.capital - b.cash_left, 0), `${b.holdings.length} stocks`), kpi("Cash left", inr(b.cash_left, 0), `plan invests ${Math.round(b.invest_fraction * 100)}% now`),
       kpi("Volatility", `${num(r.portfolio_vol_pct, 1)}%`, `a year · beta ${num(r.beta)}`), kpi("Worst fall, past year", `${num(r.max_drawdown_pct, 1)}%`, `bad day (95%): ${num(r.var_95_1d_pct, 1)}%`, "down")),
@@ -1259,7 +1307,7 @@ function loadTicker() {
   api("/ui/ticker").then((items) => { const row = () => items.map((x) => h(x.index ? "span" : "a", { class: "ticker-item", href: x.index ? null : `#/stock/${encodeURIComponent(x.symbol)}` },
     h("b", {}, x.symbol), num(x.price), h("span", { class: cls(x.change_pct) }, pct(x.change_pct))));
     bar.replaceChildren(h("div", { class: "ticker-track" }, ...row(), ...row())); })
-    .catch((e) => bar.replaceChildren(h("span", { class: "ticker-item" }, `Ticker unavailable: ${e.message}`)));
+    .catch((e) => bar.replaceChildren(h("span", { class: "ticker-item" }, `Ticker unavailable: ${errorWords(e)}`)));
 }
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch((e) => console.error("Service worker registration failed:", e));
 
@@ -1279,8 +1327,8 @@ const ROUTES = [
   { path: "reports", title: "My reports", section: "Learn", label: "My reports", render: pageReports },
   { path: "report", title: "Report", section: "Learn", render: pageReport },
 ];
-const NOT_FOUND = { title: "Page not found", render: (view) => view.append(h("div", { class: "card empty" },
-  h("p", {}, `There is no page at ${location.hash}.`), h("a", { class: "btn primary", href: "#/home" }, "Go to Home"))) };
+const NOT_FOUND = { title: "Page not found", render: (view) => view.append(EmptyState("compass", `There is no page at ${location.hash}.`, null,
+  h("a", { class: "btn primary", href: "#/home" }, "Go to Home"))) };
 
 function drawNavs() {
   const sections = ROUTES.filter((r) => r.icon);
@@ -1312,7 +1360,7 @@ async function route() {
   let width;
   const ro = new ResizeObserver(([e]) => { if (width !== undefined && e.contentRect.width !== width) requestAnimationFrame(() => { for (const fn of thisVisit.redraws) fn(); }); width = e.contentRect.width; });
   ro.observe(view); thisVisit.leaves.push(() => ro.disconnect());
-  try { await r.render(view, ctx); } catch (e) { if (ctx.live()) view.replaceChildren(errorBox(e)); }
+  try { await r.render(view, ctx); } catch (e) { if (ctx.live()) view.replaceChildren(ErrorState(e, route)); }
 }
 window.addEventListener("hashchange", route);
 document.addEventListener("DOMContentLoaded", () => { drawNavs(); route(); });
