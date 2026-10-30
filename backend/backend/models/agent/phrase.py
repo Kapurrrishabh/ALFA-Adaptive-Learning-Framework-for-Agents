@@ -4,7 +4,8 @@ ALFA's generator, or the passage the reference path chose, decides what the answ
 only rewords it. Its words are served when they keep every figure the draft states, add no figure the
 evidence does not, and claim nothing the source does not (`guardrails.added_claims`, and for passages an
 entailment model reading each sentence). Otherwise the draft is served and the turn says why, so a reworded
-answer is never the only version of a fact.
+answer is never the only version of a fact. The entailment model does not tie a figure to what it measures:
+"Crude oil prices rose 4%" passed for a passage where 4% was Oil India's shares.
 
 This is the setup that passed 22 of 24 analyst notes (advisory/analyst.py). Composing from raw evidence was
 the setup that failed there: a small model handed facts writes fluent misattributions.
@@ -76,8 +77,8 @@ def rewrite(question, draft, evidence, writer, money):
 
 
 def from_passages(question, chunks, writer, entails, money=None):
-    """An answer read out of the retrieved passages; the first passage is quoted instead when a check fails. `entails`
-    is `sentence.entailment`, handed in so that this module loads no model."""
+    """An answer read out of the retrieved passages, or empty with the reason when a check fails. `entails` is
+    `sentence.entailment`, handed in so that this module loads no model."""
     passages = "\n".join(f"- {chunk.text}" for chunk in chunks)
     reply = _ask(writer, PASSAGE_SYSTEM, f"QUESTION: {question}\nPASSAGES:\n{passages}")
     if isinstance(reply, Phrased):

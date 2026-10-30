@@ -1178,8 +1178,7 @@ def test_a_report_in_the_questions_own_words_is_served_when_the_passages_entail_
 def test_forum_and_encyclopedia_passages_are_quoted_not_reworded(market, router):
     """The language model misattributed long prose ("HDFCBANK.NS is a subsidiary of HDFC Bank"), as ALFA's
     own generator did, so only dated headlines are reworded."""
-    built = reference("never written", model=ExplodingModel())
-    built.writer = ExplodingWriter()
+    built = reference("never written", model=ExplodingModel(), writer=ExplodingWriter(), entails=entailing)
     turn = agent(market, router, reference=built).answer("what is a stop loss order ?")
     assert turn.spoke and turn.served == PASSAGE
 
