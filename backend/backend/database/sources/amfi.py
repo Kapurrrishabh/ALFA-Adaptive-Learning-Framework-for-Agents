@@ -65,7 +65,7 @@ class Scheme:
 
     @property
     def is_growth(self) -> bool:
-        return "growth" in (self.option or "").lower()
+        return any(word in (self.option or "").lower() for word in ("growth", "cumulative"))  # ICICI calls it Cumulative
 
 
 def parse(text: str) -> List[Scheme]:
@@ -83,7 +83,8 @@ def parse(text: str) -> List[Scheme]:
     out: List[Scheme] = []
     scheme_type = category = amc = None
     for number, raw in enumerate(lines[1:], start=2):
-        line = raw.strip()
+        # Bandhan writes "Bandhan Gilt Fund" with 1 to 4 spaces between words, which would make one fund four
+        line = " ".join(raw.split())
         if not line:
             continue
         if ";" not in line:

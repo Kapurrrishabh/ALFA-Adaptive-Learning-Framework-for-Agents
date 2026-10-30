@@ -50,6 +50,11 @@ NAV_TEXT = "\r\n".join([
     "120164;INF174K01KT2;-;Kotak Small Cap Fund;Direct Plan;Growth;304.5360;29-Oct-2026", " ",
     "Mahindra Manulife Mutual Fund", " ",
     "150915;INF174V01BK7;-;Mahindra Manulife Small Cap Fund;Direct Plan;Growth;22.5855;29-Oct-2026", " ",
+    "Open Ended Schemes(Debt Scheme - Gilt Fund)", " ", "Bandhan Mutual Fund", " ",
+    "108557;INF194K01EH8;INF194K01EG0;Bandhan Gilt    Fund;Regular Plan;Quarterly IDCW;11.9914;29-Oct-2026",
+    "118464;INF194K01Q29;-;Bandhan Gilt   Fund;Direct Plan;Growth;40.9617;29-Oct-2026", " ",
+    "Open Ended Schemes(Other Scheme - Index Funds)", " ", "ICICI Prudential Mutual Fund", " ",
+    "120620;INF109K012M7;-;ICICI Prudential Nifty 50 Index Fund;Direct Plan;Cumulative;242.8370;29-Oct-2026", " ",
 ])
 PARSED = amfi.parse(NAV_TEXT)
 CURRENT = amfi.current(PARSED)
@@ -95,6 +100,10 @@ def test_text_in_an_isin_column_that_is_not_an_isin_is_missing():
     assert (s.isin_growth, s.isin_reinvestment) == ("INF179K01XR8", None)
 
 
+def test_a_cumulative_option_is_a_growth_option():
+    assert by_code(120620).is_growth
+
+
 def test_a_row_with_no_nav_is_left_out():
     assert 109999 not in {s.code for s in PARSED}
 
@@ -134,6 +143,11 @@ def test_search_groups_a_funds_plans_with_direct_and_growth_first():
     hit = amfi.search(CURRENT, "hdfc mid cap")[0]
     assert hit["fund"] == "HDFC Mid Cap Fund" and hit["amc"] == "HDFC Mutual Fund"
     assert [p["code"] for p in hit["plans"]] == [118989, 118990, 105758, 105759]
+
+
+def test_a_fund_name_written_with_extra_spaces_is_one_fund_holding_all_its_plans():
+    hits = amfi.search(CURRENT, "bandhan gilt")
+    assert [(f["fund"], [p["code"] for p in f["plans"]]) for f in hits] == [("Bandhan Gilt Fund", [118464, 108557])]
 
 
 def test_whole_word_matches_rank_before_longer_names():
