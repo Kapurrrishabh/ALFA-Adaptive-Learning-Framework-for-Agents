@@ -10,6 +10,7 @@ import json
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -32,6 +33,8 @@ HISTORY_DIR = CACHE_DIR / "mfapi"
 # kept 8,807 of 14,441 priced rows (8,772 priced that day), so a scheme can miss a few NAVs and stay
 LIVE_DAYS = 7
 TIMEOUT_S, ATTEMPTS = 20, 2       # provisional: the 1.5 MB file took under a second on 2026-10-30
+# provisional: a failed download takes up to about 40 s, and in an outage each request would wait for its own
+RETRY_AFTER_S = 300
 MIN_QUERY_CHARS = 2               # two-letter fund houses exist: JM, NJ
 
 COLUMNS = {"code": "Scheme Code", "isin_growth": "ISIN Div Payout/ ISIN Growth",
@@ -46,6 +49,7 @@ NOTE = re.compile(r"\([^)]*\)")
 
 _LOCKS: Dict[Path, threading.Lock] = {}
 _READ: Dict[Path, Tuple[int, List["Scheme"]]] = {}
+_FAILED: Dict[Path, Tuple[float, str]] = {}
 
 
 @dataclass(frozen=True)
@@ -199,11 +203,21 @@ def _download(url: str) -> str:
 
 
 def _todays_copy(url: str, path: Path, check: Callable[[str], object]) -> Path:
-    """`path`, downloaded again unless it was written today. A download `check` rejects is never kept."""
+    """`path`, downloaded again unless it was written today. A download `check` rejects is never kept, and a
+    failed download is not tried again for RETRY_AFTER_S: its error is raised again, saying how long ago it was."""
     with _LOCKS.setdefault(path, threading.Lock()):      # per file, so a slow history download holds up no search
         if not path.exists() or date.fromtimestamp(path.stat().st_mtime) != date.today():
-            text = _download(url)
-            check(text)
+            failed_at, error = _FAILED.get(path, (float("-inf"), ""))
+            age = time.monotonic() - failed_at
+            if age < RETRY_AFTER_S:
+                raise DataUnavailable(f"{error} (that was {age:.0f} s ago; it is tried again in {RETRY_AFTER_S - age:.0f} s)")
+            try:
+                text = _download(url)
+                check(text)
+            except DataUnavailable as exc:
+                _FAILED[path] = (time.monotonic(), str(exc))
+                raise
+            _FAILED.pop(path, None)
             path.parent.mkdir(parents=True, exist_ok=True)
             partial = path.with_suffix(".partial")
             partial.write_text(text, encoding="utf-8")

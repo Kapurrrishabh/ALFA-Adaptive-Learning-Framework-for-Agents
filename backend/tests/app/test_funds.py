@@ -226,6 +226,25 @@ def test_a_download_that_does_not_parse_is_not_kept(nav_cache):
     assert not amfi.NAV_FILE.exists()
 
 
+def test_requests_soon_after_a_failed_download_get_its_error_without_downloading_again(nav_cache):
+    calls, texts = nav_cache
+    texts.append("<html>maintenance</html>")
+    with pytest.raises(DataUnavailable):
+        amfi.schemes()
+    with pytest.raises(DataUnavailable, match=r"no \['Scheme Code'.*\(that was \d+ s ago; it is tried again in \d+ s\)"):
+        amfi.schemes()
+    assert len(calls) == 1
+
+
+def test_a_failed_download_is_tried_again_once_the_wait_is_over(nav_cache, monkeypatch):
+    calls, texts = nav_cache
+    texts.append("<html>maintenance</html>")
+    with pytest.raises(DataUnavailable):
+        amfi.schemes()
+    monkeypatch.setattr(amfi, "RETRY_AFTER_S", 0)
+    assert amfi.schemes() and len(calls) == 2
+
+
 def test_saved_app_state_never_carries_a_fund_download(tmp_path):
     """A restored copy gets today's file time, so it would pass for today's download."""
     from backend.database import hfstate
