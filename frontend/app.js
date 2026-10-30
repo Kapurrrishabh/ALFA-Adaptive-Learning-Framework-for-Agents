@@ -51,7 +51,7 @@ function md(text) {
 // one colour variable per GRU path, so the theme switch recolours them
 const GRU_PATH_COLORS = { low: "--down", middle: "--series-1", high: "--up" };
 const uid = (prefix) => prefix + Math.random().toString(36).slice(2);
-// one live region made at load, so a screen reader hears even the first toast; toasts stack inside it
+// one live region made at load, so a screen reader hears even the first toast
 const toasts = h("div", { class: "toasts", role: "status" }); document.body.append(toasts);
 function toast(msg) { const t = h("div", { class: "toast" }, msg); toasts.append(t); setTimeout(() => t.remove(), 2600); }
 
@@ -70,7 +70,7 @@ function saveKey(k) {
 async function api(path, opts = {}) {
   if (opts.method && opts.signal) throw new Error(`${opts.method} ${path}: a write is never cancelled, so it takes no signal`);
   const key = localStorage.getItem("si-key") || "";
-  if (key && !KEY_RE.test(key)) { localStorage.removeItem("si-key"); askKey(); throw new Error("The saved key is not a valid key; please paste it again"); }
+  if (key && !KEY_RE.test(key)) { localStorage.removeItem("si-key"); askKey(); throw Object.assign(new Error("The saved key is not a valid key; please paste it again"), { status: 401 }); }
   const res = await fetch(path, { ...opts, headers: { "X-API-Key": key, "Content-Type": "application/json", ...(opts.headers || {}) } });
   const body = await res.json().catch(() => ({}));
   if (res.status === 401) askKey();
@@ -785,26 +785,34 @@ function Field(label, input, hint) {
   field.showError = (msg) => { error.textContent = msg || ""; if (msg) input.setAttribute("aria-invalid", "true"); else input.removeAttribute("aria-invalid"); };
   return field;
 }
-function Dialog(title, body, [label, run]) {
+function Dialog(ctx, title, body, [label, run]) {
   const opener = document.activeElement, titleId = uid("dialog");
   const main = h("button", { class: "btn primary", type: "submit" }, label), problem = h("p", { class: "dialog-error", role: "alert" });
-  const close = () => { bg.remove(); if (opener && opener.isConnected) opener.focus(); };
+  const close = () => { document.removeEventListener("keydown", onKeydown); bg.remove(); if (opener && opener.isConnected) opener.focus(); };
+  const cancel = h("button", { class: "btn", type: "button", onclick: close }, "Cancel");
   const form = h("form", { class: "form", novalidate: true, onsubmit: async (e) => {
     e.preventDefault(); main.disabled = true; problem.textContent = ""; for (const f of form.querySelectorAll(".field")) f.showError(null);
     try { await run(); close(); } catch (err) {
-      const refused = (Array.isArray(err.detail) ? err.detail : []).map((d) => [form.elements.namedItem(String(d.loc.at(-1))), d.msg]).filter(([input]) => input);
-      for (const [input, msg] of refused) input.closest(".field").showError(msg);
-      if (refused.length) refused[0][0].focus(); else problem.textContent = errorWords(err);
-    } finally { main.disabled = false; } } },
+      main.disabled = false;
+      const refused = [], unplaced = [];
+      for (const d of Array.isArray(err.detail) ? err.detail : []) {
+        const input = d.loc && form.elements.namedItem(String(d.loc.at(-1)));
+        if (input) { input.closest(".field").showError(d.msg); refused.push(input); } else unplaced.push(d.msg);
+      }
+      problem.textContent = refused.length ? unplaced.join("; ") : errorWords(err);
+      (refused[0] || main).focus();
+    } } },
     h("h2", { id: titleId }, title), body, problem,
-    h("div", { class: "row", style: "justify-content:flex-end" }, h("button", { class: "btn", type: "button", onclick: close }, "Cancel"), main));
+    h("div", { class: "row", style: "justify-content:flex-end" }, cancel, main));
   const box = h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-labelledby": titleId, tabindex: "-1" }, form);
-  const bg = h("div", { class: "modal-bg", onclick: (e) => { if (e.target === bg) close(); }, onkeydown: (e) => {
+  const bg = h("div", { class: "modal-bg", onclick: (e) => { if (e.target === bg) close(); } }, box);
+  const onKeydown = (e) => {
     if (e.key === "Escape") return close();
     if (e.key !== "Tab") return;
     const stops = [...box.querySelectorAll("input, select, button")].filter((el) => !el.disabled), at = stops.indexOf(document.activeElement);
-    e.preventDefault(); stops[e.shiftKey ? (at <= 0 ? stops.length : at) - 1 : (at + 1) % stops.length].focus(); } }, box);
-  document.body.append(bg); (form.querySelector("input, select") || main).focus();
+    e.preventDefault(); stops[e.shiftKey ? (at <= 0 ? stops.length : at) - 1 : (at + 1) % stops.length].focus(); };
+  document.addEventListener("keydown", onKeydown); document.body.append(bg); ctx.onLeave(close);
+  (form.querySelector("input, select") || cancel).focus();
 }
 
 // ---------- pages ----------
@@ -873,7 +881,7 @@ async function pageStock(view, ctx) {
   head.replaceChildren(
     h("div", { class: "spread stock-head" }, h("div", { class: "stack" }, h("div", { class: "avatar", style: "width:48px;height:48px;font-size:15px" }, initials(o.symbol)),
       h("div", {}, h("h2", {}, o.name), h("div", { class: "muted" }, [o.symbol, o.sector, o.in_nifty200 ? "Nifty 200" : null].filter(Boolean).join(" · ")))),
-      h("div", { class: "row" }, h("button", { class: "btn", onclick: () => addTxModal(o.symbol, o.price) }, "+ Add to portfolio"),
+      h("div", { class: "row" }, h("button", { class: "btn", onclick: () => addTxModal(ctx, o.symbol, o.price) }, "+ Add to portfolio"),
         h("button", { class: "btn", onclick: async (e) => { e.target.disabled = true; e.target.textContent = "Writing…"; try { const r = await api(`/reports/${encodeURIComponent(o.symbol)}`, { method: "POST" }); location.hash = `#/report/${r.id}`; } catch (err) { toast(errorWords(err)); e.target.disabled = false; e.target.textContent = "Research report"; } } }, "Research report"))),
     h("div", { class: "row", style: "margin-top:14px;align-items:baseline" }, h("div", { class: "price num" }, inr(o.price)),
       h("div", { class: `num ${cls(o.change)}`, style: "font-size:16px;font-weight:600" }, `${o.change > 0 ? "+" : ""}${num(o.change)} (${pct(o.change_pct)}) today`)),
@@ -982,10 +990,9 @@ function askCard(sym) {
     log, h("div", { class: "row" }, input, h("button", { class: "btn primary", onclick: () => send() }, "Ask")));
 }
 
-function addTxModal(sym, price) {
+function addTxModal(ctx, sym, price) {
   const f = { symbol: h("input", { value: sym || "", placeholder: "Symbol, e.g. TCS" }), side: h("select", {}, h("option", {}, "BUY"), h("option", {}, "SELL")),
     quantity: h("input", { type: "number", min: "1", value: "1" }), price: h("input", { type: "number", step: "0.05", value: price ? price.toFixed(2) : "" }),
-    // India's date, as en-CA writes it (YYYY-MM-DD); toISOString's UTC date is still yesterday before 05:30 IST
     trade_date: h("input", { type: "date", value: new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()) }),
     fees: h("input", { type: "number", min: "0", step: "0.01", value: "0" }) };
   for (const [name, input] of Object.entries(f)) input.name = name;
@@ -993,7 +1000,7 @@ function addTxModal(sym, price) {
     await api("/portfolio/transactions", { method: "POST", body: JSON.stringify({ symbol: f.symbol.value.trim().toUpperCase(), side: f.side.value, quantity: +f.quantity.value, price: +f.price.value, trade_date: f.trade_date.value, fees: +f.fees.value }) });
     toast("Saved to portfolio"); if (location.hash.startsWith("#/portfolio")) route();
   };
-  Dialog("Add transaction", [
+  Dialog(ctx, "Add transaction", [
     Field("Stock", f.symbol), h("div", { class: "grid cols-2", style: "grid-template-columns:1fr 1fr" }, Field("Type", f.side), Field("Date", f.trade_date)),
     h("div", { class: "grid", style: "grid-template-columns:1fr 1fr" }, Field("Quantity", f.quantity), Field("Price per share (₹)", f.price)),
     Field("Fees (₹)", f.fees, "Brokerage and other charges for the whole trade. Leave 0 if you paid none.")], ["Save", save]);
@@ -1006,14 +1013,14 @@ async function pagePortfolio(view, ctx) {
   try { p = await api("/portfolio", { signal: ctx.signal }); } catch (e) { if (e.status !== 404) { view.replaceChildren(ErrorState(e, route)); return; } }
   if (!p || !p.transactions.length) {
     view.replaceChildren(EmptyState("pie", "Your portfolio is empty", "Add the stocks you own (quantity, average price, date) to track P&L, risk and get sell signals.",
-      h("button", { class: "btn primary", onclick: () => addTxModal("", null) }, "+ Add your first stock")));
+      h("button", { class: "btn primary", onclick: () => addTxModal(ctx, "", null) }, "+ Add your first stock")));
     return;
   }
   try { rep = await api("/portfolio/analysis", { signal: ctx.signal }); } catch (e) { view.replaceChildren(ErrorState(e, route)); return; }
   const upl = rep.unrealized_pl;
   const summary = h("div", { class: "card" }, h("div", { class: "spread" }, h("div", {}, h("div", { class: "muted" }, "Current value"), h("div", { class: "price num" }, inr(rep.total_value)),
     h("div", { class: `num ${cls(upl)}`, style: "font-weight:600" }, `${upl > 0 ? "+" : ""}${inr(upl)} (${pct(rep.unrealized_pl_pct)}) total returns`)),
-    h("div", { class: "row" }, h("button", { class: "btn", onclick: () => addTxModal("", null) }, "+ Add transaction"), h("a", { class: "btn primary", href: "#/signals" }, "What should I do?"))),
+    h("div", { class: "row" }, h("button", { class: "btn", onclick: () => addTxModal(ctx, "", null) }, "+ Add transaction"), h("a", { class: "btn primary", href: "#/signals" }, "What should I do?"))),
     h("div", { class: "grid cols-4", style: "margin-top:16px" }, ...[["Invested", inr(rep.cost_basis)], ["Cash", inr(rep.cash)], ["Realised P&L", inr(rep.realized_pl)], ["Last 5 sessions", `${inr(rep.week_change.total_change_value)} (${pct(rep.week_change.total_change_pct)})`]]
       .map(([k, v]) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v num" }, v)))));
   const holdings = h("div", { class: "card" }, h("h3", {}, `Holdings (${rep.holdings.length})`), h("div", { class: "table-wrap" }, h("table", {},
@@ -1044,7 +1051,7 @@ async function pagePortfolio(view, ctx) {
   const txs = h("div", { class: "card" }, h("h3", {}, "Transactions"), h("table", {},
     h("tr", {}, h("th", {}, "Date"), h("th", {}, "Stock"), h("th", {}, "Type"), h("th", { class: "r" }, "Qty"), h("th", { class: "r" }, "Price"), h("th", {})),
     ...p.transactions.map((t, i) => h("tr", {}, h("td", {}, t.trade_date), h("td", {}, t.symbol), h("td", { class: t.side === "BUY" ? "up" : "down" }, t.side), h("td", { class: "r num" }, num(t.quantity, 0)), h("td", { class: "r num" }, inr(t.price)),
-      h("td", { class: "r" }, h("button", { class: "btn small", onclick: () => Dialog("Delete this transaction?", h("p", {}, `${t.side} ${num(t.quantity, 0)} ${t.symbol} at ${inr(t.price)} on ${t.trade_date}.`),
+      h("td", { class: "r" }, h("button", { class: "btn small", onclick: () => Dialog(ctx, "Delete this transaction?", h("p", {}, `${t.side} ${num(t.quantity, 0)} ${t.symbol} at ${inr(t.price)} on ${t.trade_date}.`),
         ["Delete", async () => { await api(`/portfolio/transactions/${i}`, { method: "DELETE" }); route(); }]) }, "Delete"))))));
   view.replaceChildren(summary, h("div", { style: "margin-top:18px" }, histCard), h("div", { class: "grid cols-2", style: "margin-top:18px" }, h("div", { class: "grid" }, holdings, txs), h("div", { class: "grid", style: "align-content:start" }, alloc, risk)),
     h("p", { class: "footer-note" }, `As of ${rep.as_of}. ${rep.assumptions.join(" ")}`));
@@ -1276,7 +1283,7 @@ async function pageBuilder(view, ctx) {
     const warn = b.warnings.length ? h("div", { class: "card" }, h("h3", {}, "Heads-up"), h("ul", { class: "checks con" }, ...b.warnings.map((w) => h("li", {}, w)))) : null;
     if (!b.holdings.length) { out.replaceChildren(EmptyState("layers", "No stock to buy with these settings", null, null), warn || ""); return; }
     const r = b.risk, maxW = Math.max(...b.holdings.map((x) => x.weight_pct));
-    const apply = () => Dialog("Add these stocks to your portfolio?", h("p", {}, `This adds ${b.holdings.length} BUY transactions dated today. Do this after you have actually bought them.`), ["Add to portfolio", async () => {
+    const apply = () => Dialog(ctx, "Add these stocks to your portfolio?", h("p", {}, `This adds ${b.holdings.length} BUY transactions dated today. Do this after you have actually bought them.`), ["Add to portfolio", async () => {
       await api("/ui/builder/apply", { method: "POST", body: JSON.stringify({ holdings: b.holdings.map((x) => ({ symbol: x.symbol, shares: x.shares, price: x.price })) }) });
       toast("Added to your portfolio"); location.hash = "#/portfolio"; }]);
     const kpi = (k, v, sub, c = "") => h("div", { class: "stat kpi" }, h("div", { class: "k" }, k), h("div", { class: `v num ${c}` }, v), h("div", { class: "muted", style: "font-size:12px" }, sub));

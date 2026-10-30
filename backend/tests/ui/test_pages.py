@@ -308,19 +308,43 @@ def test_a_chart_tab_hidden_during_a_theme_change_takes_the_new_colours_when_sho
     assert tab.page.evaluate(ATTRIBUTES_WITH, [".card:has(> .mode-tabs)", stale]) == []
 
 
-def open_transaction_dialog(tab):
-    """The stock page's Add to portfolio dialog, opened with a click as a person would."""
-    tab.go("#/stock/TEST")
-    tab.page.click("button:text-is('+ Add to portfolio')")
-    dialog = tab.page.get_by_role("dialog", name="Add transaction")
+DIALOGS = {"transaction": {"page": "#/stock/TEST", "opener": "+ Add to portfolio", "action": "Save", "writes_to": "**/portfolio/transactions"},
+           "delete": {"page": "#/portfolio", "opener": "Delete", "action": "Delete", "writes_to": "**/portfolio/transactions/0"},
+           "builder": {"page": "#/builder", "opener": "Add all to my portfolio", "action": "Add to portfolio", "writes_to": "**/ui/builder/apply"}}
+
+
+def open_dialog(tab, which):
+    """One of DIALOGS, opened with a click as a person would."""
+    tab.go(DIALOGS[which]["page"])
+    tab.page.click(f"button:text-is('{DIALOGS[which]['opener']}')")
+    dialog = tab.page.get_by_role("dialog")
     dialog.wait_for(timeout=5000)
     return dialog
 
 
+def writes_from(tab, which, **response):
+    """The methods of the writes the dialog sends, each answered with response, so the server never sees them."""
+    sent = []
+    tab.page.route(DIALOGS[which]["writes_to"], lambda route: (sent.append(route.request.method), route.fulfill(**response)))
+    return sent
+
+
+def click_main_button(dialog, which):
+    dialog.get_by_role("button", name=DIALOGS[which]["action"], exact=True).click()
+
+
+def focus_stays_in_a_dialog(tab, key):
+    inside = []
+    for _ in range(10):   # more than the dialog's eight controls, so focus has to wrap
+        tab.page.keyboard.press(key)
+        inside.append(tab.page.evaluate("document.activeElement.closest('[role=dialog]') !== null"))
+    return all(inside)
+
+
 def save_with_enter(tab):
     """Press Enter where the dialog left focus, and return the transaction it sent; the server never sees it."""
-    tab.page.route("**/portfolio/transactions", lambda route: route.fulfill(json={"status": "saved", "transactions": 2}))
-    with tab.page.expect_request("**/portfolio/transactions") as sent:
+    writes_from(tab, "transaction", json={"status": "saved", "transactions": 2})
+    with tab.page.expect_request(DIALOGS["transaction"]["writes_to"]) as sent:
         tab.page.keyboard.press("Enter")
     return sent.value.post_data_json
 
@@ -328,59 +352,114 @@ def save_with_enter(tab):
 @pytest.mark.parametrize("key", ["Tab", "Shift+Tab"])
 def test_tabbing_never_leaves_the_dialog(browser, base_url, key):
     tab = Tab(browser, base_url, 1366)
-    open_transaction_dialog(tab)
-    inside = []
-    for _ in range(10):   # more than the dialog's eight controls, so focus has to wrap
-        tab.page.keyboard.press(key)
-        inside.append(tab.page.evaluate("document.activeElement.closest('[role=dialog]') !== null"))
-    assert all(inside)
+    open_dialog(tab, "transaction")
+    assert focus_stays_in_a_dialog(tab, key)
 
 
 def test_escape_closes_the_dialog(browser, base_url):
     tab = Tab(browser, base_url, 1366)
-    dialog = open_transaction_dialog(tab)
+    dialog = open_dialog(tab, "transaction")
     tab.page.keyboard.press("Escape")
     assert dialog.count() == 0
 
 
 def test_closing_the_dialog_gives_focus_back_to_the_button_that_opened_it(browser, base_url):
     tab = Tab(browser, base_url, 1366)
-    open_transaction_dialog(tab)
+    open_dialog(tab, "transaction")
     tab.page.keyboard.press("Escape")
     assert tab.page.evaluate("document.activeElement.textContent") == "+ Add to portfolio"
 
 
 def test_enter_in_the_transaction_dialog_saves_it(browser, base_url):
     tab = Tab(browser, base_url, 1366, service_workers="block")
-    open_transaction_dialog(tab)
+    open_dialog(tab, "transaction")
     assert save_with_enter(tab)["symbol"] == "TEST"
 
 
 def test_the_transaction_dialog_sends_the_fees(browser, base_url):
     tab = Tab(browser, base_url, 1366, service_workers="block")
-    open_transaction_dialog(tab).get_by_label("Fees (₹)").fill("20")
+    open_dialog(tab, "transaction").get_by_label("Fees (₹)").fill("20")
     assert save_with_enter(tab)["fees"] == 20
 
 
 def test_a_quantity_the_server_refuses_is_explained_at_the_quantity(browser, base_url):
     tab = Tab(browser, base_url, 1366)
-    quantity = open_transaction_dialog(tab).get_by_label("Quantity", exact=True)
+    quantity = open_dialog(tab, "transaction").get_by_label("Quantity", exact=True)
     quantity.fill("0")
     quantity.press("Enter")
     sync_api.expect(quantity).to_have_accessible_description(re.compile("greater than 0"))
 
 
 def test_the_transaction_dialog_dates_a_trade_by_the_day_in_india(browser, base_url):
-    tab = Tab(browser, base_url, 1366)
+    tab = Tab(browser, base_url, 1366, timezone_id="UTC")
     tab.page.clock.set_fixed_time("2026-10-29T20:30:00Z")   # 02:00 on the 30th in India, still the 29th in UTC
-    assert open_transaction_dialog(tab).get_by_label("Date", exact=True).input_value() == "2026-10-30"
+    assert open_dialog(tab, "transaction").get_by_label("Date", exact=True).input_value() == "2026-10-30"
 
 
 def test_deleting_a_transaction_asks_in_the_apps_own_dialog(browser, base_url):
     tab = Tab(browser, base_url, 1366)
-    tab.go("#/portfolio")
-    tab.page.click("button:text-is('Delete')")
+    open_dialog(tab, "delete")
     assert tab.page.get_by_role("dialog", name="Delete this transaction?").is_visible()
+
+
+@pytest.mark.parametrize("which", ["delete", "builder"])
+@pytest.mark.parametrize("key", ["Escape", "Enter"])
+def test_the_first_key_pressed_in_a_confirmation_writes_nothing(browser, base_url, which, key):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    sent = writes_from(tab, which, json={})
+    open_dialog(tab, which)
+    tab.page.keyboard.press(key)
+    tab.settle()
+    assert sent == []
+
+
+@pytest.mark.parametrize("which, method", [("delete", "DELETE"), ("builder", "POST")])
+def test_confirming_sends_the_write(browser, base_url, which, method):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    sent = writes_from(tab, which, json={})
+    click_main_button(open_dialog(tab, which), which)
+    tab.settle()
+    assert sent == [method]
+
+
+def a_dialog_whose_write_failed(browser, base_url, which):
+    """The dialog after its main button was clicked while the server answered 500."""
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    writes_from(tab, which, **SERVER_ERROR)
+    dialog = open_dialog(tab, which)
+    click_main_button(dialog, which)
+    sync_api.expect(dialog.locator(".dialog-error")).to_have_text("Something went wrong on our side.")
+    return tab, dialog
+
+
+@pytest.mark.parametrize("which", ["transaction", "delete"])
+def test_escape_closes_a_dialog_whose_write_failed(browser, base_url, which):
+    tab, dialog = a_dialog_whose_write_failed(browser, base_url, which)
+    tab.page.keyboard.press("Escape")
+    assert dialog.count() == 0
+
+
+@pytest.mark.parametrize("which", ["transaction", "delete"])
+def test_tabbing_never_leaves_a_dialog_whose_write_failed(browser, base_url, which):
+    tab, _ = a_dialog_whose_write_failed(browser, base_url, which)
+    assert focus_stays_in_a_dialog(tab, "Tab")
+
+
+@pytest.mark.parametrize("refusal", [{"loc": ["body"], "msg": "That trade is dated after today"}, {"msg": "That trade is dated after today"}],
+                         ids=["whole-form", "no-place"])
+def test_a_refusal_no_field_can_show_is_shown_in_the_dialog(browser, base_url, refusal):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    writes_from(tab, "transaction", status=422, json={"detail": [{"loc": ["body", "quantity"], "msg": "Input should be greater than 0"}, refusal]})
+    dialog = open_dialog(tab, "transaction")
+    tab.page.keyboard.press("Enter")
+    sync_api.expect(dialog.locator(".dialog-error")).to_have_text("That trade is dated after today")
+
+
+def test_leaving_the_page_closes_its_dialog(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    dialog = open_dialog(tab, "transaction")
+    tab.go("#/explore")
+    assert dialog.count() == 0
 
 
 SERVER_ERROR = {"status": 500, "body": "Internal Server Error"}
@@ -411,6 +490,13 @@ def test_try_again_after_a_server_error_loads_the_page(browser, base_url):
     tab.page.click("#view button:text-is('Try again')")
     tab.settle()
     assert tab.page.locator("#view .welcome").count() == 1
+
+
+def test_a_saved_key_that_is_not_a_key_asks_to_sign_in(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.page.evaluate("localStorage.setItem('si-key', 'not a key')")
+    tab.go("#/explore")
+    assert "Please sign in." in tab.page.inner_text("#view")
 
 
 def test_a_rate_limit_shows_the_servers_words_with_the_limit(browser, base_url):
