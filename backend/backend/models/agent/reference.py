@@ -164,8 +164,8 @@ class Reference:
                           [], float("nan"), text, "", lesson=f"{title}. {text}")
         if news_first:
             # Filings are a network wait the price files do not need, so a question here for its route alone, with no
-            # time, news or window word ("how is AAPL doing"), is answered without them, as it was before it came here.
-            return self._recent(question, query, as_of, subject, prices, not lately or LOOK_BACK.search(question))
+            # time or news word ("how is AAPL doing", "over the past month"), is answered without them, as it was before.
+            return self._recent(question, query, as_of, subject, prices, not lately or RECENT.search(question))
         for arm in self._arms(subject, question):
             chunks = arm(query, as_of, subject)
             if chunks:

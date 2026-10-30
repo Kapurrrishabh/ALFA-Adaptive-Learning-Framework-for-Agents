@@ -1318,12 +1318,13 @@ def test_a_question_the_router_is_unsure_of_reads_the_dated_sources_only_when_it
 
 
 @pytest.mark.parametrize("filings", [RefusedLive(), ExplodingLive()])
+@pytest.mark.parametrize("question", ["how has AAPL performed ?", "how has AAPL done over the past month ?"])
 def test_a_question_sure_to_ask_how_the_price_moved_is_answered_from_the_price_files_without_filings(registered, router,
-                                                                                                    filings):
+                                                                                                    filings, question):
     """"how is AAPL doing" was refused as unreachable when EDGAR refused us, though the price files held the answer, and
-    it waited on EDGAR when EDGAR did answer."""
+    it waited on EDGAR when EDGAR did answer. A window is a span of prices, not a reason to read filings."""
     built = news_reference(ExplodingWriter(), news=(), filings=filings)
-    turn = agent(registered, router, model=ExplodingModel(), reference=built).answer("how has AAPL performed ?")
+    turn = agent(registered, router, model=ExplodingModel(), reference=built).answer(question)
     assert turn.spoke and turn.served.startswith("AAPL closed at $") and turn.because == ""
 
 
