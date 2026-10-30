@@ -1,4 +1,7 @@
+import asyncio
+import smtplib
 import sqlite3
+import ssl
 from contextlib import closing
 from urllib.parse import parse_qs, urlsplit
 
@@ -9,6 +12,7 @@ from fastapi_users import InvalidPasswordException
 from httpx_oauth.oauth2 import BaseOAuth2, OAuth2Token
 
 from backend.api.accounts import Accounts, GoogleOIDC, owner_of
+from backend.api.mail import SmtpMailer, mailer_from_env
 from backend.database.accounts import scrub_copy
 
 # https, because the client only sends a Secure cookie back over https
@@ -17,6 +21,9 @@ SECRET = "s" * 32
 EMAIL = "asha@example.com"
 PASSWORD = "tea at four on the terrace"
 GOOD_ENV = {"STOCKINTEL_AUTH_SECRET": SECRET, "STOCKINTEL_PUBLIC_URL": "https://you.duckdns.org"}
+SMTP_ENV = {"STOCKINTEL_SMTP_HOST": "smtp.example.com", "STOCKINTEL_SMTP_PORT": "465",
+            "STOCKINTEL_SMTP_USER": "apikey", "STOCKINTEL_SMTP_PASSWORD": "smtp-password",
+            "STOCKINTEL_SMTP_FROM": "StockIntel <noreply@example.com>"}
 
 
 class FakeGoogle(GoogleOIDC):
@@ -34,6 +41,17 @@ class FakeGoogle(GoogleOIDC):
         return self.profile
 
 
+class Outbox(SmtpMailer):
+    """Our mailer with the SMTP connection replaced by a list."""
+
+    def __init__(self):
+        super().__init__(host="", port=0, user="", password="", sender="")
+        self.sent = []
+
+    def _deliver(self, message):
+        self.sent.append(message)
+
+
 @pytest.fixture
 def db_path(tmp_path):
     return str(tmp_path / "stockintel.db")
@@ -45,8 +63,13 @@ def google():
 
 
 @pytest.fixture
-def accounts(db_path, google):
-    return Accounts(db_path, PUBLIC_URL, SECRET, google)
+def outbox():
+    return Outbox()
+
+
+@pytest.fixture
+def accounts(db_path, google, outbox):
+    return Accounts(db_path, PUBLIC_URL, SECRET, google, outbox)
 
 
 def client_for(accounts):
@@ -79,6 +102,18 @@ def google_sign_in(client):
     return client.get("/auth/google/callback", params={"code": "code", "state": parse_qs(urlsplit(url).query)["state"][0]})
 
 
+def link_sent(outbox):
+    return next(word for word in outbox.sent[-1].get_content().split() if "token=" in word)
+
+
+def token_sent(outbox):
+    return link_sent(outbox).split("token=", 1)[1]
+
+
+def register(client, **body):
+    return client.post("/auth/register", json={"email": EMAIL, "password": PASSWORD, **body})
+
+
 def rows(db_path, table):
     with closing(sqlite3.connect(db_path)) as conn:
         return conn.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
@@ -101,7 +136,7 @@ def test_the_login_cookie_lasts_30_days(client, accounts):
 
 
 def test_loopback_http_gets_a_plain_cookie_without_secure(db_path):
-    local = Accounts(db_path, "http://127.0.0.1:8931", SECRET, None)
+    local = Accounts(db_path, "http://127.0.0.1:8931", SECRET, None, None)
     cookie = sign_in(client_for(local), local).headers["set-cookie"]
     assert cookie.startswith("stockintel=") and "Secure" not in cookie
 
@@ -137,7 +172,7 @@ def test_a_session_older_than_session_days_gets_401(client, accounts, db_path):
 def test_expired_sessions_are_purged_at_start(client, accounts, db_path, google):
     sign_in(client, accounts)
     age_sessions(db_path, 31)
-    Accounts(db_path, PUBLIC_URL, SECRET, google)
+    Accounts(db_path, PUBLIC_URL, SECRET, google, None)
     assert rows(db_path, "accesstoken") == 0
 
 
@@ -155,13 +190,60 @@ def test_an_unverified_user_cannot_log_in(client, accounts):
     assert (r.status_code, r.json()["detail"]) == (400, "LOGIN_USER_NOT_VERIFIED")
 
 
+def test_a_sign_up_that_follows_the_emailed_link_can_log_in(client, outbox):
+    register(client)
+    assert client.post("/auth/verify", json={"token": token_sent(outbox)}).status_code == 200
+    client.post("/auth/cookie/login", data={"username": EMAIL, "password": PASSWORD})
+    assert client.get("/probe").status_code == 200
+
+
+def test_a_sign_up_cannot_log_in_before_confirming_even_if_it_claims_to_be_verified(client):
+    register(client, is_verified=True)
+    r = client.post("/auth/cookie/login", data={"username": EMAIL, "password": PASSWORD})
+    assert (r.status_code, r.json()["detail"]) == (400, "LOGIN_USER_NOT_VERIFIED")
+
+
+def test_a_sign_up_with_a_14_character_password_is_refused(client):
+    r = register(client, password="q" * 14)
+    assert (r.status_code, r.json()["detail"]["code"]) == (400, "REGISTER_INVALID_PASSWORD")
+
+
+def test_a_password_reset_signs_out_the_old_cookie(client, accounts, outbox):
+    sign_in(client, accounts)
+    token = client.cookies["__Host-stockintel"]
+    client.post("/auth/forgot-password", json={"email": EMAIL})
+    client.post("/auth/reset-password", json={"token": token_sent(outbox), "password": "rain on a tin roof at noon"})
+    assert client.get("/probe", headers={"Cookie": f"__Host-stockintel={token}"}).status_code == 401
+
+
+@pytest.mark.parametrize("path, page", [("/auth/request-verify-token", "verify"), ("/auth/forgot-password", "reset")])
+def test_emailed_links_use_the_public_url_whatever_host_the_request_names(client, accounts, outbox, path, page):
+    accounts.create_user(EMAIL, PASSWORD, verified=False)
+    outbox.sent.clear()
+    client.post(path, json={"email": EMAIL}, headers={"Host": "evil.example"})
+    assert link_sent(outbox).startswith(f"{PUBLIC_URL}/#/{page}?token=")
+
+
+def test_without_a_mailer_sign_up_confirm_and_reset_are_not_mounted(db_path):
+    client = client_for(Accounts(db_path, PUBLIC_URL, SECRET, None, None))
+    paths = ("/auth/register", "/auth/request-verify-token", "/auth/verify", "/auth/forgot-password",
+             "/auth/reset-password")
+    assert [client.post(path, json={}).status_code for path in paths] == [404] * len(paths)
+
+
+def test_without_a_mailer_an_unconfirmed_user_is_refused_before_it_is_stored(db_path):
+    with pytest.raises(RuntimeError, match="STOCKINTEL_SMTP_"):
+        Accounts(db_path, PUBLIC_URL, SECRET, None, None).create_user(EMAIL, PASSWORD, verified=False)
+    assert rows(db_path, "user") == 0
+
+
 def test_google_sign_in_creates_a_verified_user(client):
     assert google_sign_in(client).status_code == 204
     assert client.get("/probe").status_code == 200
 
 
 def test_google_sign_in_works_over_loopback_http(db_path, google):
-    assert google_sign_in(client_for(Accounts(db_path, "http://127.0.0.1:8931", SECRET, google))).status_code == 204
+    assert google_sign_in(client_for(Accounts(db_path, "http://127.0.0.1:8931", SECRET, google, None))).status_code == 204
 
 
 def test_google_tokens_are_not_stored(client, db_path):
@@ -183,6 +265,21 @@ def test_google_cannot_take_over_a_password_account_with_the_same_email(client, 
     assert (r.status_code, r.json()["detail"]) == (400, "OAUTH_USER_ALREADY_EXISTS")
 
 
+def test_google_sign_in_replaces_an_unconfirmed_password_account_with_the_same_email(client, accounts, google, db_path):
+    accounts.create_user(google.profile["email"], PASSWORD, verified=False)
+    assert (google_sign_in(client).status_code, rows(db_path, "user")) == (204, 1)
+
+
+def test_google_sign_in_keeps_its_own_account_even_when_unconfirmed(client, db_path):
+    google_sign_in(client)
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute('UPDATE "user" SET is_verified = 0')
+        before = conn.execute('SELECT id FROM "user"').fetchall()
+    google_sign_in(client)
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert conn.execute('SELECT id FROM "user"').fetchall() == before
+
+
 def test_the_google_callback_without_the_csrf_cookie_is_refused(client):
     url = client.get("/auth/google/authorize").json()["authorization_url"]
     client.cookies.clear()
@@ -197,7 +294,7 @@ def test_deleting_a_user_deletes_its_google_link_and_sessions(client, db_path):
 
 
 def set_env(monkeypatch, env):
-    for name in [*GOOD_ENV, "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]:
+    for name in [*GOOD_ENV, "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", *SMTP_ENV]:
         if env.get(name) is None:
             monkeypatch.delenv(name, raising=False)
         else:
@@ -215,6 +312,8 @@ def set_env(monkeypatch, env):
     ({"STOCKINTEL_PUBLIC_URL": "https://You.duckdns.org"}, "STOCKINTEL_PUBLIC_URL"),
     ({"GOOGLE_CLIENT_ID": "client-id"}, "GOOGLE_CLIENT_SECRET"),
     ({"GOOGLE_CLIENT_SECRET": "client-secret"}, "GOOGLE_CLIENT_ID"),
+    ({**SMTP_ENV, "STOCKINTEL_SMTP_PASSWORD": None}, "STOCKINTEL_SMTP_PASSWORD"),
+    ({**SMTP_ENV, "STOCKINTEL_SMTP_PORT": "smtps"}, "STOCKINTEL_SMTP_PORT"),
 ])
 def test_from_env_names_the_missing_or_bad_variable(monkeypatch, db_path, change, named):
     set_env(monkeypatch, {**GOOD_ENV, **change})
@@ -230,6 +329,11 @@ def test_from_env_accepts_http_on_loopback(monkeypatch, db_path):
 def test_without_google_set_up_no_google_route_is_mounted(monkeypatch, db_path):
     set_env(monkeypatch, GOOD_ENV)
     assert client_for(Accounts.from_env(db_path)).get("/auth/google/authorize").status_code == 404
+
+
+def test_from_env_with_every_smtp_setting_mounts_sign_up(monkeypatch, db_path):
+    set_env(monkeypatch, {**GOOD_ENV, **SMTP_ENV})
+    assert client_for(Accounts.from_env(db_path)).post("/auth/register", json={}).status_code == 422
 
 
 def test_the_stored_hash_uses_the_owasp_argon2_cost(accounts, db_path):
@@ -263,3 +367,39 @@ def test_scrub_copy_leaves_a_database_from_before_sign_in_alone():
         copy.execute("CREATE TABLE portfolios (name TEXT)")
         scrub_copy(copy)
         assert copy.execute("SELECT name FROM sqlite_master").fetchall() == [("portfolios",)]
+
+
+@pytest.fixture
+def smtp(monkeypatch):
+    """What the mailer built from SMTP_ENV hands smtplib for one email, recorded instead of sent."""
+    seen = {}
+
+    class RecordingSmtp:
+        def __init__(self, host, port, *, timeout, context):
+            seen.update(server=(host, port), context=context)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def login(self, user, password):
+            seen["login"] = (user, password)
+
+        def send_message(self, message):
+            seen["message"] = message
+
+    set_env(monkeypatch, SMTP_ENV)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", RecordingSmtp)
+    asyncio.run(mailer_from_env().send(EMAIL, "Confirm your email for StockIntel", "Open this link"))
+    return seen
+
+
+def test_the_mailer_checks_the_smtp_servers_certificate(smtp):
+    assert (smtp["context"].verify_mode, smtp["context"].check_hostname) == (ssl.CERT_REQUIRED, True)
+
+
+def test_the_mailer_sends_with_the_smtp_settings(smtp):
+    assert (smtp["server"], smtp["login"], smtp["message"]["From"], smtp["message"]["To"]) == (
+        ("smtp.example.com", 465), ("apikey", "smtp-password"), "StockIntel <noreply@example.com>", EMAIL)
