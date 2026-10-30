@@ -33,6 +33,7 @@ SHOWN_CHARS = 100           # of a file's own text in a message: Excel stops she
 # what damaged workbooks raised when fuzzed (2026-10-30); anything else is our bug, so it stays a server error
 DAMAGED = (LookupError, SyntaxError, TypeError, OSError, NotImplementedError, zipfile.BadZipFile, zlib.error)
 SHORTER_RANGE = "Download a shorter date range and upload each file."
+PDF_SWITCHED_OFF = "PDF statements aren't switched on for this server. Upload your broker's Excel or CSV file instead."
 MAX_CHOICES = 3
 STATES = ("matched", "check", "not_found")
 ISIN = re.compile(r"^IN[A-Z0-9]{10}$")
@@ -89,7 +90,7 @@ def parse(data: bytes) -> Statement:
     """A broker export or our template, told apart by its first bytes and its header, never its file name. A file it
     cannot read raises ValueError, which the route answers with 400; any other error is a bug."""
     if data.startswith(b"%PDF"):
-        raise ImportUnsupported("PDF statements aren't switched on for this server")
+        raise ImportUnsupported(PDF_SWITCHED_OFF)
     if data.startswith(b"PK\x03\x04"):
         return _statement(_sheets(data))
     if len(data) > MAX_TEXT_BYTES:

@@ -1,8 +1,9 @@
 import io
 import json
 import logging
-import os
 import re
+import signal
+import subprocess
 import sys
 import time
 import tracemalloc
@@ -18,7 +19,7 @@ from backend.advisory.calculators.backtest import strategies as S
 from backend.advisory.calculators.backtest.engine import BacktestConfig, run
 from backend.database.sources import panel
 from backend.database.sources.panel import Listing
-from backend.user.portfolio import cas, importers
+from backend.user.portfolio import cas, cas_worker, importers
 from backend.user.portfolio.portfolio import Transaction, analyze, build_positions, risk_decomposition, what_if
 from backend.advisory.statistics.model_registry import ModelRegistry, PromotionError
 
@@ -657,13 +658,24 @@ def casparser(tmp_path, monkeypatch):
             (tmp_path / "casparser" / "exceptions.py").write_text(
                 "class CASParseError(Exception): pass\nclass IncorrectPasswordError(CASParseError): pass\n")
             (tmp_path / "casparser" / "__init__.py").write_text(
-                f"import json, os, sys, time\nfrom .exceptions import *\n"
+                f"import json, os, resource, sys, time\nfrom .exceptions import *\n"
                 f"def read_cas_pdf(file, password, output):\n    {body}\n")
             boot.append(f"sys.path.insert(0, {str(tmp_path)!r})")
         boot.append(f"runpy.run_path({str(cas.WORKER)!r}, run_name='__main__')")
         (tmp_path / "boot.py").write_text("\n".join(boot))
         monkeypatch.setattr(cas, "WORKER", tmp_path / "boot.py")
     return stub
+
+
+@pytest.fixture
+def seen_in_cas_reader(casparser, tmp_path):
+    """The JSON value of a Python expression evaluated inside the CAS reader."""
+    def seen(expression):
+        casparser(f"open({str(tmp_path / 'seen')!r}, 'w').write(json.dumps({expression})); raise CASParseError('x')")
+        with pytest.raises(ValueError):
+            cas.read(PDF, PASSWORD)
+        return json.loads((tmp_path / "seen").read_text())
+    return seen
 
 
 @pytest.mark.parametrize("statement, kept", [(CAMS_CAS, CAMS_KEPT), (NSDL_CAS, NSDL_KEPT)], ids=["CAMS", "NSDL"])
@@ -685,20 +697,36 @@ def test_a_pdf_that_is_not_a_cas_is_refused_with_casparsers_reason(casparser):
         cas.read(PDF, PASSWORD)
 
 
-def test_a_cas_that_reads_too_long_is_stopped_at_the_time_limit(casparser, tmp_path, monkeypatch):
-    casparser(f"open({str(tmp_path / 'pid')!r}, 'w').write(str(os.getpid())); time.sleep(60)")
+def test_a_cas_that_reads_too_long_is_stopped_at_the_time_limit(casparser, monkeypatch):
+    readers = []
+
+    class RecordedPopen(subprocess.Popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            readers.append(self)
+    casparser("time.sleep(60)")
     monkeypatch.setattr(cas, "CAS_TIMEOUT_S", 1)
+    monkeypatch.setattr(subprocess, "Popen", RecordedPopen)
     started = time.monotonic()
     with pytest.raises(ValueError, match="took more than 1 seconds to read"):
         cas.read(PDF, PASSWORD)
     assert time.monotonic() - started < 5
-    with pytest.raises(ProcessLookupError):     # stopped, not left running
-        os.kill(int((tmp_path / "pid").read_text()), 0)
+    assert readers[0].returncode == -signal.SIGKILL     # stopped, not left running
 
 
-def test_a_server_without_casparser_does_not_read_cas(casparser):
+def test_a_server_without_casparser_refuses_a_pdf_in_the_importers_words(casparser):
     casparser(None)
-    with pytest.raises(importers.ImportUnsupported):
+    with pytest.raises(importers.ImportUnsupported) as refused:
+        cas.read(PDF, PASSWORD)
+    with pytest.raises(importers.ImportUnsupported) as parsed:
+        importers.parse(PDF)
+    assert str(refused.value) == str(parsed.value)
+
+
+def test_a_casparser_with_a_missing_dependency_is_a_server_error(casparser, tmp_path):
+    casparser("pass")
+    (tmp_path / "casparser" / "__init__.py").write_text("import casparser_missing_dependency\n")
+    with pytest.raises(RuntimeError, match="ModuleNotFoundError: No module named 'casparser_missing_dependency'"):
         cas.read(PDF, PASSWORD)
 
 
@@ -711,12 +739,18 @@ def test_the_cas_password_is_never_on_the_command_line_or_in_the_logs(casparser,
     assert PASSWORD not in (tmp_path / "argv").read_text() + caplog.text + str(refused.value)
 
 
-def test_the_cas_reader_gets_none_of_the_servers_secrets(casparser, tmp_path, monkeypatch):
+def test_the_cas_reader_does_not_inherit_the_servers_environment(seen_in_cas_reader, monkeypatch):
     monkeypatch.setenv("STOCKINTEL_AUTH_SECRET", "not-for-the-reader")
-    casparser(f"open({str(tmp_path / 'env')!r}, 'w').write(json.dumps(dict(os.environ))); raise CASParseError('x')")
-    with pytest.raises(ValueError):
-        cas.read(PDF, PASSWORD)
-    assert "STOCKINTEL_AUTH_SECRET" not in json.loads((tmp_path / "env").read_text())
+    assert "STOCKINTEL_AUTH_SECRET" not in seen_in_cas_reader("dict(os.environ)")
+
+
+def test_the_cas_reader_runs_in_pythons_isolated_mode(seen_in_cas_reader):
+    assert seen_in_cas_reader("sys.flags.isolated") == 1
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="macOS does not enforce RLIMIT_AS, so the reader sets it on Linux")
+def test_the_cas_reader_has_a_memory_limit_on_linux(seen_in_cas_reader):
+    assert seen_in_cas_reader("resource.getrlimit(resource.RLIMIT_AS)") == [cas_worker.MAX_MEMORY_BYTES] * 2
 
 
 def test_a_cas_reader_failure_names_its_type_but_not_its_message(casparser):
@@ -729,4 +763,19 @@ def test_a_cas_reader_failure_names_its_type_but_not_its_message(casparser):
 def test_a_cas_reader_that_dies_is_a_server_error(casparser):
     casparser("os._exit(3)")
     with pytest.raises(RuntimeError, match="exit code 3"):
+        cas.read(PDF, PASSWORD)
+
+
+def test_a_cas_reader_that_prints_is_a_server_error_not_a_bad_file(casparser):
+    casparser(f"print('reading'); return {json.dumps(CAMS_CAS)!r}")
+    with pytest.raises(RuntimeError, match="reply is not JSON"):
+        cas.read(PDF, PASSWORD)
+
+
+def test_a_cas_field_that_casparser_renamed_is_a_server_error_not_dropped(casparser):
+    statement = json.loads(json.dumps(NSDL_CAS))
+    equity, = statement["accounts"][0]["equities"]
+    equity["shares"] = equity.pop("num_shares")
+    casparser(f"return {json.dumps(statement)!r}")
+    with pytest.raises(RuntimeError, match="failed with KeyError"):
         cas.read(PDF, PASSWORD)
