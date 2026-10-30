@@ -108,7 +108,7 @@ const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v
     clearTimeout(timer);
     const v = q.value.trim(); if (!v) { items = []; return close(); }
     timer = setTimeout(async () => {
-      let found; try { found = await api("/ui/search?q=" + encodeURIComponent(v)); } catch (e) { toast(`Search failed: ${e.message}`); return; }
+      let found; try { found = await api("/ui/search?q=" + encodeURIComponent(v)); } catch (e) { if (v === q.value.trim()) toast(`Search failed: ${e.message}`); return; }
       if (v !== q.value.trim()) return;
       items = found; itemsFor = v; sel = -1; draw();
     }, 150);
@@ -117,7 +117,6 @@ const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v
     if (e.key === "ArrowDown") { sel = Math.min(items.length - 1, sel + 1); draw(); e.preventDefault(); }
     else if (e.key === "ArrowUp") { sel = items.length ? Math.max(0, sel - 1) : -1; draw(); e.preventDefault(); }
     else if (e.key === "Enter") {
-      // a highlighted row is what the user chose; otherwise the first match only if it answers this very text
       const v = q.value.trim(), pick = sel >= 0 ? items[sel] : itemsFor === v ? items[0] : null;
       if (v) { location.hash = pick ? `#/stock/${encodeURIComponent(pick.symbol)}` : `#/search?q=${encodeURIComponent(v)}`; q.value = ""; close(); q.blur(); }
     } else if (e.key === "Escape") close();
@@ -1091,7 +1090,7 @@ async function pageLearn(view, ctx) {
 
 async function pageReports(view, ctx) {
   const list = await api("/reports", { signal: ctx.signal });
-  view.append(h("div", { class: "card" }, h("h2", {}, "Research reports"), h("p", { class: "muted", style: "margin-top:-6px" }, "18-section reports generated from the engines. Open any stock and press “Research report” to create one."),
+  view.append(h("div", { class: "card" }, h("p", { class: "muted", style: "margin-top:0" }, "18-section reports generated from the engines. Open any stock and press “Research report” to create one."),
     list.length ? h("div", { class: "list" }, ...list.map((r) => h("a", { href: `#/report/${r.id}` }, h("div", { class: "stack" }, h("div", { class: "avatar" }, initials(r.symbol)), h("div", {}, h("div", { class: "t" }, r.symbol), h("div", { class: "s" }, new Date(r.created_at).toLocaleString("en-IN")))), h("span", { class: "muted" }, "Open →"))))
       : h("div", { class: "empty" }, h("div", { class: "big" }, "📄"), h("p", {}, "No reports yet."))));
 }
@@ -1269,7 +1268,7 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").cat
 const ROUTES = [
   { path: "home", title: "Home", section: "Home", icon: "home", render: pageHome },
   { path: "explore", title: "Markets", section: "Markets", icon: "compass", render: pageExplore },
-  { path: "stock", title: (sym) => sym.toUpperCase(), section: "Markets", render: pageStock },
+  { path: "stock", title: (sym) => sym.toUpperCase(), section: "Markets", needsArg: true, render: pageStock },
   { path: "search", title: "Search results", section: "Markets", render: pageSearch },
   { path: "portfolio", title: "Holdings", section: "Portfolio", label: "Holdings", icon: "pie", render: pagePortfolio },
   { path: "signals", title: "Your plan", section: "Portfolio", label: "Plan", render: pageSignals },
@@ -1293,14 +1292,13 @@ let visit = { redraws: [], leaves: [] };
 async function route() {
   loadTicker();
   const [path, query] = location.hash.slice(2).split("?"), parts = (path || "home").split("/");
-  // no page: a broken %-escape, or a page named by its argument (its title is a function) without one
   let arg; try { arg = decodeURIComponent(parts[1] || ""); } catch { arg = null; }
-  const r = (arg !== null && ROUTES.find((x) => x.path === parts[0] && (arg || typeof x.title !== "function"))) || NOT_FOUND;
+  const r = (arg !== null && ROUTES.find((x) => x.path === parts[0] && (arg || !x.needsArg))) || NOT_FOUND;
   for (const fn of visit.leaves) fn();
   const ctl = new AbortController(), thisVisit = { redraws: [], leaves: [() => ctl.abort()] };
   visit = thisVisit;
   const ctx = { signal: ctl.signal, arg, params: new URLSearchParams(query || ""),
-    live: () => visit === thisVisit, onLeave: (fn) => thisVisit.leaves.push(fn), redraw: (fn) => thisVisit.redraws.push(fn) };
+    live: () => visit === thisVisit, onLeave: (fn) => ctx.live() ? thisVisit.leaves.push(fn) : fn(), redraw: (fn) => thisVisit.redraws.push(fn) };
   const title = typeof r.title === "function" ? r.title(ctx.arg) : r.title;
   document.title = `${title} · StockIntel`;
   for (const a of document.querySelectorAll("#nav a, #bnav a")) {

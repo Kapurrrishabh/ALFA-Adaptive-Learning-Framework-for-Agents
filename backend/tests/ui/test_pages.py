@@ -150,6 +150,15 @@ def test_leaving_a_stock_page_before_its_chart_options_load_shows_no_toast_later
     assert tab.page.locator(".toast").all_inner_texts() == []
 
 
+def test_cleanup_a_page_registers_after_it_was_left_still_runs(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.page.evaluate("""() => ROUTES.push({ path: "late", title: "Late", section: "Home", render: async (view, ctx) => {
+      await new Promise((resolve) => { window.finishLate = resolve; }); ctx.onLeave(() => { window.cleanedUp = true; }); } })""")
+    tab.go("#/late")
+    tab.go("#/learn")
+    assert tab.page.evaluate("async () => { finishLate(); await new Promise((r) => setTimeout(r)); return window.cleanedUp === true; }")
+
+
 def test_tab_from_the_page_title_reaches_the_sub_nav(browser, base_url):
     tab = Tab(browser, base_url, 1366)
     tab.go("#/portfolio")
@@ -176,6 +185,12 @@ def test_enter_on_a_name_no_stock_has_opens_search_not_a_stock_page(browser, bas
     assert tab.page.evaluate("location.hash") == "#/search?q=Parag%20Parikh%20Flexi%20Cap"
 
 
+def test_a_name_no_stock_has_offers_no_stock_page(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    search_and_press_enter(tab, "Parag Parikh Flexi Cap")
+    assert tab.page.locator("#view a[href^='#/stock/']").count() == 0
+
+
 def test_a_name_too_long_to_search_says_so_on_the_search_page(browser, base_url):
     tab = Tab(browser, base_url, 1366)
     search_and_press_enter(tab, LONG_NAME)
@@ -200,6 +215,20 @@ def test_a_late_answer_to_older_search_text_is_dropped(browser, base_url):
         route.continue_()
     tab.settle()
     assert tab.page.locator("#suggest .sym").all_inner_texts() == ["TEST"]
+
+
+def test_a_late_search_failure_for_older_text_shows_no_toast(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    held = []
+    tab.page.route(lambda url: "/ui/search?q=Parag" in url, lambda route: held.append(route))
+    tab.page.fill("#q", LONG_NAME)
+    tab.wait_until(lambda: held)
+    tab.page.fill("#q", "Test")
+    tab.page.wait_for_selector("#suggest.open")
+    for route in held:
+        route.continue_()
+    tab.settle()
+    assert tab.page.locator(".toast").all_inner_texts() == []
 
 
 def test_arrow_up_with_no_suggestions_points_at_no_option(browser, base_url):
