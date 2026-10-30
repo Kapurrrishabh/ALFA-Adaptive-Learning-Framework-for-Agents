@@ -345,11 +345,12 @@ class Hub:
         out = {"scheme": asdict(scheme), "source": {"nav": amfi.NAV_SOURCE, "history": amfi.HISTORY_SOURCE}}
         try:
             nav = amfi.history(code)
+            checked = amfi.history_check(nav, scheme)
         except DataUnavailable as exc:      # the official facts still stand without the unofficial history
             return {**out, "analytics": None, "summary": None, "history": None, "history_error": str(exc)}
         figures = funds.analytics(nav, scheme.is_growth)
         return {**out, "analytics": figures, "summary": funds.summary(figures), "history_error": None,
-                "history": {"dates": [str(d.date()) for d in nav.index], "nav": [float(x) for x in nav]}}
+                "history_check": checked, "history": {"dates": [str(d.date()) for d in nav.index], "nav": [float(x) for x in nav]}}
 
     # --- verdict --------------------------------------------------------------------------
     def verdict(self, symbol: str) -> Dict[str, Any]:

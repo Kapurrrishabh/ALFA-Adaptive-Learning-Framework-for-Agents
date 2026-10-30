@@ -216,6 +216,23 @@ def parse_history(text: str, code: int) -> pd.Series:
     return nav
 
 
+# NAVs are published to 4 decimals and mfapi.in writes 5, so anything past rounding is a different number
+AGREES_WITHIN = 1e-4
+
+
+def history_check(nav: pd.Series, scheme: Scheme) -> str:
+    """How mfapi.in's history stands against AMFI's own NAV; DataUnavailable when they disagree on the same day,
+    because an unofficial source that is wrong there may be wrong anywhere."""
+    on_day = nav.get(pd.Timestamp(scheme.nav_date))
+    if on_day is None:
+        return (f"not checked against AMFI: mfapi.in's latest NAV is from {nav.index[-1].date()} and AMFI's "
+                f"is from {scheme.nav_date}")
+    if abs(on_day - scheme.nav) > AGREES_WITHIN * scheme.nav:
+        raise DataUnavailable(f"mfapi.in gives scheme {scheme.code} a NAV of {on_day} on {scheme.nav_date} while "
+                              f"AMFI gives {scheme.nav}, so its history is not shown")
+    return f"matches AMFI's NAV on {scheme.nav_date}"
+
+
 def _download(url: str) -> str:
     from backend.database.live.session import PoliteSession
     try:

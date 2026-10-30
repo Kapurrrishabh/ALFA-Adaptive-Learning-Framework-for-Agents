@@ -1065,8 +1065,10 @@ def test_a_vague_question_is_not_answered_with_an_unrelated_lesson(orch, monkeyp
 def funds_served(tmp_path, monkeypatch):
     from backend.database.sources import amfi
     from backend.database.sources.provider import DataUnavailable
-    pages = {amfi.NAV_URL: NAV_TEXT, amfi.HISTORY_URL.format(code=118989): mfapi_json(118989, growing(6)),
-             amfi.HISTORY_URL.format(code=118990): mfapi_json(118990, growing(6)),
+    on = lambda nav_on_29_oct: growing(6) * (nav_on_29_oct / growing(6).iloc[-1])  # noqa: E731
+    pages = {amfi.NAV_URL: NAV_TEXT, amfi.HISTORY_URL.format(code=118989): mfapi_json(118989, on(210.512)),
+             amfi.HISTORY_URL.format(code=118990): mfapi_json(118990, on(70.2)),
+             amfi.HISTORY_URL.format(code=105758): mfapi_json(105758, on(150.0)),
              amfi.HISTORY_URL.format(code=148304): mfapi_json(148304, growing(6) * 0)}
 
     def download(url):
@@ -1103,8 +1105,18 @@ def test_fund_page_gives_amfi_facts_and_labels_the_history_unofficial(app_client
 
 
 def test_fund_page_without_history_still_gives_the_official_nav_and_says_why(app_client, funds_served):
+    r = app_client.get("/ui/funds/105759", headers={"X-API-Key": KEY}).json()
+    assert r["scheme"]["nav"] == 60.3 and r["analytics"] is None and "mf/105759" in r["history_error"]
+
+
+def test_a_history_that_disagrees_with_amfis_nav_is_not_charted(app_client, funds_served):
     r = app_client.get("/ui/funds/105758", headers={"X-API-Key": KEY}).json()
-    assert r["scheme"]["nav"] == 190.1 and r["analytics"] is None and "mf/105758" in r["history_error"]
+    assert r["history"] is None and "150.0" in r["history_error"] and "190.1" in r["history_error"]
+
+
+def test_a_history_that_matches_amfis_nav_says_so(app_client, funds_served):
+    r = app_client.get("/ui/funds/118989", headers={"X-API-Key": KEY}).json()
+    assert r["history_check"] == "matches AMFI's NAV on 2026-10-29"
 
 
 def test_an_idcw_plans_figures_say_its_payouts_are_left_out(app_client, funds_served):
