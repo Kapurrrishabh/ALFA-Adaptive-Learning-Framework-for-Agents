@@ -71,7 +71,8 @@ async function api(path, opts = {}) {
   const res = await fetch(path, { ...opts, headers: { "X-API-Key": key, "Content-Type": "application/json", ...(opts.headers || {}) } });
   const body = await res.json().catch(() => ({}));
   if (res.status === 401) { askKey(); throw new Error("Please log in with your StockIntel key"); }
-  if (!res.ok) throw Object.assign(new Error(body.detail || body.error || `HTTP ${res.status}`), { status: res.status });
+  const detail = Array.isArray(body.detail) ? body.detail.map((d) => d.msg).join("; ") : body.detail;
+  if (!res.ok) throw Object.assign(new Error(detail || body.error || `HTTP ${res.status}`), { status: res.status });
   return body;
 }
 function askKey() {
@@ -108,13 +109,13 @@ const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v
     const v = q.value.trim(); if (!v) { items = []; return close(); }
     timer = setTimeout(async () => {
       let found; try { found = await api("/ui/search?q=" + encodeURIComponent(v)); } catch (e) { toast(`Search failed: ${e.message}`); return; }
-      if (v !== q.value.trim()) return;   // a slower answer to an older query
+      if (v !== q.value.trim()) return;
       items = found; itemsFor = v; sel = -1; draw();
     }, 150);
   });
   q.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown") { sel = Math.min(items.length - 1, sel + 1); draw(); e.preventDefault(); }
-    else if (e.key === "ArrowUp") { sel = Math.max(0, sel - 1); draw(); e.preventDefault(); }
+    else if (e.key === "ArrowUp") { sel = items.length ? Math.max(0, sel - 1) : -1; draw(); e.preventDefault(); }
     else if (e.key === "Enter") {
       // a highlighted row is what the user chose; otherwise the first match only if it answers this very text
       const v = q.value.trim(), pick = sel >= 0 ? items[sel] : itemsFor === v ? items[0] : null;
@@ -418,7 +419,7 @@ function intradayPanel(ctx, sym) {
   wrap.append(h("div", { class: "spread" }, h("div", { class: "legend" }, h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1)" }), " VWAP"),
     h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--up);border-top-style:dashed" }), " support"), h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--down);border-top-style:dashed" }), " resistance"),
     h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--cone);border-top-style:dotted" }), " 5-day 80% range")), seg), plot, note);
-  load(); ctx.redraw(() => cached && draw(cached));
+  load(); wrap.redraw = () => cached && plot.isConnected && draw(cached); ctx.redraw(wrap.redraw);
   return wrap;
 }
 
@@ -510,7 +511,7 @@ function technicalPanel(ctx, sym, opts = {}) {
   features().then((f) => { if (f.gru) { names.gru = "Our GRU forecast (dashed)"; layers.gru = true; toggles.prepend(toggle("gru")); }
     if (f.alfa) { names.alfa = "Our return model (ALFA)"; layers.alfa = true; toggles.prepend(toggle("alfa")); }
     if (f.ml) { names.ai = "AI forecast (Chronos)"; layers.ai = false; toggles.append(toggle("ai")); }
-    if (f.kronos) { names.kronos = "AI candles (Kronos, experimental)"; toggles.append(toggle("kronos")); } loadAi(); }).catch((e) => toast(e.message));
+    if (f.kronos) { names.kronos = "AI candles (Kronos, experimental)"; toggles.append(toggle("kronos")); } loadAi(); }).catch((e) => ctx.live() && toast(e.message));
   const AI_LAYERS = [["alfa", "alfa"], ["gru", "gru"], ["ai", "chronos"], ["kronos", "kronos"]];
   const loadAi = () => { for (const [k, model] of AI_LAYERS) if (layers[k] && !(model in ai)) {
     ai[model] = null;
@@ -545,7 +546,7 @@ function technicalPanel(ctx, sym, opts = {}) {
     h("span", {}, h("span", { class: "legend-dots" }), " our model's median"), h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1);border-top-style:dashed" }), " GRU median"),
     ...["high", "middle", "low"].map((name) => h("span", {}, h("span", { class: "legend-line", style: `border-color:var(${GRU_PATH_COLORS[name]});border-top-width:1px` }), ` GRU ${name} path`)), h("span", { class: "up" }, "▲"), "bullish candle", h("span", { class: "down" }, "▼"), "bearish candle"), seg), toggles, plot, note, cards);
   load();
-  ctx.redraw(draw);
+  wrap.redraw = () => plot.isConnected && draw(); ctx.redraw(wrap.redraw);
   return wrap;
 }
 
@@ -803,7 +804,8 @@ async function pageExplore(view, ctx) {
 async function pageSearch(view, ctx) {
   const text = (ctx.params.get("q") || "").trim();
   if (!text) { view.append(h("p", { class: "muted" }, "Type a stock's name or symbol in the search box at the top.")); return; }
-  const found = await api("/ui/search?q=" + encodeURIComponent(text), { signal: ctx.signal });
+  let found; try { found = await api("/ui/search?q=" + encodeURIComponent(text), { signal: ctx.signal }); }
+  catch (e) { if (e.status !== 422) throw e; view.append(h("div", { class: "card" }, h("p", {}, `Could not search for “${text}”: ${e.message}. Try a shorter part of the name.`))); return; }
   view.append(h("div", { class: "card" }, found.length
     ? h("div", { class: "list" }, ...found.map((r) => stockRow(r, h("span", { class: "muted" }, r.nifty200 ? "Nifty 200" : r.sector || ""))))
     : [h("p", {}, `No stock matches “${text}”. Check the spelling, or search for part of the company's name.`),
@@ -834,7 +836,7 @@ async function pageStock(view, ctx) {
     h("div", { class: "muted", style: "font-size:12px;margin-top:8px" }, `Daily close ${o.as_of} · NSE`));
   const modes = { "Technical": () => technicalPanel(ctx, sym, { bars: 63 }), "Intraday": () => intradayPanel(ctx, sym), "Price & projection": () => technicalPanel(ctx, sym, { line: true, bars: 126 }) };
   const built = {}; const tabsEl = h("div", { class: "mode-tabs" });
-  const show = (k) => { for (const b of tabsEl.children) b.classList.toggle("active", b.textContent === k); built[k] = built[k] || modes[k](); chartCard.replaceChildren(tabsEl, built[k]); };
+  const show = (k) => { for (const b of tabsEl.children) b.classList.toggle("active", b.textContent === k); built[k] = built[k] || modes[k](); chartCard.replaceChildren(tabsEl, built[k]); built[k].redraw(); };
   tabsEl.append(...Object.keys(modes).map((k) => h("button", { onclick: () => show(k) }, k)));
   show("Technical");
   const panes = { Overview: () => overviewPane(o), Research: () => researchPane(ctx, sym), News: () => newsPane(ctx, sym), Insider: () => insiderPane(ctx, sym) };
@@ -967,12 +969,12 @@ async function pagePortfolio(view, ctx) {
     h("div", { class: "row" }, h("button", { class: "btn", onclick: () => addTxModal("", null) }, "+ Add transaction"), h("a", { class: "btn primary", href: "#/signals" }, "What should I do?"))),
     h("div", { class: "grid cols-4", style: "margin-top:16px" }, ...[["Invested", inr(rep.cost_basis)], ["Cash", inr(rep.cash)], ["Realised P&L", inr(rep.realized_pl)], ["Last 5 sessions", `${inr(rep.week_change.total_change_value)} (${pct(rep.week_change.total_change_pct)})`]]
       .map(([k, v]) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v num" }, v)))));
-  const holdings = h("div", { class: "card" }, h("h3", {}, `Holdings (${rep.holdings.length})`), h("table", {},
+  const holdings = h("div", { class: "card" }, h("h3", {}, `Holdings (${rep.holdings.length})`), h("div", { class: "table-wrap" }, h("table", {},
     h("tr", {}, h("th", {}, "Stock"), h("th", { class: "r" }, "Qty"), h("th", { class: "r" }, "Avg / LTP"), h("th", { class: "r" }, "Value"), h("th", { class: "r" }, "Returns")),
     ...rep.holdings.map((x) => h("tr", { class: "link", onclick: () => location.hash = `#/stock/${encodeURIComponent(x.symbol)}` },
       h("td", {}, h("div", { class: "stack" }, h("div", { class: "avatar" }, initials(x.symbol)), h("div", {}, h("div", { class: "t" }, x.symbol), h("div", { class: "s" }, `${x.sector} · ${num(x.weight_pct, 1)}%`)))),
       h("td", { class: "r num" }, num(x.quantity, 0)), h("td", { class: "r num" }, h("div", {}, inr(x.avg_cost)), h("div", { class: "muted" }, inr(x.price))),
-      h("td", { class: "r num" }, inr(x.value, 0)), h("td", { class: `r num ${cls(x.unrealized_pl)}` }, h("div", {}, inr(x.unrealized_pl, 0)), h("div", {}, pct(x.unrealized_pl_pct)))))));
+      h("td", { class: "r num" }, inr(x.value, 0)), h("td", { class: `r num ${cls(x.unrealized_pl)}` }, h("div", {}, inr(x.unrealized_pl, 0)), h("div", {}, pct(x.unrealized_pl_pct))))))));
   const donutHost = h("div");
   const alloc = h("div", { class: "card" }, h("h3", {}, "Sector allocation"), h("p", { class: "sub" }, "Share of total value, cash included"), donutHost);
   const histHost = h("div", { class: "chart" });
@@ -1030,7 +1032,7 @@ async function pageSignals(view, ctx) {
     cards.push(h("div", { class: "card" }, h("h3", {}, "How much to trust this"), h("ul", {}, ...p.evidence.map((e) => h("li", { style: "color:var(--ink-2);margin-bottom:6px" }, e)))));
     out.replaceChildren(...cards);
   };
-  view.append(h("div", { class: "card" }, h("h2", {}, "Your signal plan"), h("p", { class: "muted", style: "margin-top:-6px" }, "Combines your portfolio with new money and tells you what to sell, buy and hold — with share counts, stops and tax notes."),
+  view.append(h("div", { class: "card" }, h("p", { class: "muted", style: "margin-top:0" }, "Combines your portfolio with new money and tells you what to sell, buy and hold — with share counts, stops and tax notes."),
     h("div", { class: "row" }, h("label", { class: "row" }, "New money ₹", cap), strat, risk, h("button", { class: "btn primary", onclick: run }, "Build plan"))), out);
 }
 
@@ -1080,7 +1082,7 @@ async function pageLearn(view, ctx) {
       r.results.length ? r.results.map((x) => h("details", { open: true }, h("summary", {}, x.title), h("p", {}, x.text))) : h("p", { class: "muted" }, "No lesson found. Try asking in Ask AI."))); } catch (e) { results.replaceChildren(errorBox(e)); }
   };
   q.addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
-  view.append(h("div", { class: "card" }, h("h2", {}, "Learn"), h("p", { class: "muted", style: "margin-top:-6px" }, "Plain-English lessons on how markets, ratios and risk work — and exactly how this app makes its calls."),
+  view.append(h("div", { class: "card" }, h("p", { class: "muted", style: "margin-top:0" }, "Plain-English lessons on how markets, ratios and risk work — and exactly how this app makes its calls."),
     h("div", { class: "row" }, q, h("button", { class: "btn primary", onclick: doSearch }, "Search"))), results);
   const topics = await api("/ui/learn", { signal: ctx.signal });
   view.append(h("div", { class: "grid cols-3", style: "margin-top:18px" }, ...topics.map((t) => h("div", { class: "card" }, h("h3", {}, t.topic), h("p", { class: "sub" }, `${t.lessons.length} lessons`),
@@ -1206,7 +1208,7 @@ async function pageBuilder(view, ctx) {
   api("/ui/sectors", { signal: ctx.signal }).then((list) => sectors.replaceChildren(...list.map((sec) => { const b = h("button", { class: `chip ${state.exclude.includes(sec) ? "off" : ""}` }, sec);
     b.addEventListener("click", () => { b.classList.toggle("off"); set({ exclude: state.exclude.includes(sec) ? state.exclude.filter((x) => x !== sec) : [...state.exclude, sec] }); }); return b; })))
     .catch((e) => sectors.replaceChildren(errorBox(e)));
-  view.append(h("div", { class: "card" }, h("h2", {}, "Portfolio builder"), h("p", { class: "muted", style: "margin-top:-6px" }, "Pick an amount and a style; the basket rebuilds as you change anything. Stocks come from the Nifty 200."),
+  view.append(h("div", { class: "card" }, h("p", { class: "muted", style: "margin-top:0" }, "Pick an amount and a style; the basket rebuilds as you change anything. Stocks come from the Nifty 200."),
     h("div", { class: "grid cols-2 builder-controls" },
       h("div", { class: "grid", style: "align-content:start" }, h("label", { class: "ctl" }, h("span", { class: "k" }, "Amount to invest (₹)"), cap), capChips,
         h("div", { class: "ctl" }, h("span", { class: "k" }, "Style"), seg("strategy", [["momentum", "Momentum"], ["lowvol", "Low volatility"], ["blend", "Blend"]])),
@@ -1263,8 +1265,7 @@ function loadTicker() {
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch((e) => console.error("Service worker registration failed:", e));
 
 // ---------- router ----------
-// One row per page: the navs, the tab title and each page's h1 come from here, and scripts in
-// frontend/pages/ push their own rows. A row with an icon opens its section; one with a label is in its sub-nav.
+// One row per page, and scripts in frontend/pages/ push their own: the navs, tab title and h1 are built from it.
 const ROUTES = [
   { path: "home", title: "Home", section: "Home", icon: "home", render: pageHome },
   { path: "explore", title: "Markets", section: "Markets", icon: "compass", render: pageExplore },
@@ -1292,11 +1293,13 @@ let visit = { redraws: [], leaves: [] };
 async function route() {
   loadTicker();
   const [path, query] = location.hash.slice(2).split("?"), parts = (path || "home").split("/");
-  const r = ROUTES.find((x) => x.path === parts[0]) || NOT_FOUND;
+  // no page: a broken %-escape, or a page named by its argument (its title is a function) without one
+  let arg; try { arg = decodeURIComponent(parts[1] || ""); } catch { arg = null; }
+  const r = (arg !== null && ROUTES.find((x) => x.path === parts[0] && (arg || typeof x.title !== "function"))) || NOT_FOUND;
   for (const fn of visit.leaves) fn();
   const ctl = new AbortController(), thisVisit = { redraws: [], leaves: [() => ctl.abort()] };
   visit = thisVisit;
-  const ctx = { signal: ctl.signal, arg: decodeURIComponent(parts[1] || ""), params: new URLSearchParams(query || ""),
+  const ctx = { signal: ctl.signal, arg, params: new URLSearchParams(query || ""),
     live: () => visit === thisVisit, onLeave: (fn) => thisVisit.leaves.push(fn), redraw: (fn) => thisVisit.redraws.push(fn) };
   const title = typeof r.title === "function" ? r.title(ctx.arg) : r.title;
   document.title = `${title} · StockIntel`;
@@ -1305,15 +1308,13 @@ async function route() {
   }
   const tabs = ROUTES.filter((x) => x.section === r.section && x.label), heading = h("h1", { class: "page-title", tabindex: "-1" }, title), view = h("div");
   // a fresh <main> per visit, so whatever the old page writes late lands on a detached node
-  $("#view").replaceWith(h("main", { class: "page", id: "view" }, tabs.length ? h("nav", { class: "subnav", "aria-label": r.section },
-    ...tabs.map((x) => h("a", { href: `#/${x.path}`, "aria-current": x === r ? "page" : null }, x.label))) : null, heading, view));
+  $("#view").replaceWith(h("main", { class: "page", id: "view" }, heading, tabs.length ? h("nav", { class: "subnav", "aria-label": r.section },
+    ...tabs.map((x) => h("a", { href: `#/${x.path}`, "aria-current": x === r ? "page" : null }, x.label))) : null, view));
   window.scrollTo(0, 0); heading.focus();
-  // charts follow the width only; redrawing in the next frame keeps a height change out of this callback
   let width;
   const ro = new ResizeObserver(([e]) => { if (width !== undefined && e.contentRect.width !== width) requestAnimationFrame(() => { for (const fn of thisVisit.redraws) fn(); }); width = e.contentRect.width; });
   ro.observe(view); thisVisit.leaves.push(() => ro.disconnect());
   try { await r.render(view, ctx); } catch (e) { if (ctx.live()) view.replaceChildren(errorBox(e)); }
 }
 window.addEventListener("hashchange", route);
-// the deferred scripts in frontend/pages/ have added their routes by now
 document.addEventListener("DOMContentLoaded", () => { drawNavs(); route(); });

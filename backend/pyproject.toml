@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Playwright is pinned to the release whose Chromium and WebKit builds are installed here; another needs `playwright install`
+# the browser tests also need `playwright install chromium` once; the exact pin keeps everyone on one browser build
 dev = ["pytest>=8", "playwright==1.63.0"]
 # collecting the training corpus (backend/database/dataforge); the app never needs these
 collect = ["requests>=2.31", "beautifulsoup4>=4.12", "pypdf>=4", "py7zr>=0.20"]
