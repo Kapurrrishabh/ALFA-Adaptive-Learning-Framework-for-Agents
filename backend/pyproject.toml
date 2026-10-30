@@ -23,7 +23,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+# Playwright is pinned to the release whose Chromium and WebKit builds are installed here; another needs `playwright install`
+dev = ["pytest>=8", "playwright==1.63.0"]
 # collecting the training corpus (backend/database/dataforge); the app never needs these
 collect = ["requests>=2.31", "beautifulsoup4>=4.12", "pypdf>=4", "py7zr>=0.20"]
 # open-source forecast models (Chronos, Kronos); ~1 GB of downloads, so the server image leaves them out
@@ -42,3 +43,4 @@ backend = ["knowledge_base/lessons/*.md", "advisory/calculators/resources/*.csv"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["ui: drives the web app in a real browser (Playwright); skipped when Playwright is not installed"]
