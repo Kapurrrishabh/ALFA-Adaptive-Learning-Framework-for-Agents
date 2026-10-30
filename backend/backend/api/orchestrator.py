@@ -211,7 +211,8 @@ class Orchestrator:
     # --- entry point --------------------------------------------------------------
     def handle(self, message: str, session_id: str = "default") -> Reply:
         s = self.session(session_id)
-        intent = classify(message, sorted(self.known), s.current is not None, self.research_phrases)
+        intent = classify(message, sorted(self.known), knowledge_base().short_forms, s.current is not None,
+                          self.research_phrases)
         if intent.horizon:
             s.horizon = intent.horizon
         if intent.risk_profile:
@@ -233,7 +234,7 @@ class Orchestrator:
         from backend.api.nlu import ROUTABLE
         from backend.models.external.llm import LLMUnavailable
         try:
-            name = intent_lm.choose(message, ROUTABLE, self.hub.writer())
+            name = intent_lm.choose(message, ROUTABLE, self.hub.writer(), declined="help")
         except (LLMUnavailable, DataUnavailable) as exc:
             log.info("no language model to route %r: %s", message, exc)
             return intent

@@ -228,7 +228,7 @@ ROUTABLE = {
 }
 
 
-def classify(text: str, known_symbols: Sequence[str], has_session_symbol: bool,
+def classify(text: str, known_symbols: Sequence[str], short_forms: Set[str], has_session_symbol: bool,
              research_phrases: Sequence[str] = ()) -> Intent:
     t = text.lower().strip()
     symbols = extract_tickers(text, known_symbols)
@@ -266,6 +266,11 @@ def classify(text: str, known_symbols: Sequence[str], has_session_symbol: bool,
             r"should i (buy|sell|invest|hold|exit|add)|(good|right) (time )?to (buy|sell|invest)|worth (buying|investing)|"
             r"buy or (not|sell)|is (it|this) a (good )?buy|can i buy|time to exit", t):
         return intent("should_buy")
+    # a verdict only when the one stock named is the subject: "TCS fell, is gold a good buy?" is not about TCS
+    subject = re.search(r"\bis (.+?) a (good )?buy\b", text, re.I)
+    if subject and len(symbols) == 1 and not symbols[0][0].startswith("^") \
+            and extract_tickers(subject.group(1), known_symbols) == symbols:
+        return intent("should_buy")
     if re.search(r"\breport\b", t) and (symbols or has_session_symbol):
         return intent("report")
     mine = re.search(r"\b(my|i hold|i own)\b", t) and re.search(
@@ -290,16 +295,21 @@ def classify(text: str, known_symbols: Sequence[str], has_session_symbol: bool,
         if re.search(r"sentiment", t):
             return intent("portfolio_sentiment")
         return intent("portfolio_summary")
-    if re.search(r"\bcompare\b|\bvs\.?\b|\bversus\b", t):
+    if re.search(r"\bcompare\b|\bvs\.?\b|\bversus\b", t) or (len(symbols) > 1 and re.search(r"\bthan\b|\bbetter buy\b", t)):
         return intent("compare")
     if not symbols and any(p in t for p in research_phrases) and re.search(r"\b(find|show|which|list|screen)\b", t):
         return intent("research_query")
     if amount and not symbols and re.search(r"invest|research|stocks?|buy|find|show|which|what|suggest", t):
         return intent("screen")
-    concept = re.match(r"(what is|what's|what are|what does|explain|define|meaning of|how does|how do|how is)", t)
+    concept = re.match(r"(what is|what's|what are|what does|explain|define|meaning of|how does|how do|how is|"
+                       r"how are\b.*\btaxed\b)", t)
     live = re.search(r"\b(current|today|now|latest|my)\b", t)
-    if concept and not symbols and not live and not (refers_back and has_session_symbol):
-        return intent("knowledge")
+    # the ticker guess reads NAV in "what is NAV?" as a stock, but it is a word our lessons explain
+    names_no_stock = all(sym in short_forms and sym not in known_symbols for sym, _ in symbols)
+    asks_term = concept or symbols and re.search(r"\b(explain|describe|define|tell me about|understand|learn|meaning|"
+                                                 r"meant|full form|stands? for)\b", t)
+    if asks_term and names_no_stock and not live and not (refers_back and has_session_symbol):
+        return Intent(name="knowledge", **{**base, "symbols": []})
     if re.search(r"\bwhy\b.*\b(fall|fell|falling|drop|dropped|down|decline|rise|rose|rising|up|rally|rallied|mov(e|ed|ing)|jump)", t) \
             and (symbols or has_session_symbol):
         return intent("explain_move")
@@ -313,6 +323,8 @@ def classify(text: str, known_symbols: Sequence[str], has_session_symbol: bool,
         return intent("budget_analysis")
     if base["domain"] and (symbols or has_session_symbol) and not re.search(r"\banaly[sz]e\b", t):
         return intent("domain")
+    if symbols and re.search(r"\b(overbought|oversold)\b", t):
+        return Intent(name="domain", **{**base, "domain": "technical"})
     if symbols:
         return intent("analyze")
     return intent("help")

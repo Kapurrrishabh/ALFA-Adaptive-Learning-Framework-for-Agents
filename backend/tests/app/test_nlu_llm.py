@@ -4,8 +4,10 @@ import pytest
 
 from backend.models.external.llm import LLMUnavailable, Narrator, ToolAgent, verify_numbers
 from backend.api.nlu import classify, extract_amount, extract_horizon, extract_risk, extract_sectors, extract_tickers
+from backend.knowledge_base.lessons import knowledge_base
 
 KNOWN = ["RELIANCE", "HDFCBANK", "TCS", "INFY", "M&M"]
+FORMS = knowledge_base().short_forms
 
 
 @pytest.mark.parametrize("text,amount", [
@@ -63,10 +65,30 @@ def test_horizon_risk_and_sector_parsing():
     ("check my stops", False, "stops"),
     ("what are my stops?", False, "stops"),
     ("what is an alert?", False, "knowledge"),
+    ("what is NAV?", False, "knowledge"),
+    ("what is the meaning of NAV?", False, "knowledge"),
+    ("what is the full form of NAV?", False, "knowledge"),
+    ("can you explain NAV?", False, "knowledge"),
+    ("tell me about NAV", True, "knowledge"),
+    ("please explain ELSS", False, "knowledge"),
+    ("what is HHI?", False, "knowledge"),
+    ("tell me about TCS", False, "analyze"),
+    ("what is IRCTC in the news for?", False, "domain"),
+    ("how are short term capital gains taxed in India?", False, "knowledge"),
+    ("how are rate cuts priced in by the market?", False, "help"),
+    ("how are its margins calculated?", True, "domain"),
+    ("is Infosys overbought?", False, "domain"),
+    ("is TCS a better buy than Infosys?", False, "compare"),
+    ("which of TCS and Infosys is a better buy?", False, "compare"),
 ])
 def test_intent_classification(text, session, intent):
     phrases = ["fundamentally strong", "improving earnings", "positive momentum"]
-    assert classify(text, KNOWN, session, phrases).name == intent
+    assert classify(text, KNOWN, FORMS, session, phrases).name == intent
+
+
+@pytest.mark.parametrize("session", [False, True])
+def test_a_lesson_word_that_is_one_of_our_symbols_stays_a_stock(session):
+    assert classify("what is NAV?", KNOWN + ["NAV"], FORMS, session).symbols == [("NAV", "NSE")]
 
 
 PAYLOAD = {"rsi_14": 68.4, "revenue_growth": {"value": 18.2}, "de": 0.31, "label": "WATCH", "vol": 0.231,
@@ -185,9 +207,10 @@ def test_narrator_only_accepts_figures_from_the_draft_or_evidence_claims():
 
 
 @pytest.mark.parametrize("text", ["Should I buy TCS?", "Is it a good time to buy INFY?", "TCS buy or not",
-                                  "should I sell RELIANCE", "Is TCS worth buying?"])
+                                  "should I sell RELIANCE", "Is TCS worth buying?", "is RELIANCE.NS a good buy right now?",
+                                  "Is TCS a buy at this price?"])
 def test_should_buy_questions_get_the_verdict_intent(text):
-    assert classify(text, KNOWN, False, []).name == "should_buy"
+    assert classify(text, KNOWN, FORMS, False, []).name == "should_buy"
 
 
 def _analyst_facts(rank=161, edge=(-0.008, 0.02), gru_mae=6.479, drawer="generative", nll_gain_lo=0.019):
@@ -346,13 +369,12 @@ class _Picker:
     ("market_regime", "market_regime"),
     ("  Market_Regime.  ", "market_regime"),      # labels are read loosely, so spacing and case cannot break routing
     ("NONE", "help"),
-    ("the market is falling because of global cues", "help"),   # prose is not a label, so it is discarded
+    ("the market is falling because of global cues", None),   # prose is not a label, so it is discarded
 ])
 def test_the_language_model_only_picks_one_of_our_handlers(answer, intent):
     from backend.api.intent_lm import choose
     from backend.api.nlu import ROUTABLE
-    picked = choose("what is happening out there?", ROUTABLE, _Picker(answer))
-    assert (picked or "help") == intent
+    assert choose("what is happening out there?", ROUTABLE, _Picker(answer), declined="help") == intent
 
 
 @pytest.mark.parametrize("question,title", [
