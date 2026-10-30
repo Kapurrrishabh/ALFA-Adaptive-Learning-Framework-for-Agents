@@ -99,12 +99,17 @@ class Reference:
 
     def __init__(self, index, tokenizer, model, config, question_tokens, passages,
                  temperature, top_p, rng=None, paraphrase=False, live=None, writer=None, news=None,
-                 filings=None, rank=None, lessons=None, judge=None):
+                 filings=None, rank=None, lessons=None, judge=None, entails=None):
         self.paraphrase = paraphrase
         # The language model that answers recent questions from prices, filings and headlines. Long
         # encyclopedia and forum text it misattributed ("HDFCBANK.NS is a subsidiary of HDFC Bank"), as
         # ALFA's own generator did, so those are still quoted. A failed check serves the plain answer.
         self.writer = writer
+        # (premise, hypothesis) pairs -> chance of entailment each, which every sentence the writer wrote must clear
+        if writer is not None and entails is None:
+            raise ValueError("a Reference given a writer needs entails= to check its replies against the passages, "
+                             "as ask.reference_from does with entails_from()")
+        self.entails = entails
         # The newswire and SEC's filings on their own, read with the price snapshot for a question about
         # what happened lately (`LATELY`): headlines alone said Titan fell, not by how much or from where.
         self.news = news
@@ -213,7 +218,8 @@ class Reference:
         day = prices[2] if prices else phrase.latest(found).day
         money = phrase.currency(subject.ticker) if subject else None
         # prices alone need no rewording: the plain answer already says all they do, and that nothing says why
-        written = phrase.recent(question, subject, prices, found, self.writer, money) if self.writer and found else None
+        written = phrase.recent(question, subject, prices, found, self.writer, self.entails, money) \
+            if self.writer and found else None
         unread = f"sec filings unread: {refused}" if refused else ""
         if written is not None and written.text:
             return Looked(written.text, evidence, RECENT_HOW, [], float("nan"), "", day, written.by, "", unread=unread)

@@ -2,8 +2,9 @@
 
 ALFA's generator, or the passage the reference path chose, decides what the answer is; the language model
 only rewords it. Its words are served when they keep every figure the draft states, add no figure the
-evidence does not, and claim nothing the source does not (`guardrails.added_claims`). Otherwise the draft is
-served and the turn says why, so a reworded answer is never the only version of a fact.
+evidence does not, and claim nothing the source does not (`guardrails.added_claims`, and for passages an
+entailment model reading each sentence). Otherwise the draft is served and the turn says why, so a reworded
+answer is never the only version of a fact.
 
 This is the setup that passed 22 of 24 analyst notes (advisory/analyst.py). Composing from raw evidence was
 the setup that failed there: a small model handed facts writes fluent misattributions.
@@ -11,6 +12,7 @@ the setup that failed there: a small model handed facts writes fluent misattribu
 import re
 from collections import namedtuple
 
+from backend.knowledge_base.retrieval.chunk import sentences
 from backend.models.guardrails import added_claims, figures, unsupported_figures
 
 # `text` is empty exactly when the language model's words are not served; `because` then says why
@@ -40,18 +42,11 @@ _NAMES = re.compile(r"\b[A-Z0-9&-]{2,}\.(?:NS|BO)\b|\b[A-Z]{5,}\b")
 # not provide a specific reason. None." was half an answer and half a refusal, and only the refusal was true.
 _DECLINES = re.compile(r"\bnone\.?\s*$|\b(does|do|did) not (provide|say|mention|explain|give|contain|answer)|"
                        r"\bno (information|mention|reason|details?)\b|\bnot (\w+ly )?(mentioned|provided|specified)\b", re.I)
-# Verdicts a writer gave in place of a report, which HHEM judged unsupported: "NO" for "are it stocks falling" and
-# "Bond yields are not falling." for "are bond yields falling".
+# a yes or no in place of the report the prompt asks for: "NO" for "are it stocks falling"
 _BARE_VERDICT = re.compile(r"^\W*(yes|no)\s*([,.;:!]|$)", re.I)
-_AUX = frozenset("is are was were do does did has have had will can could should".split())
-_YES_NO = re.compile(rf"^\W*({'|'.join(_AUX)})\b", re.I)
-_DENIALS = frozenset("not no never".split())
-_VERDICT_WORDS = _AUX | _DENIALS | frozenset("be been being would yes the a an in on of to for at by with "
-                                             "against".split())
-# a reason starts a new clause: "Bond yields are not falling as the RBI held rates" rules on the question first
-_CLAUSES = re.compile(r"[.,;:!?()]|\b(?:as|because|but|while|since|though|although|amid|after|and|so)\b", re.I)
-# provisional: "NO" was one word, and the shortest reply HHEM judged supported six ("Nifty has fallen 13% this year.")
-MIN_WORDS = 4
+# Provisional, on sentence.entailment's scale. On 79 replies, 15 from the user-question eval and 64 written for this, the
+# gate was as accurate anywhere from 0.5 to 0.8; more labelled replies from the next eval run would place it.
+ENTAILED = 0.5
 # a size the draft never gives: "Infosys is quite volatile" for a draft that gave the figure alone
 _SIZES = re.compile(r"\b(a lot|quite|very|highly|extremely|fairly|significant(ly)?|moderate(ly)?|sharp(ly)?|little)\b",
                     re.I)
@@ -79,8 +74,9 @@ def rewrite(question, draft, evidence, writer, money):
     return Phrased("", "", "; ".join(reasons)) if reasons else Phrased(text, by, "")
 
 
-def from_passages(question, chunks, writer, money=None):
-    """An answer read out of the retrieved passages; the first passage is quoted instead when a check fails."""
+def from_passages(question, chunks, writer, entails, money=None):
+    """An answer read out of the retrieved passages; the first passage is quoted instead when a check fails. `entails`
+    is `sentence.entailment`, handed in so that this module loads no model."""
     passages = "\n".join(f"- {chunk.text}" for chunk in chunks)
     reply = _ask(writer, PASSAGE_SYSTEM, f"QUESTION: {question}\nPASSAGES:\n{passages}")
     if isinstance(reply, Phrased):
@@ -88,7 +84,8 @@ def from_passages(question, chunks, writer, money=None):
     text, by = reply
     if _DECLINES.search(text):
         return Phrased("", "", NOT_ANSWERED)
-    reasons = _verdicts(question, text, passages) + _checked(text, passages, money, question)
+    reasons = (["it answers yes or no"] if _BARE_VERDICT.match(text) else []) + \
+        _unentailed(text, [chunk.text for chunk in chunks], entails) + _checked(text, passages, money, question)
     return Phrased("", "", "; ".join(reasons)) if reasons else Phrased(text, by, "")
 
 
@@ -100,14 +97,14 @@ def price_sentence(ticker, prices, money):
     return f"{ticker} as of {readable_day(day)}: " + ", ".join(parts)
 
 
-def recent(question, subject, prices, chunks, writer, money):
+def recent(question, subject, prices, chunks, writer, entails, money):
     """What happened lately: our sentence on the price move, then the language model's account of the passages.
 
     The model is not shown the prices. Given both, it wrote "down 0.5% from the previous close of ₹704.80"
     for HDFC Bank: the 5-day change pinned to a quote that said the shares were up, every figure in the
     sources and the claim wrong. So it reads the dated passages only, and the prices are our own words.
     """
-    told = from_passages(question, chunks, writer, money)
+    told = from_passages(question, chunks, writer, entails, money)
     lead = price_move(subject, prices)
     return told._replace(text=f"{lead} {told.text}".strip()) if told.text else told
 
@@ -149,32 +146,22 @@ def _ask(writer, system, content):
     return writer.text(reply).strip(), reply.model
 
 
-def _verdicts(question, text, source):
-    """Why `text` is a verdict rather than a report of what happened, or nothing when it is a report."""
-    reasons = ["it answers yes or no"] if _BARE_VERDICT.match(text) else []
-    if _YES_NO.match(question):
-        claim = _claim(_words(question))
-        reasons += [f"it rules on the question itself: “{clause.strip()}”" for clause in _CLAUSES.split(text)
-                    if _restates(_words(clause), claim) and clause.strip().lower() not in source.lower()]
-    if len(text.split()) < MIN_WORDS:
-        reasons.append(f"it is {len(text.split())} words, too few to say what happened")
-    return reasons
-
-
-def _restates(words, claim):
-    """Whether a clause says the question's claim back, adding two words at most; denying it, it may drop one."""
-    said = _claim(words)
-    return bool(words & _AUX) and len(said - claim) <= 2 and \
-        len(said & claim) >= max(2, len(claim) - bool(words & _DENIALS))
-
-
-def _words(text):
-    return set(re.findall(r"[a-z0-9']+", text.lower().replace("’", "'").replace("n't", " not")))
-
-
-def _claim(words):
-    return {word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
-            for word in words - _VERDICT_WORDS}
+def _unentailed(text, sources, entails):
+    """Why `text` says something no source entails, sentence by sentence, or nothing when every sentence is entailed."""
+    claims = []
+    for part in sentences(text):
+        # a source in brackets after the full stop belongs to the sentence it cites; alone it scored as low as 0.002
+        if claims and part.startswith("("):
+            claims[-1] += " " + part
+        else:
+            claims.append(part)
+    # the passages' sentences first: short, they entail most true claims, and whole passages took three times as long
+    for premises in ([part for source in sources for part in sentences(source)], sources + [" ".join(sources)]):
+        premises = list(dict.fromkeys(premises))
+        scores = entails([(premise, claim) for claim in claims for premise in premises])
+        claims = [claim for at, claim in enumerate(claims)
+                  if max(scores[at * len(premises):(at + 1) * len(premises)]) < ENTAILED]
+    return [f"no passage says “{claim}”" for claim in claims]
 
 
 def _checked(text, source, money, asked=""):

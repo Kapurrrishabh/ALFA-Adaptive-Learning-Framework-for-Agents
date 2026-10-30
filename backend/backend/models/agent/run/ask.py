@@ -90,6 +90,12 @@ def judge_from():
     return sentence.closeness
 
 
+def entails_from():
+    """Entailment by the NLI cross-encoder, which `Reference` checks each sentence the writer wrote against."""
+    from backend.models.external import sentence
+    return sentence.entailment
+
+
 def writer_from(phrase):
     """The language model that rewords answers when `phrase` is asked for, else None (ALFA's words served)."""
     if not phrase:
@@ -146,7 +152,7 @@ def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=Fal
                      news=news_from(tokenizer) if live else None,
                      filings=filings_from(tokenizer) if live else None,
                      rank=ranker_from(chunks) if dense else None, lessons=lessons_from(),
-                     judge=judge_from() if live else None)
+                     judge=judge_from() if live else None, entails=entails_from() if writer else None)
 
 
 # Which encoder routes, and the gate fitted for it: models/training/route.py fitted ALFA's at 97% precision,

@@ -1,4 +1,5 @@
-"""Pretrained sentence models for the agent: an encoder for routing and search, and a cross-encoder it is measured against.
+"""Pretrained sentence models for the agent: an encoder for routing and search, a cross-encoder it is measured against,
+and an entailment model that checks a language model's reply against its passages.
 
 ALFA's own encoder was trained only to fill in masked words, so it never learned to push unlike sentences
 apart: unrelated passages sit at cosine 0.925 (knowledge_base/retrieval/index.py), and the router's margin
@@ -16,6 +17,10 @@ from backend.models.core.backend import xp
 
 ENCODER_ID = os.environ.get("STOCKINTEL_ENCODER", "BAAI/bge-small-en-v1.5")
 RERANKER_ID = os.environ.get("STOCKINTEL_RERANKER", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+# Not settable like the two above: phrase.ENTAILED was measured on this model's scale. Not Vectara's HHEM either, which
+# is the independent judge eval_user_questions grades the same replies with. 142M parameters: 568 MB on disk, about
+# 400 MB more resident once it has scored a reply, loaded on first use.
+NLI_ID = "cross-encoder/nli-deberta-v3-small"
 
 
 @lru_cache(maxsize=1)
@@ -28,6 +33,12 @@ def encoder():
 def reranker():
     from sentence_transformers import CrossEncoder
     return CrossEncoder(RERANKER_ID, device=TORCH_DEVICE)
+
+
+@lru_cache(maxsize=1)
+def nli():
+    from sentence_transformers import CrossEncoder
+    return CrossEncoder(NLI_ID, device=TORCH_DEVICE)
 
 
 def embed(texts):
@@ -62,3 +73,11 @@ def relevance(question, passages):
     if not passages:
         return xp.asarray([])
     return xp.asarray(reranker().predict([(question, passage) for passage in passages]))
+
+
+def entailment(pairs):
+    """For each (premise, hypothesis), the chance the premise entails the hypothesis."""
+    if not pairs:
+        return xp.asarray([])
+    model = nli()
+    return xp.asarray(model.predict(pairs, apply_softmax=True)[:, model.config.label2id["entailment"]])

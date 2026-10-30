@@ -7,6 +7,7 @@ and the one rule that the row a served question is built into is the row trainin
 
 import csv
 import json
+import re
 from datetime import date, timedelta
 
 import numpy as np
@@ -825,6 +826,22 @@ class ExplodingWriter:
         raise AssertionError("the language model was asked to reword something it must not touch")
 
 
+def entailing(pairs):
+    """An entailment model that finds every sentence entailed, for tests about something else."""
+    return [1.0] * len(pairs)
+
+
+def doubting(claim):
+    """An entailment model that finds one sentence entailed by nothing and every other entailed."""
+    return lambda pairs: [0.0 if said == claim else 1.0 for _, said in pairs]
+
+
+def literal(pairs):
+    """An entailment model that finds a sentence entailed by a premise holding each of its words."""
+    words = lambda text: set(re.findall(r"\w+", text.lower()))
+    return [float(words(said) <= words(premise)) for premise, said in pairs]
+
+
 def phrased_agent(market, router, written, writer, **kw):
     built = agent(market, router, written=written, **kw)
     built.writer = writer
@@ -876,9 +893,9 @@ NEWS = Chunk("Mint, 6 Oct 2026: Reliance Industries commissioned its new refiner
              "https://n.test/reliance", "2026-10-06")
 
 
-def news_reference(writer, news=(NEWS,), live=None, **parts):
+def news_reference(writer, news=(NEWS,), live=None, entails=entailing, **parts):
     return reference("never written", model=ExplodingModel(), live=live or ExplodingLive(), writer=writer,
-                     news=FakeLive(list(news)), **parts)
+                     news=FakeLive(list(news)), entails=entails, **parts)
 
 
 def test_a_question_about_lately_is_answered_from_the_newswire_alone(market, router):
@@ -1070,26 +1087,48 @@ def test_a_writer_that_finds_no_answer_serves_the_plain_answer_not_its_half_refu
 ASKED_YES_NO = "are refinery stocks falling ?"
 
 
-@pytest.mark.parametrize("reply,reason", [
-    ("NO", "answers yes or no"),
-    ("No, they did not. Reliance Industries commissioned a refinery unit (Mint, 6 Oct 2026).", "answers yes or no"),
-    ("Refinery stocks are not falling. Reliance Industries commissioned a unit (Mint, 6 Oct 2026).", "rules on"),
-    ("Refinery stocks are falling (Mint, 6 Oct 2026).", "rules on"),
-    ("Refinery stocks are not currently falling. Reliance Industries commissioned a unit (Mint, 6 Oct 2026).", "rules on"),
-    ("Refinery stocks are not falling in India. Reliance Industries commissioned a unit (Mint, 6 Oct 2026).", "rules on"),
-    ("Stocks of the refinery sector are not falling. Reliance Industries commissioned a unit (Mint, 6 Oct 2026).",
-     "rules on"),                                                                                # reordered
-    ("Stocks are not falling: Reliance Industries commissioned a unit (Mint, 6 Oct 2026).", "rules on"),  # drops a word
-    ("Refinery stocks aren't falling as Reliance Industries commissioned a unit (Mint, 6 Oct 2026).", "rules on"),
-    ("Refinery unit commissioned.", "too few to say what happened"),
-])
-def test_a_writer_that_rules_on_a_yes_no_question_serves_the_plain_answer(market, router, reply, reason):
-    """"are it stocks falling" was served "NO", and "are bond yields falling" "Bond yields are not falling.": verdicts
-    no passage gave, which HHEM judged unsupported."""
+@pytest.mark.parametrize("reply", ["NO", "Yes, Reliance Industries commissioned a refinery unit (Mint, 6 Oct 2026)."])
+def test_a_writer_that_answers_yes_or_no_serves_the_plain_answer(market, router, reply):
+    """"are it stocks falling" was served "NO", a verdict the prompt asks the writer not to give."""
     from backend.models.agent import phrase
     turn = agent(market, router, reference=news_reference(FakeWriter(reply))).answer(ASKED_YES_NO)
     assert turn.spoke and turn.served == phrase.recent_plain(None, None, [NEWS]) and turn.phrased_by == ""
-    assert reason in turn.unphrased_because
+    assert "answers yes or no" in turn.unphrased_because
+
+
+def test_a_writer_sentence_no_passage_entails_serves_the_plain_answer_and_names_it(market, router):
+    """"Bond yields are not falling." was served for passages saying global yields were rising, and HHEM judged it
+    0.25: a verdict no passage gives, in more wordings than any word rule caught."""
+    from backend.models.agent import phrase
+    verdict = "Refinery shares show no sign of a fall."
+    built = news_reference(FakeWriter(f"{verdict} Reliance Industries commissioned a unit (Mint, 6 Oct 2026)."),
+                           entails=doubting(verdict))
+    turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
+    assert turn.spoke and turn.served == phrase.recent_plain(None, None, [NEWS]) and turn.phrased_by == ""
+    assert f"no passage says “{verdict}”" in turn.unphrased_because
+
+
+def test_a_source_in_brackets_after_a_full_stop_is_checked_with_the_sentence_it_cites(market, router):
+    """Read alone, "(Mint, 6 Oct 2026)" scored as low as 0.002 against the passage it names."""
+    reply = "Reliance Industries commissioned its new refinery unit. (Mint, 6 Oct 2026)"
+    built = news_reference(FakeWriter(reply), entails=lambda pairs: [0.0 if said.startswith("(") else 1.0
+                                                                     for _, said in pairs])
+    turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
+    assert turn.served == reply and turn.phrased_by == "test-lm"
+
+
+def test_a_sentence_that_joins_two_passages_is_entailed_by_them_together(market, router):
+    """"The Sensex rose 410 points, while Wipro shares fell 3%" scored 0.0 against each of its two passages alone."""
+    slid = Chunk("Mint, 6 Oct 2026: TCS shares slid while results were due.", [], "https://n.test/tcs", "2026-10-06")
+    reply = "Reliance Industries commissioned its new refinery unit, while TCS shares slid"
+    built = news_reference(FakeWriter(reply), news=(NEWS, slid), entails=literal)
+    turn = agent(market, router, reference=built).answer("are refinery and tcs stocks falling ?")
+    assert turn.served == reply and turn.phrased_by == "test-lm"
+
+
+def test_a_writer_without_an_entailment_model_is_refused_when_the_reference_is_built():
+    with pytest.raises(ValueError, match="entails"):
+        news_reference(FakeWriter("never asked"), entails=None)
 
 
 def test_a_writer_saying_the_passages_do_not_mention_it_is_a_refusal_not_an_answer(market, router):
@@ -1105,10 +1144,12 @@ def test_a_writer_that_reports_what_happened_on_a_yes_no_question_is_served(mark
     assert turn.served == reply and turn.phrased_by == "test-lm"
 
 
-def test_a_verdict_the_passages_state_in_those_words_is_kept(market, router):
-    said = Chunk("Mint, 6 Oct 2026: Refinery stocks are falling after the new unit opened.", [], "https://n.test/r",
+def test_a_report_in_the_questions_own_words_is_served_when_the_passages_entail_it(market, router):
+    """"The Nifty has fallen 1.2% as IT stocks dropped on weak US cues (ET, 27 Oct 2026)." was refused for "has the nifty
+    fallen", by a word rule that read any restatement of the question as a verdict."""
+    said = Chunk("Mint, 6 Oct 2026: Refinery stocks fell 2% after the new unit opened.", [], "https://n.test/r",
                  "2026-10-06")
-    reply = "Refinery stocks are falling, after the new unit opened (Mint, 6 Oct 2026)."
+    reply = "Refinery stocks are falling, down 2% after the new unit opened (Mint, 6 Oct 2026)."
     turn = agent(market, router, reference=news_reference(FakeWriter(reply), news=(said,))).answer(ASKED_YES_NO)
     assert turn.served == reply and turn.phrased_by == "test-lm"
 
