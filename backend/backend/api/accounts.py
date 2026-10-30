@@ -22,7 +22,7 @@ from pwdlib.hashers.argon2 import Argon2Hasher
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.mail import SmtpMailer, mailer_from_env
+from backend.api.mail import SMTP_SETTINGS, SmtpMailer, mailer_from_env
 from backend.database.accounts import AccessToken, OAuthAccount, User, create_tables, purge_sessions, sessions
 
 PASSWORD_MIN = 15           # NIST SP 800-63B-4, for a password that is the only factor
@@ -174,8 +174,8 @@ class Accounts:
 
     def create_user(self, email: str, password: str, *, verified: bool) -> User:
         if not verified and self.mailer is None:
-            raise RuntimeError(f"{email} could never confirm its address: no STOCKINTEL_SMTP_ settings are set to "
-                               "send the link. Create the user verified, or set all five settings.")
+            raise RuntimeError(f"{email} could never confirm its address: no email sender is set up to send the "
+                               f"link. Create the user verified, or set {', '.join(SMTP_SETTINGS)}.")
         async def create() -> User:
             async with self._sessions() as session:
                 return await self._manager(session).create(

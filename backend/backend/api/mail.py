@@ -5,6 +5,7 @@ import os
 import smtplib
 import ssl
 from email.message import EmailMessage
+from email.utils import formatdate, make_msgid, parseaddr
 from typing import Optional
 
 from fastapi.concurrency import run_in_threadpool
@@ -20,6 +21,8 @@ class SmtpMailer:
     async def send(self, to: str, subject: str, text: str) -> None:
         message = EmailMessage()
         message["From"], message["To"], message["Subject"] = self.sender, to, subject
+        message["Date"] = formatdate(localtime=True)
+        message["Message-ID"] = make_msgid(domain=parseaddr(self.sender)[1].rpartition("@")[2])
         message.set_content(text)
         await run_in_threadpool(self._deliver, message)
 
@@ -37,8 +40,8 @@ def mailer_from_env() -> Optional[SmtpMailer]:
     if len(missing) == len(SMTP_SETTINGS):
         return None
     if missing:
-        raise RuntimeError(f"{', '.join(missing)}: not set, but other STOCKINTEL_SMTP_ settings are. Set all five "
-                           "from your email provider's SMTP page, or none to keep password sign-up off.")
+        raise RuntimeError(f"{', '.join(missing)}: not set. Set all of {', '.join(SMTP_SETTINGS)} from your email "
+                           "provider's SMTP page, or none to keep password sign-up off.")
     host, port, user, password, sender = values.values()
     if not port.isdigit():
         raise RuntimeError(f"STOCKINTEL_SMTP_PORT is {port!r}; set it to the provider's SSL port, usually 465.")

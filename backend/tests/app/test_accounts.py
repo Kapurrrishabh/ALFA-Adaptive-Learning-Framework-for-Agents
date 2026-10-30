@@ -3,6 +3,8 @@ import smtplib
 import sqlite3
 import ssl
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -12,7 +14,7 @@ from fastapi_users import InvalidPasswordException
 from httpx_oauth.oauth2 import BaseOAuth2, OAuth2Token
 
 from backend.api.accounts import Accounts, GoogleOIDC, owner_of
-from backend.api.mail import SmtpMailer, mailer_from_env
+from backend.api.mail import SMTP_TIMEOUT_S, SmtpMailer, mailer_from_env
 from backend.database.accounts import scrub_copy
 
 # https, because the client only sends a Secure cookie back over https
@@ -216,12 +218,33 @@ def test_a_password_reset_signs_out_the_old_cookie(client, accounts, outbox):
     assert client.get("/probe", headers={"Cookie": f"__Host-stockintel={token}"}).status_code == 401
 
 
+def test_a_password_reset_leaves_other_users_signed_in(client, accounts, outbox):
+    sign_in(client, accounts, email="ravi@example.com")
+    accounts.create_user(EMAIL, PASSWORD, verified=True)
+    client.post("/auth/forgot-password", json={"email": EMAIL})
+    reset = {"token": token_sent(outbox), "password": "rain on a tin roof at noon"}
+    assert client.post("/auth/reset-password", json=reset).status_code == 200
+    assert client.get("/probe").status_code == 200
+
+
 @pytest.mark.parametrize("path, page", [("/auth/request-verify-token", "verify"), ("/auth/forgot-password", "reset")])
 def test_emailed_links_use_the_public_url_whatever_host_the_request_names(client, accounts, outbox, path, page):
     accounts.create_user(EMAIL, PASSWORD, verified=False)
     outbox.sent.clear()
     client.post(path, json={"email": EMAIL}, headers={"Host": "evil.example"})
     assert link_sent(outbox).startswith(f"{PUBLIC_URL}/#/{page}?token=")
+
+
+@pytest.mark.parametrize("ask, use, refusal", [("/auth/request-verify-token", "/auth/verify", "VERIFY_USER_BAD_TOKEN"),
+                                               ("/auth/forgot-password", "/auth/reset-password",
+                                                "RESET_PASSWORD_BAD_TOKEN")])
+def test_an_emailed_token_does_not_work_under_another_secret(db_path, outbox, ask, use, refusal):
+    signer = Accounts(db_path, PUBLIC_URL, SECRET, None, outbox)
+    signer.create_user(EMAIL, PASSWORD, verified=False)
+    client_for(signer).post(ask, json={"email": EMAIL})
+    other = client_for(Accounts(db_path, PUBLIC_URL, "t" * 32, None, outbox))
+    r = other.post(use, json={"token": token_sent(outbox), "password": "rain on a tin roof at noon"})
+    assert (r.status_code, r.json()["detail"]) == (400, refusal)
 
 
 def test_without_a_mailer_sign_up_confirm_and_reset_are_not_mounted(db_path):
@@ -371,12 +394,11 @@ def test_scrub_copy_leaves_a_database_from_before_sign_in_alone():
 
 @pytest.fixture
 def smtp(monkeypatch):
-    """What the mailer built from SMTP_ENV hands smtplib for one email, recorded instead of sent."""
     seen = {}
 
     class RecordingSmtp:
         def __init__(self, host, port, *, timeout, context):
-            seen.update(server=(host, port), context=context)
+            seen.update(server=(host, port), timeout=timeout, context=context)
 
         def __enter__(self):
             return self
@@ -403,3 +425,15 @@ def test_the_mailer_checks_the_smtp_servers_certificate(smtp):
 def test_the_mailer_sends_with_the_smtp_settings(smtp):
     assert (smtp["server"], smtp["login"], smtp["message"]["From"], smtp["message"]["To"]) == (
         ("smtp.example.com", 465), ("apikey", "smtp-password"), "StockIntel <noreply@example.com>", EMAIL)
+
+
+def test_the_mailer_times_out_a_stuck_smtp_server(smtp):
+    assert smtp["timeout"] == SMTP_TIMEOUT_S
+
+
+def test_the_mailer_dates_each_email(smtp):
+    assert abs(parsedate_to_datetime(smtp["message"]["Date"]) - datetime.now(timezone.utc)) < timedelta(minutes=1)
+
+
+def test_the_mailer_gives_each_email_an_id_on_the_senders_domain(smtp):
+    assert smtp["message"]["Message-ID"].endswith("@example.com>")
