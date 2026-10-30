@@ -54,7 +54,9 @@ def _tokens(text: str) -> List[str]:
     toks = re.findall(r"[a-z0-9][a-z0-9/&\-]*", text.lower())
     out = []
     for t in toks:
-        if t in STOP:
+        # a lone letter is what an apostrophe leaves ("can't" -> "t", "fund's" -> "s"), never a topic, yet it
+        # matched lesson text: "what's the fund's p/e ratio" got the expense-ratio lesson
+        if t in STOP or (len(t) == 1 and t.isalpha()):
             continue
         out.append(t[:-1] if len(t) > 4 and t.endswith("s") and not t.endswith("ss") else t)
     return out

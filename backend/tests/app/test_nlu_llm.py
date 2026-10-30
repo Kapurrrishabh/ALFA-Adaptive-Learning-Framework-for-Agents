@@ -359,14 +359,38 @@ def test_the_language_model_only_picks_one_of_our_handlers(answer, intent):
     ("what is a Sharpe ratio?", "Sharpe ratio"),
     ("what is a stop-loss?", "Stop-loss"),          # a Learn-page chip, so it must have an entry
     ("what is LTCG tax", "Taxes on listed equity (verify current rules)"),   # found through a synonym and a stem
+    ("how much tax is due on shares I sold", "Taxes on listed equity (verify current rules)"),  # ELSS also says "tax"
+    ("is the price of a share unpredictable", "Why the system does not predict exact prices"),
+    ("is debt bad for a business", "Debt/equity, interest coverage and current ratio"),
+    ("is a correlated stock risky to hold", "Risk contribution"),
+    ("is a candle formation a signal", "What the evidence says about candlesticks"),
+    ("can a test show a result is real", "Data snooping and multiple testing"),
 ])
 def test_the_reference_answers_the_questions_the_app_offers(question, title):
     from backend.knowledge_base.lessons import knowledge_base
     assert knowledge_base().search(question)[0][0].title == title
 
 
+@pytest.mark.parametrize("question,title", [
+    ("is there a fund locked for three years", "ELSS (tax-saving funds, verify current rules)"),
+    ("price bands explained in simple words", "Price bands and circuit breakers"),
+    ("can you help me with volatility", "Volatility"),
+    ("give me the basics of moving averages", "Moving averages (SMA, EMA, WMA)"),
+    ("show me how momentum works", "Momentum and rate of change"),
+    ("take me through what volatility is", "Volatility"),
+    ("what's the fund's p/e ratio", "P/E ratio (price to earnings)"),
+    ("can the model predict tomorrow's price", "Why the system does not predict exact prices"),
+])
+def test_the_agents_one_lesson_is_the_one_the_question_names(question, title):
+    # the agent reads only the top hit (run/ask.py), so a chat word such as "help" or "simple" placed in another
+    # lesson takes that hit, and the question gets the wrong lesson or none; the app's top-3 can still look right
+    from backend.knowledge_base.lessons import knowledge_base
+    assert [lesson.title for lesson, _ in knowledge_base().search(question, k=1)] == [title]
+
+
 @pytest.mark.parametrize("question", ["is it a good day", "anything new", "what is going on out there?",
-                                      "who are you", "tell me a joke"])
+                                      "who are you", "tell me a joke", "what causes a price decline",
+                                      "why did the price swing"])
 def test_the_reference_stays_silent_rather_than_serving_a_chance_word_match(question):
     from backend.knowledge_base.lessons import knowledge_base
     assert knowledge_base().search(question) == []
