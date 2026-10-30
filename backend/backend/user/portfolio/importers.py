@@ -15,7 +15,7 @@ import zipfile
 import zlib
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from backend.config import canonical_symbol
 from backend.database.sources.amfi import name_words
@@ -28,7 +28,8 @@ MAX_TEXT_BYTES = 1_000_000
 MAX_ROWS = 20_000           # more rows than 1 MB of real trades holds
 MAX_COLUMNS = 26            # A to Z: every layout's columns sit well inside it
 MAX_SHEETS = 10             # broker workbooks have one to three
-MAX_CELL_CHARS = 500        # provisional: headers, titles and names run under 100; many .xlsx cells can share one text
+MAX_CELL_CHARS = 500        # provisional: the headers, titles and names we read run under 100
+SHOWN_CHARS = 100           # of a file's own text in a message: Excel stops sheet names at 31, made-up files don't
 # what damaged workbooks raised when fuzzed (2026-10-30); anything else is our bug, so it stays a server error
 DAMAGED = (LookupError, SyntaxError, TypeError, OSError, NotImplementedError, zipfile.BadZipFile, zlib.error)
 SHORTER_RANGE = "Download a shorter date range and upload each file."
@@ -152,12 +153,12 @@ def _sheets(data: bytes) -> Dict[str, List[Sequence[object]]]:
     except zipfile.BadZipFile as exc:
         raise ValueError(f"This file starts like an Excel file but cannot be opened ({exc}).") from exc
     if locked:      # Excel's own passwords make a different kind of file, so only a hand-made zip gets here
-        raise ValueError(f"This Excel file is damaged or is not a workbook ({locked[0]!r} is encrypted).")
+        raise ValueError(f"This Excel file is damaged or is not a workbook ({_short(locked[0])!r} is encrypted).")
     # zipfile never inflates an entry past its declared size, so their sum bounds each pass over the file
     if unzipped > MAX_TEXT_BYTES:
         raise ValueError(f"This Excel file unpacks to {math.ceil(unzipped / 1e3):,} KB; we read files of up to "
                          f"{MAX_TEXT_BYTES // 1000:,} KB. {SHORTER_RANGE}")
-    from openpyxl.reader.excel import ExcelReader      # what openpyxl.load_workbook runs
+    from openpyxl.reader.excel import ExcelReader
     try:
         reader = ExcelReader(io.BytesIO(data), read_only=True, data_only=True, keep_links=False)
         reader.read_manifest()
@@ -172,7 +173,8 @@ def _sheets(data: bytes) -> Dict[str, List[Sequence[object]]]:
             raise ValueError("This Excel file is damaged or is not a workbook (two of its sheets name one part).")
         chart = next((sheet.name for sheet, rel in found if "chartsheet" in rel.Type), None)
         if chart is not None:
-            raise ValueError(f"Sheet {chart!r} is a chart, not a table. Upload the file as your broker gave it.")
+            raise ValueError(f"Sheet {_short(chart)!r} is a chart, not a table. "
+                             "Upload the file as your broker gave it.")
         reader.read()
         book = reader.wb
         try:
@@ -180,14 +182,23 @@ def _sheets(data: bytes) -> Dict[str, List[Sequence[object]]]:
             for sheet in book.worksheets:
                 sheet.reset_dimensions()    # some exports state a wrong size, which read-only mode would trust
                 # without max_col, openpyxl pads every row out to its last cell, even one in column XFD
-                sheets[sheet.title] = _first_rows(sheet.iter_rows(max_col=MAX_COLUMNS, values_only=True),
-                                                  before=rows_read)
+                rows = sheet.iter_rows(max_col=MAX_COLUMNS, values_only=True)
+                sheets[sheet.title] = _first_rows(_readable(rows, sheet.title), before=rows_read)
                 rows_read += len(sheets[sheet.title])
             return sheets
         finally:
             book.close()
     except DAMAGED as exc:
-        raise ValueError(f"This Excel file is damaged or is not a workbook ({type(exc).__name__}: {exc}).") from exc
+        raise ValueError(f"This Excel file is damaged or is not a workbook ({type(exc).__name__}: "
+                         f"{_short(str(exc))}).") from exc
+
+
+def _readable(rows: Iterable[Sequence[object]], title: str) -> Iterator[Sequence[object]]:
+    try:
+        yield from rows
+    except ValueError as exc:       # from openpyxl reading a cell; Python's own message can name a Python setting
+        raise ValueError(f"This Excel file is damaged or is not a workbook (sheet {_short(title)!r} has a cell "
+                         "that cannot be read).") from exc
 
 
 def _first_rows(rows: Iterable[Sequence[object]], before: int) -> List[Sequence[object]]:
@@ -207,13 +218,13 @@ def _statement(sheets: Dict[str, List[Sequence[object]]]) -> Statement:
         raise ValueError(f"This file doesn't match a layout we read. We read {'; '.join(map(_describe, LAYOUTS))}.")
     if len(fits) > 1:
         raise ValueError("This file matches more than one layout: "
-                         + ", ".join(f"{layout.source} on sheet {title!r}" for layout, title, *_ in fits)
+                         + ", ".join(f"{layout.source} on sheet {_short(title)!r}" for layout, title, *_ in fits)
                          + ". Upload one statement at a time.")
     layout, title, rows, (as_of, header, columns) = fits[0]
-    read = [layout.read(_cells(row, columns), line) for line, row in enumerate(rows[header + 1:], start=header + 2)
-            if any(texts[title][line - 1])]
-    others = [t for t in sheets if t != title]
-    warnings = [f"Only the {title!r} sheet was read, not {' or '.join(map(repr, others))}."] if others else []
+    read = [layout.read(_cells(row, columns, line), line)
+            for line, row in enumerate(rows[header + 1:], start=header + 2) if any(texts[title][line - 1])]
+    others = [repr(_short(t)) for t in sheets if t != title]
+    warnings = [f"Only the {_short(title)!r} sheet was read, not {' or '.join(others)}."] if others else []
     return Statement(layout.source, as_of, read, warnings)
 
 
@@ -235,7 +246,7 @@ def _fit(layout: Layout, texts: List[List[Optional[str]]]) -> Optional[Tuple[Opt
     try:
         return datetime.strptime(found[len(title) + 1:], form).date(), header, columns
     except ValueError:
-        raise ValueError(f"The title {found!r} does not end in a date we can read.") from None
+        raise ValueError(f"The title {_short(found)!r} does not end in a date we can read.") from None
 
 
 def _describe(layout: Layout) -> str:
@@ -243,16 +254,24 @@ def _describe(layout: Layout) -> str:
     return f"{layout.source}: {title}the columns {', '.join(layout.columns)}"
 
 
-def _cells(row: Sequence[object], columns: Dict[str, int]) -> Cell:
-    return lambda column: row[columns[column]] if columns[column] < len(row) else None
+def _cells(row: Sequence[object], columns: Dict[str, int], line: int) -> Cell:
+    def cell(column: str) -> object:
+        value = row[columns[column]] if columns[column] < len(row) else None
+        if len(str(value)) > MAX_CELL_CHARS:
+            raise ValueError(f"Row {line}: {column} has {len(str(value)):,} characters; we read cells of up to "
+                             f"{MAX_CELL_CHARS}. Shorten it and upload the file again.")
+        return value
+    return cell
+
+
+def _short(text: str) -> str:
+    return text if len(text) <= SHOWN_CHARS else text[:SHOWN_CHARS] + "..."
 
 
 def _text(value: object) -> Optional[str]:
     text = "" if value is None else str(value)
-    if len(text) > MAX_CELL_CHARS:
-        raise ValueError(f"A cell starting {text[:20]!r} has {len(text):,} characters; we read cells of up to "
-                         f"{MAX_CELL_CHARS}. Upload the file as your broker gave it.")
-    return " ".join(text.split()) or None
+    # _cells refuses a long cell before it is read; tidying one that many .xlsx cells share costs its length per cell
+    return text if len(text) > MAX_CELL_CHARS else " ".join(text.split()) or None
 
 
 def _number(cell: Cell, column: str, line: int, required: bool) -> Optional[float]:

@@ -1,5 +1,6 @@
 import io
 import re
+import sys
 import tracemalloc
 import zipfile
 from datetime import date
@@ -383,14 +384,18 @@ def test_a_workbook_with_more_sheets_than_we_read_is_refused():
         importers.parse(workbook(sheets))
 
 
-def test_a_workbook_with_a_chart_sheet_is_refused():
+def chart_workbook():
     import openpyxl
     book = openpyxl.Workbook()
     book.create_chartsheet("Chart")
     out = io.BytesIO()
     book.save(out)
+    return out.getvalue()
+
+
+def test_a_workbook_with_a_chart_sheet_is_refused():
     with pytest.raises(ValueError, match="'Chart' is a chart"):
-        importers.parse(out.getvalue())
+        importers.parse(chart_workbook())
 
 
 def test_two_sheets_naming_one_part_are_refused():
@@ -399,10 +404,10 @@ def test_two_sheets_naming_one_part_are_refused():
         importers.parse(twice)
 
 
-def test_many_cells_sharing_one_long_text_are_refused():
+def test_many_cells_sharing_one_long_text_do_not_each_get_a_copy():
     """Every cell points at one text in the shared strings part, which openpyxl never writes, so it is put in here."""
     texts = (f'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>'
-             f'{"a " * importers.MAX_CELL_CHARS}</t></si></sst>').encode()
+             f'{"a " * 10_000}</t></si></sst>').encode()
     row = b"<row>" + b'<c t="s"><v>0</v></c>' * importers.MAX_COLUMNS + b"</row>"
 
     def share(name, part):
@@ -411,8 +416,30 @@ def test_many_cells_sharing_one_long_text_are_refused():
                                 b'vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>')
         return re.sub(rb"<sheetData>.*</sheetData>", b"<sheetData>" + row * 100 + b"</sheetData>", part)
     shared = rewritten(workbook({"Sheet1": [["a"]]}), share, added=[("xl/sharedStrings.xml", texts)])
-    with pytest.raises(ValueError, match=f"we read cells of up to {importers.MAX_CELL_CHARS}"):
-        importers.parse(shared)
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError, match="doesn't match a layout"):
+            importers.parse(shared)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 20e6          # a tidied copy for each of the 2,600 cells peaked at 52 MB; one shared text, 1.1 MB
+
+
+@pytest.mark.parametrize("sheet", ["Combined", "Equity"], ids=["unread sheet", "above the header"])
+def test_a_long_cell_outside_the_rows_read_is_not_refused(sheet):
+    import openpyxl
+    book = openpyxl.load_workbook(io.BytesIO(zerodha_holdings(HOLDING)))
+    book[sheet]["A2"] = "Disclaimer: " + "x " * importers.MAX_CELL_CHARS
+    out = io.BytesIO()
+    book.save(out)
+    assert len(importers.parse(out.getvalue()).rows) == 1
+
+
+def test_a_long_cell_in_a_row_read_is_refused_with_its_row_and_column():
+    too_long = importers.MAX_CELL_CHARS + 1
+    with pytest.raises(ValueError, match=f"Row 9: Symbol has {too_long} characters"):
+        importers.parse(zerodha_holdings({**HOLDING, "Symbol": "S" * too_long}))
 
 
 def not_a_workbook(_):
@@ -422,22 +449,54 @@ def not_a_workbook(_):
     return out.getvalue()
 
 
-def encrypted(good):
+def encrypted(good, part="xl/workbook.xml"):
     out = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(good)) as src, zipfile.ZipFile(out, "w") as archive:
         for entry in src.infolist():
             archive.writestr(entry.filename, src.read(entry))
-        archive.getinfo("xl/workbook.xml").flag_bits |= 1     # zipfile writes this flag when it closes
+        archive.getinfo(part).flag_bits |= 1     # zipfile writes this flag when it closes
     return out.getvalue()
+
+
+LONG = "N" * 10_000
+TOO_MANY_DIGITS = b"<v>" + b"9" * (sys.get_int_max_str_digits() + 1) + b"</v>"
 
 
 @pytest.mark.parametrize("damage", [
     lambda good: rewritten(good, lambda name, part: part[:-20] if name.endswith("sheet1.xml") else part),
     lambda good: rewritten(good, lambda _, part: part, zipfile.ZIP_STORED).replace(b"SYNTHA", b"SYNTHZ", 1),
-    not_a_workbook, encrypted], ids=["broken XML", "bad checksum", "not a workbook", "encrypted part"])
+    not_a_workbook, encrypted,
+    lambda good: rewritten(good, lambda _, part: part.replace(b"<v>14</v>", TOO_MANY_DIGITS))],
+    ids=["broken XML", "bad checksum", "not a workbook", "encrypted part", "number past Python's digit limit"])
 def test_a_damaged_workbook_is_refused_as_a_bad_file(damage):
     with pytest.raises(ValueError, match="damaged or is not a workbook"):
         importers.parse(damage(zerodha_holdings(HOLDING)))
+
+
+@pytest.mark.parametrize("named", [
+    lambda: rewritten(chart_workbook(), lambda _, part: part.replace(b'name="Chart"', f'name="{LONG}"'.encode())),
+    lambda: encrypted(rewritten(zerodha_holdings(HOLDING), lambda _, part: part, added=[(LONG, b"")]), LONG),
+    lambda: rewritten(zerodha_holdings(HOLDING),
+                      lambda _, part: part.replace(b'"/xl/workbook.xml"', f'"/xl/{LONG}.xml"'.encode())),
+    lambda: workbook({"Sheet1": [[f"Holdings statement for stocks as on {LONG}"],
+                                 ["Stock Name", "ISIN", "Quantity", "Average buy price"]]}),
+    lambda: rewritten(workbook({"A": [CSV_HEADER.strip().split(",")], "B": [CSV_HEADER.strip().split(",")]}),
+                      lambda _, part: part.replace(b'name="A"', f'name="{LONG}"'.encode())),
+    lambda: rewritten(zerodha_holdings(HOLDING), lambda _, part: part.replace(b"<v>14</v>", TOO_MANY_DIGITS)
+                      .replace(b'name="Equity"', f'name="{LONG}"'.encode()))],
+    ids=["chart sheet", "encrypted part", "missing part", "title", "sheet of a second layout", "sheet of a bad cell"])
+def test_a_long_name_from_the_file_is_cut_short_in_the_refusal(named):
+    with pytest.raises(ValueError) as refused:
+        importers.parse(named())
+    assert len(str(refused.value)) < 1_000
+
+
+@pytest.mark.parametrize("sheet", [b"Equity", b"Combined"], ids=["sheet read", "sheet left unread"])
+def test_a_long_sheet_name_is_cut_short_in_the_warning(sheet):
+    renamed = rewritten(zerodha_holdings(HOLDING),
+                        lambda _, part: part.replace(b'name="%s"' % sheet, f'name="{LONG}"'.encode()))
+    warning, = importers.parse(renamed).warnings
+    assert len(warning) < 1_000
 
 
 def test_a_pdf_statement_is_unsupported_rather_than_misread():
