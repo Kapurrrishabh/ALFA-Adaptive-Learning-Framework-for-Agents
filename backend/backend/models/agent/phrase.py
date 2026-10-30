@@ -24,12 +24,14 @@ words. Keep each sentence under 15 words. Keep every number exactly as written, 
 as it is, and do not call a figure high, low, a lot or a little. Add nothing else: no new facts, no reasons, no \
 advice, no predictions. Never say a price will rise or fall. No lists or headings."""
 
-PASSAGE_SYSTEM = """Answer the QUESTION for an Indian retail investor in two or three short sentences, using \
-only the PASSAGES. Use everyday words. Say what the passages report happened, and what it happened after or \
-alongside. Name the source and date as the passage gives them. Do not answer yes or no, and do not give your \
-own verdict on the question: report what the passages say. Do not explain beyond what they say. Keep every \
-number exactly as written. Never refer to passages by number. No advice, no predictions, and never say a price \
-will rise or fall. If the passages do not answer the question, reply with the single word NONE and nothing else."""
+# Left in its long sentences: split into short ones, it answered "how is my portfolio doing" with a Treasury headline
+PASSAGE_SYSTEM = """Answer the QUESTION for an Indian retail investor in two or three short sentences in everyday \
+words, using only the PASSAGES. Report what the passages say happened, and what they say it happened after or \
+alongside, naming the source and date as the passage gives them; do not explain beyond what they say. Do not \
+answer yes or no, and do not give your own verdict on the question: report what the passages say. Keep \
+every number exactly as written. Never refer to passages by number. No advice, no predictions, and never say a \
+price will rise or fall. If the passages do not answer the question, reply with the single word NONE and \
+nothing else."""
 
 _THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}\b)")
 # a ticker, or a name in capitals: "RELIEANCE.NS" was written for RELIANCE.NS and passed every other check
