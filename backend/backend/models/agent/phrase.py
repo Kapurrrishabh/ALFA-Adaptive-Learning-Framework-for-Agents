@@ -87,7 +87,7 @@ def from_passages(question, chunks, writer, entails, money=None):
     if _DECLINES.search(text):
         return Phrased("", "", NOT_ANSWERED)
     reasons = (["it answers yes or no"] if _BARE_VERDICT.match(text) else []) + \
-        _unentailed(text, [chunk.text for chunk in chunks], entails) + _checked(text, passages, money, question)
+        _unentailed(text, chunks, entails) + _checked(text, passages, money, question)
     return Phrased("", "", "; ".join(reasons)) if reasons else Phrased(text, by, "")
 
 
@@ -148,14 +148,15 @@ def _ask(writer, system, content):
     return writer.text(reply).strip(), reply.model
 
 
-def _unentailed(text, sources, entails):
+def _unentailed(text, chunks, entails):
     """Why `text` says something no source entails, sentence by sentence, or nothing when every sentence is entailed."""
-    # Only a bracket the passages hold word for word is left out, which is a source: "(Mint, 6 Oct 2026)" scored
-    # 0.002 alone and failed 3 of 21 faithful replies kept on its sentence. Any other, "(it will keep falling)", is a claim.
-    held = " ".join(sources)
-    cited = lambda bracket: "" if all(re.search(rf"(?<!\w){re.escape(source.strip())}(?!\w)", held)
-                                      for source in bracket.group(1).split(";")) else bracket.group(0)
-    claims = [claim for claim in (_BRACKETED.sub(cited, part).strip() for part in sentences(text))
+    # Only a bracket naming the passages' own sources is left out: kept on its sentence, "(Mint, 6 Oct 2026)" failed 3 of
+    # 21 faithful replies. Any other is a claim, as in "The Nifty fell (over 500 points)" when the Sensex fell by them.
+    sources = [chunk.text for chunk in chunks]
+    cited = {_citation(chunk) for chunk in chunks}
+    kept = lambda bracket: "" if all(part.strip() in cited for part in bracket.group(1).split(";")) \
+        else bracket.group(0)
+    claims = [claim for claim in (_BRACKETED.sub(kept, part).strip() for part in sentences(text))
               if re.search(r"\w", claim)]
     if not claims:
         return ["it states nothing a passage could support"]
@@ -166,6 +167,13 @@ def _unentailed(text, sources, entails):
         claims = [claim for at, claim in enumerate(claims)
                   if max(scores[at * len(premises):(at + 1) * len(premises)]) < ENTAILED]
     return [f"no passage says “{claim}”" for claim in claims]
+
+
+def _citation(chunk):
+    """"Mint, 6 Oct 2026" for a headline, the source and its own date it opens with (`NewsWire`); else empty."""
+    from backend.models.agent.present import readable_day
+    head, colon, _ = chunk.text.partition(": ")
+    return head if colon and head.endswith(f", {readable_day(chunk.day)}") else ""
 
 
 def _checked(text, source, money, asked=""):

@@ -1115,7 +1115,7 @@ def test_a_writer_sentence_no_passage_entails_serves_the_plain_answer_and_names_
 @pytest.mark.parametrize("reply", ["Reliance Industries commissioned its new refinery unit. (Mint, 6 Oct 2026)",
                                    "Reliance Industries commissioned its new refinery unit (Mint, 6 Oct 2026).",
                                    "Refinery stocks moved after the new unit (Mint, 6 Oct 2026; ET, 7 Oct 2026)."])
-def test_a_source_in_brackets_that_a_passage_names_is_not_read_as_a_claim(market, router, reply):
+def test_a_passages_own_source_and_date_in_brackets_is_not_read_as_a_claim(market, router, reply):
     """Read alone, "(Mint, 6 Oct 2026)" scored as low as 0.002 against the passage it names, and a sentence carrying its
     source failed against the passage sentence that said it word for word."""
     moved = Chunk("ET, 7 Oct 2026: Refinery stocks moved.", [], "https://n.test/moved", "2026-10-07")
@@ -1133,6 +1133,21 @@ def test_a_claim_in_brackets_that_no_passage_entails_serves_the_plain_answer(mar
     from backend.models.agent import phrase
     turn = agent(market, router, reference=news_reference(FakeWriter(reply), entails=literal)).answer(ASKED_YES_NO)
     assert turn.served == phrase.recent_plain(None, None, [NEWS]) and "no passage says" in turn.unphrased_because
+
+
+def test_a_passages_figure_in_brackets_after_another_subject_is_read_with_its_sentence(market, router):
+    """"The Nifty fell (over 500 points) after the RBI's announcement." was served: a passage held the bracket word for
+    word, so it was left out unread, and the 500 points were the Sensex's. `literal` cannot pin this, as the passages
+    joined hold every word; this fake knows whose fall the figure was."""
+    from backend.models.agent import phrase
+    fell = Chunk("ET, 7 Oct 2026: Tata Steel shares fell 3%. Refinery stocks fell after the RBI hike.", [],
+                 "https://n.test/fell", "2026-10-07")
+    tied = lambda pairs: [float("3%" not in said or "Tata Steel" in said) for _, said in pairs]
+    built = news_reference(FakeWriter("Refinery stocks fell (3%) after the RBI hike (ET, 7 Oct 2026)."), news=(fell,),
+                           entails=tied)
+    turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
+    assert turn.served == phrase.recent_plain(None, None, [fell])
+    assert "no passage says “Refinery stocks fell (3%) after the RBI hike.”" in turn.unphrased_because
 
 
 def test_a_reply_that_only_names_a_source_serves_the_plain_answer(market, router):
