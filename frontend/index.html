@@ -20,34 +20,19 @@
 <header class="topbar">
   <div class="topbar-inner">
     <a class="logo" href="#/home"><span class="logo-mark">S</span><span class="logo-word">StockIntel</span></a>
-    <nav class="nav" id="nav">
-      <a href="#/explore" data-r="explore">Explore</a>
-      <a href="#/builder" data-r="builder">Builder</a>
-      <a href="#/portfolio" data-r="portfolio">Portfolio</a>
-      <a href="#/signals" data-r="signals">Signals</a>
-      <a href="#/chat" data-r="chat">Ask AI</a>
-      <a href="#/learn" data-r="learn">Learn</a>
-      <a href="#/reports" data-r="reports">Reports</a>
-      <a href="#/performance" data-r="performance">Performance</a>
-    </nav>
+    <nav class="nav" id="nav" aria-label="Main"></nav>
     <div class="search">
       <span class="icon">⌕</span>
-      <input id="q" placeholder="Search stocks — e.g. Reliance, TCS, HDFC Bank" autocomplete="off" aria-label="Search stocks">
-      <div class="suggest" id="suggest" role="listbox"></div>
+      <input id="q" placeholder="Search stocks — e.g. Reliance, TCS, HDFC Bank" autocomplete="off" aria-label="Search stocks"
+        role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggest">
+      <div class="suggest" id="suggest" role="listbox" aria-label="Matching stocks"></div>
     </div>
     <button class="icon-btn" id="theme" title="Toggle theme" aria-label="Toggle theme">◐</button>
   </div>
 </header>
-<div class="ticker" id="ticker" aria-label="Market ticker"></div>
+<section class="ticker" id="ticker" aria-label="Market ticker"></section>
 <main class="page" id="view"></main>
-<nav class="bottom-nav" id="bnav" aria-label="Main">
-  <a href="#/home" data-r="home"><span class="ic" data-icon="home"></span>Home</a>
-  <a href="#/explore" data-r="explore"><span class="ic" data-icon="compass"></span>Explore</a>
-  <a href="#/builder" data-r="builder"><span class="ic" data-icon="layers"></span>Builder</a>
-  <a href="#/chat" data-r="chat"><span class="ic" data-icon="sparkle"></span>Ask AI</a>
-  <a href="#/portfolio" data-r="portfolio"><span class="ic" data-icon="pie"></span>Portfolio</a>
-</nav>
+<nav class="bottom-nav" id="bnav" aria-label="Main"></nav>
 <script src="/static/app.js"></script>
-<script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});</script>
 </body>
 </html>
