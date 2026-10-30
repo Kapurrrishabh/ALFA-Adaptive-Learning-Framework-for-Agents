@@ -161,10 +161,11 @@ class Reference:
         return None
 
     def _lesson(self, question, query, as_of):
-        """For a move-word question, the first of BM25's best few lessons the judge rates over the floor and above
-        every headline, else None. BM25's order rather than the judge's: it put "Rounding bottom and top" above
-        "Double top and double bottom" for a question about a double bottom."""
-        lessons = [] if RECENT.search(question) else self.lessons(question, LESSONS_JUDGED)
+        """For a move-word question, the first lesson the judge rates over the floor and above every headline, else None.
+        BM25's next few are judged only when its best section's heading shares no word with the question: a rejected best
+        lesson was replaced by fund categories for "how is ICICI Prudential Multicap Fund doing". BM25's order rather than
+        the judge's: it put "Rounding bottom and top" above "Double top and double bottom" for a double bottom question."""
+        lessons = [] if RECENT.search(question) else self.lessons(question, 1) or self.lessons(question, LESSONS_JUDGED)
         if not lessons:
             return None
         headlines = self._newswire(query, as_of, None) or []

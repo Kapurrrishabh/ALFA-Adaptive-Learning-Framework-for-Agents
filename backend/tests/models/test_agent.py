@@ -955,12 +955,18 @@ def test_a_move_question_reads_the_news_when_the_judge_rates_a_headline_above_th
     assert turn.intent == "reference recent" and moved.text in turn.served
 
 
+def headless(lessons):
+    """Lessons as the knowledge base gives them when its best section's heading shares no word with the question."""
+    return lambda question, k: lessons if k > 1 else []
+
+
 def test_a_move_word_question_is_taught_by_a_lesson_below_bm25s_best_when_the_judge_rejects_that_one(market, router):
-    """"How is short term tax charged on shares that rose" ranked the ELSS lesson above the lesson on taxes."""
+    """"How is short term tax charged on shares that rose" ranked a section no heading matched first, then the ELSS
+    lesson, then the lesson on taxes that answers it."""
     lessons = [("ELSS (tax-saving funds)", "ELSS funds lock your money in for three years."),
                ("Taxes on listed equity", "Short-term gains on shares are taxed at 20%.")]
     built = news_reference(None)
-    built.lessons = lambda question, k: lessons[:k]
+    built.lessons = headless(lessons)
     built.judge = lambda question, texts: [LESSON_FLOOR - 0.01, LESSON_FLOOR + 0.1] + [0.0] * (len(texts) - 2)
     turn = agent(market, router, reference=built).answer("how is short term tax charged on shares that rose ?")
     assert turn.intent == "reference lesson" and turn.served == lessons[1][1]
@@ -971,10 +977,21 @@ def test_of_two_lessons_the_judge_accepts_the_one_bm25_ranks_higher_is_served(ma
     lessons = [("Double top and double bottom", "Two troughs at about the same level."),
                ("Rounding bottom and top", "A slow, curved turn in price.")]
     built = news_reference(None)
-    built.lessons = lambda question, k: lessons[:k]
+    built.lessons = headless(lessons)
     built.judge = lambda question, texts: [LESSON_FLOOR + 0.07, LESSON_FLOOR + 0.1] + [0.0] * (len(texts) - 2)
     turn = agent(market, router, reference=built).answer("what does a double bottom look like before prices rise ?")
     assert turn.served == lessons[0][1]
+
+
+def test_a_best_lesson_the_judge_rejects_is_not_replaced_by_a_weaker_one(market, router):
+    """"How is ICICI Prudential Multicap Fund doing" was served the lesson on fund categories, under the rejected one."""
+    lessons = [("Mutual fund", "A mutual fund pools money from many investors."),
+               ("Equity, debt and hybrid funds", "SEBI groups equity funds into categories such as multi cap.")]
+    built = news_reference(None)
+    built.lessons = lambda question, k: lessons[:k]
+    built.judge = lambda question, texts: [LESSON_FLOOR - 0.04, LESSON_FLOOR + 0.01][:len(texts)] + [0.0] * (len(texts) - 2)
+    turn = agent(market, router, reference=built).answer("how is the multicap fund doing ?")
+    assert turn.intent != "reference lesson"
 
 
 @pytest.mark.parametrize("question,intent", [("is AAPL overbought right now ?", "overbought"),
