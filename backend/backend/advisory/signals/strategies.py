@@ -82,6 +82,9 @@ class Factory:
 
 
 # --- exposure overlays -----------------------------------------------------------
+VOL_TARGET = 0.15           # yearly volatility the overlay aims for, live and in the backtest
+CRASH_VOL_DAYS = 126        # trading days of realised volatility the crash guard ranks, live and in the backtest
+
 
 def trend_filter(bench: pd.Series, months: int = 10) -> Callable[[pd.Timestamp], float]:
     """Faber: invested when the benchmark's month-end close is above its 10-month SMA."""
@@ -96,7 +99,7 @@ def trend_filter(bench: pd.Series, months: int = 10) -> Callable[[pd.Timestamp],
     return expo
 
 
-def vol_target(bench: pd.Series, target: float = 0.15, half_life: int = 20,
+def vol_target(bench: pd.Series, target: float, half_life: int = 20,
                cap: float = 1.0) -> Callable[[pd.Timestamp], float]:
     """Harvey et al.: exposure = target / EWMA vol of the benchmark, capped."""
     r = np.log(bench / bench.shift(1))
@@ -113,7 +116,7 @@ def momentum_crash_guard(bench: pd.Series, cut: float = 0.5) -> Callable[[pd.Tim
     Cut exposure when the benchmark's 24-month return is negative and its
     realised volatility is in the top quintile of its history so far."""
     r = np.log(bench / bench.shift(1))
-    vol = r.rolling(126).std() * np.sqrt(F.YEAR)
+    vol = r.rolling(CRASH_VOL_DAYS).std() * np.sqrt(F.YEAR)
 
     def expo(asof: pd.Timestamp) -> float:
         b = bench.loc[:asof]

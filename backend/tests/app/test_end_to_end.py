@@ -1,4 +1,5 @@
 import re
+from dataclasses import replace
 from datetime import time
 from pathlib import Path
 
@@ -14,8 +15,9 @@ from backend.config import FORECAST_DAYS
 from backend.api.orchestrator import Orchestrator
 from backend.advisory.calculators.screener import screen
 from backend.advisory.service import AnalysisService
+from backend.database.sources import synthetic
 
-from .conftest import NOW
+from .conftest import END, NOW
 from .test_nlu_llm import _Picker
 
 KEY = "k" * 24
@@ -63,7 +65,25 @@ def test_rendered_forecast_range_states_the_interval_it_was_built_for(service):
 
 def test_a_drill_down_explains_the_jargon_its_own_lines_use(service):
     risk = R.render_domain(service.analyze("TEST"), "risk")
-    assert "A drawdown is a fall from a peak." in risk and "EBIT is" not in risk
+    assert "Drawdown: a fall from a peak." in risk and "EBIT:" not in risk
+
+
+@pytest.mark.parametrize("verdict, called_chance", [("not a statistically significant", True),
+                                                    ("a statistically significant", False)])
+def test_a_drill_down_calls_a_result_chance_only_when_it_is_not_significant(service, verdict, called_chance):
+    a = service.analyze("TEST")
+    past = a.results["historical"]
+    past.evidence = [replace(e, claim=re.sub(r"(not )?a statistically significant", verdict, e.claim))
+                     for e in past.evidence]
+    assert ("could easily be chance" in R.render_domain(a, "historical")) == called_chance
+
+
+def test_every_reply_that_explains_volatility_reads_the_one_meaning(orch, monkeypatch):
+    monkeypatch.setitem(R.TERM_MEANINGS, "Volatility", "a meaning only this test writes")
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    replies = [orch.handle(q, "terms").text for q in
+               ("Analyze TEST", "how risky is TEST?", "Compare TEST with PEER", "Is the market in a downtrend?")]
+    assert all("a meaning only this test writes" in r for r in replies)
 
 
 @pytest.mark.parametrize("question, most", [("help", 8), ("Is the market in a downtrend?", 8),
@@ -75,8 +95,8 @@ def test_chat_replies_read_at_plain_language_grade(orch, monkeypatch, question, 
 
 
 def test_the_market_reply_quotes_the_volatility_target_it_sizes_to(orch, monkeypatch):
-    import backend.advisory.signals.advisor as advisor
-    monkeypatch.setattr(advisor, "VOL_TARGET", 0.25)
+    import backend.advisory.signals.strategies as strategies
+    monkeypatch.setattr(strategies, "VOL_TARGET", 0.25)
     reply = orch.handle("Is the market in a downtrend?", "vol")
     assert f"To aim for 25% volatility, you would hold {reply.data['payload']['vol_target_exposure']:.0%}" in reply.text
 
@@ -106,6 +126,21 @@ def test_multi_turn_conversation_keeps_context(orch):
     assert r.intent == "compare" and "TEST" in r.text and "PEER" in r.text
     r = orch.handle("Why?", "s")
     assert r.intent == "explain_decision" and r.text.startswith("Why TEST")
+
+
+def test_why_reply_rounds_each_area_score_and_confidence_to_two_decimals(orch):
+    orch.handle("Analyze TEST", "places")
+    votes = orch.handle("why?", "places").text.split("How each area voted:")[1].split("Main ")[0]
+    assert not re.search(r"\d\.\d{3}", votes)
+
+
+def test_why_a_negative_score_heads_its_evidence_as_negatives(orch, local_provider):
+    local_provider.frames["FALL.NS"] = synthetic.ohlcv(900, seed=3, drift=-0.003, end=END)
+    orch.known.add("FALL")
+    orch.handle("Analyze FALL", "fall")
+    reply = orch.handle("why?", "fall")
+    assert reply.data["payload"]["decision"]["score"] < 0
+    assert "Main negatives:" in reply.text and "+ [FACT]" not in reply.text
 
 
 def test_budget_question_uses_the_session_stock(orch):

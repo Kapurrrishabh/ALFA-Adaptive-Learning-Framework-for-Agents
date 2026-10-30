@@ -22,7 +22,7 @@ def variants(fac: S.Factory, bench: pd.Series, n: int = 20) -> Dict[str, dict]:
     low = fac.top_n(fac.lowvol, n, 2 * n, weighting="inverse_vol")
     half_mom = fac.top_n(fac.momentum, n // 2, n)
     half_low = fac.top_n(fac.lowvol, n // 2, n)
-    overlay = S.combine(S.trend_filter(bench), S.vol_target(bench))
+    overlay = S.combine(S.trend_filter(bench), S.vol_target(bench, S.VOL_TARGET))
     return {
         "equal_weight_universe": dict(sel=fac.equal_weight_universe(), months=None),
         "momentum_semiannual": dict(sel=mom, months=SEMIANNUAL),

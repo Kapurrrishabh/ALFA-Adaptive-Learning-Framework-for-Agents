@@ -7,6 +7,7 @@ import pytest
 from backend.database.sources import synthetic
 from backend.database.sources.panel import panel_from_frames
 from backend.advisory.signals import factors as F
+from backend.advisory.signals import evaluate as E
 from backend.advisory.signals import strategies as S
 from backend.advisory.signals.advisor import Holding, _tax_note, exposure_for, market_state, plan, render
 from backend.advisory.signals.simulate import metrics, simulate
@@ -110,6 +111,14 @@ def test_exposure_modes():
     assert exposure_for("defensive", m) == 0.0
     with pytest.raises(ValueError):
         exposure_for("yolo", m)
+
+
+def test_live_defensive_exposure_sizes_to_the_backtested_volatility_target(panel, monkeypatch):
+    monkeypatch.setattr(S, "VOL_TARGET", 0.05)
+    bench = synthetic.ohlcv(400, seed=7, drift=0.003, vol=0.012, end="2026-08-31")["close"]
+    backtested = E.variants(S.Factory(panel, bench), bench)["momentum_trend_vol_overlay"]["exposure"]
+    live = exposure_for("defensive", market_state(bench, bench.index[-1]))
+    assert 0 < live < 1 and live == pytest.approx(backtested(bench.index[-1]), abs=0.01)
 
 
 def test_plan_buys_top_ranked_sells_dropouts_and_sizes_to_capital(panel):

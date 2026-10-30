@@ -287,8 +287,9 @@ class Orchestrator:
                  f"Confidence {d.confidence:.2f} and uncertainty {d.uncertainty:.2f}, each out of 1.",
                  "\nHow each area voted:"]
         for dom, st in d.domain_states.items():
-            lines.append(f"- {R.DOMAIN_TITLES.get(dom, dom)}: {st['state']}. Score {st['score']}, "
-                         f"confidence {st['confidence']}.")
+            score = "No score" if st["score"] is None else f"Score {st['score']:+.2f}"
+            lines.append(f"- {R.DOMAIN_TITLES.get(dom, dom)}: {st['state']}. {score}, "
+                         f"confidence {st['confidence']:.2f}.")
         lines.append("\nMain positives:" if d.score >= 0 else "\nMain negatives:")
         lines += [f"- [{e['kind']}] {e['claim']}" for e in d.supporting_evidence] or ["- none"]
         lines.append("Main points the other way:")
@@ -585,17 +586,20 @@ class Orchestrator:
         return Reply(render(p), "signals", {"payload": payload}, ["signal_plan"])
 
     def _h_market_regime(self, s: Session, i: Intent) -> Reply:
-        from backend.advisory.signals.advisor import VOL_TARGET, exposure_for, market_state
+        from backend.advisory.signals.advisor import exposure_for, market_state
+        from backend.advisory.signals.strategies import CRASH_VOL_DAYS, VOL_TARGET
         bench = self.service().history("^NSEI")["close"]
         m = market_state(bench, bench.index[-1])
         lines = [f"Nifty market state as of {bench.index[-1].date()}: the trend is {m['trend'].upper()}.",
                  f"- At the last month-end the Nifty closed at {m['month_end_close']:,.0f}, "
                  f"{'above' if m['trend'] == 'up' else 'below'} its 10-month average of {m['sma_10m']:,.0f}.",
                  "- Our trend rule (the Faber rule) holds stocks above that average and cash below it.",
-                 f"- Volatility, how much prices swing in a year, is {m['ewma_vol_pct']}%. Recent days count more (EWMA).",
+                 f"- Volatility ({R.TERM_MEANINGS['Volatility']}) is {m['ewma_vol_pct']}%. "
+                 "Recent days count more (EWMA).",
                  f"- To aim for {VOL_TARGET:.0%} volatility, you would hold {m['vol_target_exposure']:.0%} in stocks.",
                  f"- The 24-month return is {m['return_24m_pct']}%. "
-                 f"Volatility is above {m['vol_percentile']}% of its past readings.",
+                 f"Volatility over the last {CRASH_VOL_DAYS} trading days is higher than in {m['vol_percentile']}% "
+                 f"of earlier {CRASH_VOL_DAYS}-day spans.",
                  f"- Momentum crash risk: {'YES' if m['momentum_crash_risk'] else 'no'}. Recent winners have crashed "
                  "in sharp rebounds after a fall. We flag it when the 24-month return is negative and swings are "
                  "unusually wide.",

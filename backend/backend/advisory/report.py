@@ -85,10 +85,10 @@ def render_analysis(a: StockAnalysis, full: bool = False) -> str:
     if tech.available:
         t = tech.details
         out.append(f"Trend (bullish means rising, bearish falling): {tech.state}.")
-        out.append(f"Swing structure (the run of recent highs and lows): {t.get('trend_structure')}.")
+        out.append(f"Swing structure ({TERM_MEANINGS['Swing structure']}): {t.get('trend_structure')}.")
         out.append(f"Moving averages (average prices over recent days): {t.get('ma_structure', UNAVAILABLE)}.")
-        out.append(f"RSI(14), a gauge of recent gains against losses: {t.get('rsi_14')}.")
-        out.append(f"MACD histogram, positive when momentum is picking up: {t.get('macd_histogram')}.")
+        out.append(f"RSI(14), {TERM_MEANINGS['RSI']}: {t.get('rsi_14')}.")
+        out.append(f"MACD histogram ({TERM_MEANINGS['MACD histogram']}): {t.get('macd_histogram')}.")
         out.append(f"20-day return: {t.get('return_20d_pct')}%.")
         out.append(f"Volume: {t.get('volume_vs_20d_avg', UNAVAILABLE)}x its 20-day average.")
         out.append(f"Breakout status (has the price left its recent range?): {t.get('breakout_status')}.")
@@ -117,16 +117,15 @@ def render_analysis(a: StockAnalysis, full: bool = False) -> str:
         out.append(f"Sector: {f.details['sector']}. Industry: {f.details['industry']}.")
         out.append(f"Trend in the company's results: {f.details['trend']}.")
         out.append(f"Revenue growth: {_metric(m, 'revenue_growth')}.")
-        out.append(f"EPS growth (profit per share): {_metric(m, 'eps_growth')}.")
-        out.append(f"Net margin (the share of revenue kept as profit): {_metric(m, 'net_margin')}.")
+        out.append(f"EPS growth ({TERM_MEANINGS['EPS']}): {_metric(m, 'eps_growth')}.")
+        out.append(f"Net margin ({TERM_MEANINGS['Margin']}): {_metric(m, 'net_margin')}.")
         out.append(f"Operating margin (the share of revenue left after running costs): {_metric(m, 'operating_margin')}.")
-        out.append(f"ROE (profit on the owners' money): {_metric(m, 'roe')}.")
-        out.append(f"ROIC (profit on all the money put in): {_metric(m, 'roic')}.")
-        out.append(f"Debt/equity (debt against the owners' money): {_metric(m, 'debt_to_equity')}.")
+        out.append(f"ROE (profit on {TERM_MEANINGS['Equity']}): {_metric(m, 'roe')}.")
+        out.append(f"ROIC (profit on {TERM_MEANINGS['Invested capital']}): {_metric(m, 'roic')}.")
+        out.append(f"Debt/equity (debt against {TERM_MEANINGS['Equity']}): {_metric(m, 'debt_to_equity')}.")
         out.append(f"Interest coverage (how many times profit pays the interest): {_metric(m, 'interest_coverage')}.")
-        out.append(f"Free cash flow (cash left after running and investing in the business): "
-                   f"{_metric(m, 'free_cash_flow')}.")
-        out.append(f"P/E (price against yearly profit per share): {_metric(m, 'pe')}.")
+        out.append(f"Free cash flow ({TERM_MEANINGS['Free cash flow']}): {_metric(m, 'free_cash_flow')}.")
+        out.append(f"P/E ({TERM_MEANINGS['P/E']}): {_metric(m, 'pe')}.")
         out.append(f"P/B (price against what the company owns minus what it owes, per share): "
                    f"{_metric(m, 'price_to_book')}.")
         out.append(f"EV/EBITDA (company value including debt, against profit before interest, tax and depreciation): "
@@ -156,12 +155,12 @@ def render_analysis(a: StockAnalysis, full: bool = False) -> str:
         s = r.details
         b = s.get("benchmark") if isinstance(s.get("benchmark"), dict) else {}
         out.append(f"Risk level: {r.state}, measured over {s['period']}.")
-        out.append(f"Volatility (how much the price swings in a year): {s['annualized_vol_pct']}%.")
-        out.append(f"Max drawdown (the biggest fall from a peak): {s['max_drawdown_pct']}%.")
+        out.append(f"Volatility ({TERM_MEANINGS['Volatility']}): {s['annualized_vol_pct']}%.")
+        out.append(f"Max drawdown ({TERM_MEANINGS['Max drawdown']}): {s['max_drawdown_pct']}%.")
         out.append(f"Current drawdown (how far it is below its peak now): {s['current_drawdown_pct']}%.")
-        out.append(f"Sharpe ratio (return for the risk taken): {s['sharpe']}.")
+        out.append(f"Sharpe ratio ({TERM_MEANINGS['Sharpe ratio']}): {s['sharpe']}.")
         out.append(f"Sortino ratio (the same, counting only falls): {s['sortino']}.")
-        out.append(f"Beta (how far it tends to move when the benchmark index moves): {b.get('beta', UNAVAILABLE)}.")
+        out.append(f"Beta ({TERM_MEANINGS['Beta']}): {b.get('beta', UNAVAILABLE)}.")
         out.append(f"Correlation to benchmark (how closely the two move together): "
                    f"{b.get('correlation', UNAVAILABLE)}.")
         out.append(f"1-day 95% VaR: {s['var_95_1d_pct']}%. On 95% of days the loss was smaller than this.")
@@ -174,7 +173,8 @@ def render_analysis(a: StockAnalysis, full: bool = False) -> str:
     if reg.available:
         mk = reg.details.get("market")
         out.append(f"Regime (the stock's current phase): {reg.state}.")
-        out.append("Pattern in its moves (trending: they carry on; mean-reverting: they reverse): "
+        out.append("Pattern in its moves (trending: they carry on; mean-reverting: they reverse; "
+                   "no significant serial dependence: no clear pattern): "
                    f"{reg.details['dependence'].get('state')}.")
         if isinstance(mk, dict):
             out.append(f"Whole market: {mk['state']}.")
@@ -231,27 +231,30 @@ def _summary_sentence(a: StockAnalysis) -> str:
 DOMAIN_TITLES = {"technical": "Technicals", "candlestick": "Candlesticks", "pattern": "Chart patterns",
                  "fundamental": "Fundamentals", "news_sentiment": "News & sentiment", "risk": "Risk",
                  "regime": "Market regime", "forecast": "Forecast", "historical": "Similar past setups"}
-# What a jargon word in an evidence line means; a drill-down explains the ones its lines use.
+# What a term means, in plain words. Replies that explain a term read it here; a drill-down explains the
+# ones its own lines use.
 TERM_MEANINGS = {
-    "Swing structure": "Swing structure is the run of recent highs and lows.",
-    "RSI": "RSI compares recent gains with recent losses; it is high after strong rises.",
-    "MACD": "The MACD histogram is positive when short-term momentum is rising.",
-    "Bollinger": "Bollinger bands mark how far the price usually strays from its recent average.",
-    "ATRs": "An ATR is the stock's average daily price range.",
-    "volatility": "Volatility is how much the price swings.",
-    "drawdown": "A drawdown is a fall from a peak.",
-    "loaded history": "The loaded history is the run of past prices we hold.",
-    "Beta": "Beta compares the stock's moves with the market's; above 1 means it moves more.",
-    "EPS": "EPS is profit per share.",
-    "margin": "A margin is the share of sales kept as profit.",
-    "equity": "Equity is the owners' money in the business.",
-    "invested capital": "Invested capital is all the money put in by owners and lenders.",
-    "EBIT": "EBIT is profit before interest and tax.",
-    "Current ratio": "The current ratio is short-term assets against short-term debts.",
-    "P/E": "P/E is the price against a year's profit per share.",
-    "PEG": "PEG is the P/E divided by profit growth.",
-    "free cash flow": "Free cash flow is cash left after running and investing in the business.",
-    "statistically significant": "Not statistically significant means it could easily be chance.",
+    "Swing structure": "the run of recent highs and lows",
+    "RSI": "a 0 to 100 gauge of recent gains against recent losses",
+    "MACD histogram": "positive when short-term momentum is rising",
+    "Bollinger band": "a line that marks how far the price usually strays from its recent average",
+    "ATRs": "steps of the stock's average daily price range",
+    "Volatility": "how much the price swings in a year",
+    "Drawdown": "a fall from a peak",
+    "Max drawdown": "the biggest fall from a peak",
+    "Loaded history": "the run of past prices we hold",
+    "Beta": "how far the stock tends to move when the market moves; above 1 means it moves more",
+    "Sharpe ratio": "return for the risk taken",
+    "EPS": "profit per share",
+    "Margin": "the share of revenue kept as profit",
+    "Equity": "the owners' money in the business",
+    "Invested capital": "all the money put in by owners and lenders",
+    "EBIT": "profit before interest and tax",
+    "Current ratio": "short-term assets against short-term debts",
+    "P/E": "the price against a year's profit per share",
+    "PEG": "the P/E divided by profit growth",
+    "Free cash flow": "cash left after running and investing in the business",
+    "Not a statistically significant difference": "one that could easily be chance",
 }
 
 
@@ -261,7 +264,8 @@ def render_domain(a: StockAnalysis, domain: str) -> str:
         return f"No domain named {domain!r}. Available: {', '.join(a.results)}"
     score = "No score" if r.score is None else f"Score {r.score:+.2f}, {SCORE_SCALE}"
     head = [f"### {a.name} · {DOMAIN_TITLES.get(domain, domain.replace('_', ' '))}",
-            f"Overall: **{r.state}**. {score}. Confidence {r.confidence} out of 1. Data as of {str(r.as_of)[:10]}.", ""]
+            f"Overall: **{r.state}**. {score}. Confidence {r.confidence:.2f} out of 1. "
+            f"Data as of {str(r.as_of)[:10]}.", ""]
     if not r.available:
         return "\n".join(head + [f"{UNAVAILABLE}: {r.error}"])
     events = r.details.get("events") if domain == "news_sentiment" else None
@@ -274,7 +278,7 @@ def render_domain(a: StockAnalysis, domain: str) -> str:
     else:
         head += [f"- {_mark(e.direction)} [{e.kind()}] {e.claim}" for e in r.evidence]
         shown = " ".join(e.claim for e in r.evidence)
-        meanings = [m for t, m in TERM_MEANINGS.items() if re.search(rf"\b{re.escape(t)}\b", shown, re.I)]
+        meanings = [f"{t}: {m}." for t, m in TERM_MEANINGS.items() if re.search(rf"\b{re.escape(t)}\b", shown, re.I)]
         head += ["", " ".join(meanings)] if meanings else []
     weight_note = ("This part did not count toward the overall label (confidence 0)."
                    if r.confidence == 0 else "")
@@ -291,7 +295,7 @@ def render_report(a: StockAnalysis) -> str:
         f"*Analysis timestamp {a.analysis_timestamp}; price data as of {a.quality['last_date']}; "
         f"source {a.quality['source']}.*",
         "## 1. Executive summary", _summary_sentence(a),
-        f"Classification **{d.decision_support_label}**, score {d.score:+.2f}, confidence "
+        f"Label **{d.decision_support_label}**, score {d.score:+.2f}, confidence "
         f"{d.confidence:.2f}, uncertainty {d.uncertainty:.2f}.",
         "## 2. Company overview",
         str(profile.get("summary", UNAVAILABLE)) if profile else UNAVAILABLE,
@@ -353,11 +357,11 @@ def render_compare(analyses: Sequence[StockAnalysis]) -> str:
         ("Risk", *[a.results["risk"].state for a in analyses]),
         ("Revenue growth %", *[m(a, "revenue_growth") for a in analyses]),
         ("Net margin %", *[m(a, "net_margin") for a in analyses]),
-        ("ROE % (profit on owners' money)", *[m(a, "roe") for a in analyses]),
-        ("P/E (price to yearly profit)", *[m(a, "pe") for a in analyses]),
-        ("Volatility % (yearly swings)", *[risk(a, "annualized_vol_pct") for a in analyses]),
-        ("Max drawdown % (worst fall)", *[risk(a, "max_drawdown_pct") for a in analyses]),
-        ("Sharpe (return for risk)", *[risk(a, "sharpe") for a in analyses]),
+        (f"ROE % (profit on {TERM_MEANINGS['Equity']})", *[m(a, "roe") for a in analyses]),
+        (f"P/E ({TERM_MEANINGS['P/E']})", *[m(a, "pe") for a in analyses]),
+        (f"Volatility % ({TERM_MEANINGS['Volatility']})", *[risk(a, "annualized_vol_pct") for a in analyses]),
+        (f"Max drawdown % ({TERM_MEANINGS['Max drawdown']})", *[risk(a, "max_drawdown_pct") for a in analyses]),
+        (f"Sharpe ({TERM_MEANINGS['Sharpe ratio']})", *[risk(a, "sharpe") for a in analyses]),
         ("1-year return %", *[str(a.results["risk"].details["returns"].get("1y_pct"))
                               if a.results["risk"].available else "n/a" for a in analyses]),
     ]

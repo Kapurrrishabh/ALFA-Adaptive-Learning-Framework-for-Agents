@@ -48,7 +48,7 @@ class Decision:
     time_horizon: str
     data_timestamp: Optional[str]
     analysis_timestamp: str = field(default_factory=utcnow_iso)
-    note: str = ("Decision-support classification from structured evidence; not an order "
+    note: str = ("Decision-support label from structured evidence; not an order "
                  "and not a guarantee. SELL refers to an existing position; AVOID to a new one.")
 
     def to_dict(self) -> Dict[str, object]:
