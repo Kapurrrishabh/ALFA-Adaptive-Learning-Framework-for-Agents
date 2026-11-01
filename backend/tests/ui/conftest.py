@@ -43,6 +43,7 @@ def track_record(dates):
 def base_url(tmp_path_factory):
     import uvicorn
     import backend.advisory.calculators.performance as perf
+    import backend.api.app as app_module
     from backend.api.app import create_app
     from backend.api.orchestrator import Orchestrator
     from backend.config import DEFAULT_PORTFOLIO, resolve_symbol
@@ -76,6 +77,8 @@ def base_url(tmp_path_factory):
         mp.setattr(alfa_fan, "WEIGHTS", missing / "alfa.npz")
         mp.setattr(gru_line, "WEIGHTS", missing / "path_gru.npz")
         mp.setattr(insider, "load", no_insider)
+        # every browser test uses the one key, so together they pass the real per-minute limit; e2e tests the limiter
+        mp.setattr(app_module, "RATE_PER_MIN", 10 ** 6)
         orch = Orchestrator(provider, Store(":memory:"), use_rss_news=False)
         orch.save_portfolio(DEFAULT_PORTFOLIO, 0.0, "moderate", "medium", [{"symbol": "TEST", "side": "BUY", "quantity": 10,
                                                          "price": float(prices["close"].iloc[-120]), "trade_date": str(prices.index[-120].date())}])
