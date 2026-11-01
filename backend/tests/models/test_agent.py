@@ -995,11 +995,13 @@ def test_the_lessons_bm25_finds_are_served_in_the_rerankers_order():
     assert len(found) > 1 and reranked == found[::-1]
 
 
-def test_the_judge_does_not_reorder_the_lessons(market, router):
+def test_on_a_move_word_question_the_rerankers_first_lesson_is_served_over_one_the_judge_rates_higher(market, router):
     """Rated by closeness, "what is concentration risk" got the lesson on risk contribution at 0.758 against 0.742."""
-    built = news_reference(None, lessons=ranked(TAX_LESSONS), judge=rating(LESSON_FLOOR, LESSON_FLOOR + 0.2))
-    turn = agent(market, router, reference=built).answer("is elss a tax saver ?")
-    assert turn.served == TAX_LESSONS[0][1]
+    rates = lambda question, texts: [LESSON_FLOOR + 0.2 if TAX_LESSONS[1][1] in text else
+                                     LESSON_FLOOR + 0.01 if TAX_LESSONS[0][1] in text else 0.0 for text in texts]
+    built = news_reference(None, lessons=ranked(TAX_LESSONS), judge=rates)
+    turn = agent(market, router, reference=built).answer("do elss funds gain tax free ?")
+    assert turn.intent == "reference lesson" and turn.served == TAX_LESSONS[0][1]
 
 
 def test_a_question_whose_best_section_names_no_lesson_is_taught_one_the_judge_rates_over_the_floor(market, router):
