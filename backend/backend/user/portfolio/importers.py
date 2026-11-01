@@ -294,8 +294,13 @@ def _statement(sheets: Dict[str, List[Sequence[object]]]) -> Statement:
     (source, as_of), = statements
     read: Dict[bool, List[Row]] = {False: [], True: []}
     for layout, title, rows, (_, header, columns) in fits:
-        read[layout.is_fund] += [layout.read(_cells(row, columns, line), line) for line, row
-                                 in enumerate(rows[header + 1:], start=header + 2) if any(texts[title][line - 1])]
+        try:
+            read[layout.is_fund] += [layout.read(_cells(row, columns, line), line) for line, row
+                                     in enumerate(rows[header + 1:], start=header + 2) if any(texts[title][line - 1])]
+        except ValueError as exc:   # a row number alone doesn't say which sheet of a workbook it is on
+            if len(sheets) == 1:
+                raise
+            raise ValueError(f"Sheet {_short(title)!r}, {exc}") from exc
     others = [repr(_short(t)) for t in sheets if t not in titles]
     sheets_read = f"{' and '.join(repr(_short(t)) for t in titles)} sheet{'s were' if len(titles) > 1 else ' was'}"
     warnings = [f"Only the {sheets_read} read, not {' or '.join(others)}."] if others else []
