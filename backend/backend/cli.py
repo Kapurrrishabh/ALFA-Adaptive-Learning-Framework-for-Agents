@@ -15,6 +15,7 @@ from typing import List, Optional
 from backend.advisory.calculators import performance
 from backend.advisory import report as R
 from backend.api.jsonutil import sanitize
+from backend.config import DEFAULT_PORTFOLIO
 
 DEFAULT_DB = os.environ.get("STOCKINTEL_DB", str(DATA / "stockintel.db"))
 
@@ -36,7 +37,7 @@ def _orchestrator(args, llm_mode: str = "off"):
 
 def cmd_analyze(args) -> int:
     orch = _orchestrator(args, args.llm)
-    s = orch.session("cli")
+    s = orch.session(DEFAULT_PORTFOLIO, "cli")
     a = orch.analysis(s, args.symbol.upper(), horizon=args.horizon)
     if args.json:
         print(json.dumps(sanitize(a.to_dict()), indent=2))
@@ -46,7 +47,7 @@ def cmd_analyze(args) -> int:
         print(body)
     else:
         if args.llm == "narrate":
-            print(orch.handle(f"Analyze {args.symbol}", "cli").text)
+            print(orch.handle(f"Analyze {args.symbol}", DEFAULT_PORTFOLIO, "cli").text)
         else:
             print(R.render_analysis(a))
     return 0
@@ -63,14 +64,14 @@ def cmd_chat(args) -> int:
         if msg.lower() in ("quit", "exit"):
             return 0
         if msg:
-            reply = orch.handle(msg, "cli")
+            reply = orch.handle(msg, DEFAULT_PORTFOLIO, "cli")
             print(f"\n{reply.text}\n\n[{reply.intent} · {reply.timestamp}]")
 
 
 def cmd_screen(args) -> int:
     from backend.advisory.calculators.screener import screen
     orch = _orchestrator(args)
-    positions, _, _ = orch.holdings()
+    positions, _, _ = orch.holdings(DEFAULT_PORTFOLIO)
     res = screen(orch.service(), args.budget, args.risk, args.horizon, positions,
                  include_sectors=args.include, exclude_sectors=args.exclude)
     print(json.dumps(sanitize({k: v for k, v in res.items() if k != "also_scored"}), indent=2)
@@ -80,7 +81,7 @@ def cmd_screen(args) -> int:
 
 def cmd_query(args) -> int:
     orch = _orchestrator(args)
-    print(orch.handle(args.question, "cli").text)
+    print(orch.handle(args.question, DEFAULT_PORTFOLIO, "cli").text)
     return 0
 
 
@@ -88,17 +89,17 @@ def cmd_portfolio(args) -> int:
     orch = _orchestrator(args)
     if args.action == "import":
         data = json.loads(Path(args.file).read_text())
-        n = orch.save_portfolio(float(data.get("cash", 0)), data.get("risk_profile", "moderate"),
+        n = orch.save_portfolio(DEFAULT_PORTFOLIO, float(data.get("cash", 0)), data.get("risk_profile", "moderate"),
                                 data.get("horizon", "medium"), data["transactions"])
-        print(f"Imported {n} transactions into portfolio '{orch.portfolio_name}'.")
+        print(f"Imported {n} transactions into portfolio '{DEFAULT_PORTFOLIO}'.")
         return 0
     if args.action == "what-if":
         if not args.amount or not args.symbols:
             raise SystemExit("what-if needs --amount and --symbols")
         print(orch.handle(f"If I add {args.amount:.0f} rupees to {' '.join(args.symbols)} how does my "
-                          "portfolio risk change?", "cli").text)
+                          "portfolio risk change?", DEFAULT_PORTFOLIO, "cli").text)
         return 0
-    print(orch.handle("How is my portfolio performing?", "cli").text)
+    print(orch.handle("How is my portfolio performing?", DEFAULT_PORTFOLIO, "cli").text)
     return 0
 
 
@@ -296,7 +297,7 @@ def cmd_alerts(args) -> int:
             else:
                 print(f"{a.symbol}: no alert conditions.")
         return 0
-    print(orch.handle("show alerts", "cli").text)
+    print(orch.handle("show alerts", DEFAULT_PORTFOLIO, "cli").text)
     return 0
 
 
@@ -363,7 +364,7 @@ def cmd_insider_fetch(args) -> int:
 def cmd_signals(args) -> int:
     from backend.advisory.signals.advisor import plan, render
     orch = _orchestrator(args)
-    holdings, stored_cash, split_warnings = orch.signal_holdings()
+    holdings, stored_cash, split_warnings = orch.signal_holdings(DEFAULT_PORTFOLIO)
     capital = args.capital if args.capital is not None else stored_cash
     if not capital and not holdings:
         raise SystemExit("give --capital (new money to invest) or import a portfolio first")
@@ -378,7 +379,7 @@ def cmd_signals(args) -> int:
 
 
 def cmd_stops(args) -> int:
-    r = _orchestrator(args).handle("Check my stops", "cli")
+    r = _orchestrator(args).handle("Check my stops", DEFAULT_PORTFOLIO, "cli")
     print(r.text)
     return 1 if "error" in r.data else 0
 

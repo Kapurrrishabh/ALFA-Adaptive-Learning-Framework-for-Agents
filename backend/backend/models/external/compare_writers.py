@@ -15,6 +15,7 @@ import time
 from argparse import Namespace
 
 from backend.advisory import analyst
+from backend.config import DEFAULT_PORTFOLIO
 from backend.database.sources.provider import DataUnavailable
 from backend.models.external.language import OpenLM
 from backend.paths import DATA
@@ -27,7 +28,8 @@ OUT = DATA / "cache" / "writer_comparison.json"
 def build_facts(n: int):
     from backend.api.hub import Hub
     from backend.cli import DEFAULT_DB, _orchestrator
-    hub = Hub(_orchestrator(Namespace(db=DEFAULT_DB, demo=False)))
+    orch = _orchestrator(Namespace(db=DEFAULT_DB, demo=False))
+    hub, session = Hub(orch), orch.session(DEFAULT_PORTFOLIO, "compare-writers")
     p = hub.panel()
     traded = (p.close * p.volume).iloc[-250:].mean()
     names = [s for s in hub.names().query("nifty200")["symbol"] if s in traded.index]
@@ -36,7 +38,7 @@ def build_facts(n: int):
         if len(sheets) == n:
             break
         try:
-            sheets.append(hub.analyst_inputs(sym))
+            sheets.append(hub.analyst_inputs(sym, session))
         except DataUnavailable as exc:      # e.g. a recent listing has too little history for the models
             logging.info("skip %s: %s", sym, exc)
             refused.append(f"{sym}: {exc}")

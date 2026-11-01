@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from backend.advisory import report as R
 from backend.user.portfolio.alerts import evaluate
 from backend.api.app import create_app
-from backend.config import FORECAST_DAYS
+from backend.config import DEFAULT_PORTFOLIO, FORECAST_DAYS
 from backend.api.orchestrator import Orchestrator
 from backend.advisory.calculators.screener import screen
 from backend.advisory.service import AnalysisService
@@ -94,7 +94,7 @@ def test_the_analysis_and_its_drill_down_give_operating_margin_one_meaning(servi
 def test_every_reply_that_explains_volatility_reads_the_one_meaning(orch, monkeypatch):
     monkeypatch.setitem(R.TERM_MEANINGS, "Volatility", "a meaning only this test writes")
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
-    replies = [orch.handle(q, "terms").text for q in
+    replies = [orch.handle(q, DEFAULT_PORTFOLIO, "terms").text for q in
                ("Analyze TEST", "how risky is TEST?", "Compare TEST with PEER", "Is the market in a downtrend?")]
     assert all("a meaning only this test writes" in r for r in replies)
 
@@ -104,13 +104,13 @@ def test_every_reply_that_explains_volatility_reads_the_one_meaning(orch, monkey
 def test_chat_replies_read_at_plain_language_grade(orch, monkeypatch, question, most):
     from backend.models.external.eval_user_questions import grade, plain
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
-    assert grade(plain(orch.handle(question, "plain").text)) <= most
+    assert grade(plain(orch.handle(question, DEFAULT_PORTFOLIO, "plain").text)) <= most
 
 
 def test_the_market_reply_quotes_the_backtested_volatility_target(orch, monkeypatch):
     import backend.advisory.signals.strategies as strategies
     monkeypatch.setattr(strategies, "VOL_TARGET", 0.25)
-    assert "To aim for 25% volatility" in orch.handle("Is the market in a downtrend?", "vol").text
+    assert "To aim for 25% volatility" in orch.handle("Is the market in a downtrend?", DEFAULT_PORTFOLIO, "vol").text
 
 
 def test_full_report_has_all_18_sections(service):
@@ -129,50 +129,50 @@ def test_missing_fundamentals_are_unavailable_not_invented(local_provider, servi
 
 
 def test_multi_turn_conversation_keeps_context(orch):
-    assert orch.handle("Analyze TEST", "s").intent == "analyze"
-    r = orch.handle("Why is the technical state like that?", "s")
+    assert orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "s").intent == "analyze"
+    r = orch.handle("Why is the technical state like that?", DEFAULT_PORTFOLIO, "s")
     assert r.intent == "domain" and "· Technicals" in r.text
-    r = orch.handle("What about fundamentals?", "s")
+    r = orch.handle("What about fundamentals?", DEFAULT_PORTFOLIO, "s")
     assert "· Fundamentals" in r.text and "Revenue changed" in r.text
-    r = orch.handle("Compare it with PEER", "s")
+    r = orch.handle("Compare it with PEER", DEFAULT_PORTFOLIO, "s")
     assert r.intent == "compare" and "TEST" in r.text and "PEER" in r.text
-    r = orch.handle("Why?", "s")
+    r = orch.handle("Why?", DEFAULT_PORTFOLIO, "s")
     assert r.intent == "explain_decision" and r.text.startswith("Why TEST")
 
 
 def test_why_reply_rounds_each_area_score_and_confidence_to_two_decimals(orch):
-    orch.handle("Analyze TEST", "places")
-    votes = orch.handle("why?", "places").text.split("How each area voted:")[1].split("Main ")[0]
+    orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "places")
+    votes = orch.handle("why?", DEFAULT_PORTFOLIO, "places").text.split("How each area voted:")[1].split("Main ")[0]
     assert not re.search(r"\d\.\d{3}", votes)
 
 
 def test_why_a_negative_score_heads_its_evidence_as_negatives(orch, local_provider):
     local_provider.frames["FALL.NS"] = synthetic.ohlcv(900, seed=3, drift=-0.003, end=END)
     orch.known.add("FALL")
-    orch.handle("Analyze FALL", "fall")
-    reply = orch.handle("why?", "fall")
+    orch.handle("Analyze FALL", DEFAULT_PORTFOLIO, "fall")
+    reply = orch.handle("why?", DEFAULT_PORTFOLIO, "fall")
     assert reply.data["payload"]["decision"]["score"] < 0
     assert "Main negatives:" in reply.text and "+ [FACT]" not in reply.text
 
 
 def test_budget_question_uses_the_session_stock(orch):
-    orch.handle("Analyze TEST", "b")
-    r = orch.handle("I have ₹1 lakh. How does my budget affect the analysis?", "b")
+    orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "b")
+    r = orch.handle("I have ₹1 lakh. How does my budget affect the analysis?", DEFAULT_PORTFOLIO, "b")
     assert r.intent == "budget_analysis" and "position limit" in r.text
 
 
 def test_portfolio_questions_are_computed_from_stored_transactions(orch):
-    orch.save_portfolio(5000.0, "moderate", "long", [
+    orch.save_portfolio(DEFAULT_PORTFOLIO, 5000.0, "moderate", "long", [
         {"symbol": "TEST", "side": "BUY", "quantity": 10, "price": 100, "trade_date": "2025-01-02", "sector": "Industrials"},
         {"symbol": "PEER", "side": "BUY", "quantity": 5, "price": 100, "trade_date": "2025-01-02", "sector": "Energy"}])
-    r = orch.handle("How is my portfolio performing?", "p")
+    r = orch.handle("How is my portfolio performing?", DEFAULT_PORTFOLIO, "p")
     assert r.intent == "portfolio_summary" and "Total value" in r.text and "Risk contribution" in r.text
-    r = orch.handle("If I add ₹20,000 to PEER how does my portfolio risk change?", "p")
+    r = orch.handle("If I add ₹20,000 to PEER how does my portfolio risk change?", DEFAULT_PORTFOLIO, "p")
     assert r.intent == "portfolio_what_if" and "all in PEER" in r.text
 
 
 def test_portfolio_question_without_a_portfolio_says_so(orch):
-    r = orch.handle("How is my portfolio performing?", "p")
+    r = orch.handle("How is my portfolio performing?", DEFAULT_PORTFOLIO, "p")
     assert "No portfolio" in r.text
 
 
@@ -202,10 +202,10 @@ def _days_ago(n):
 def test_tax_note_dates_a_rebought_holding_from_its_open_lot(orch, signal_inputs):
     close = signal_inputs
     px = {d: float(close.loc[:d].iloc[-1]) for d in (_days_ago(1000), _days_ago(700), _days_ago(70))}
-    orch.save_portfolio(0.0, "moderate", "long", [
+    orch.save_portfolio(DEFAULT_PORTFOLIO, 0.0, "moderate", "long", [
         {"symbol": "TEST", "side": side, "quantity": 10, "price": px[d], "trade_date": d}
         for side, d in (("BUY", _days_ago(1000)), ("SELL", _days_ago(700)), ("BUY", _days_ago(70)))])
-    r = orch.handle("Rebalance my portfolio", "t")
+    r = orch.handle("Rebalance my portfolio", DEFAULT_PORTFOLIO, "t")
     test = next(a for a in r.data["payload"]["actions"] if a["symbol"] == "TEST")
     assert test["tax_note"].startswith("short-term")
 
@@ -219,7 +219,7 @@ def _split_history(close, split_day=None):
 
 
 def _store_test_buy(orch, cash, price, day):
-    orch.save_portfolio(cash, "moderate", "long", [
+    orch.save_portfolio(DEFAULT_PORTFOLIO, cash, "moderate", "long", [
         {"symbol": "TEST", "side": "BUY", "quantity": 10, "price": price, "trade_date": day}])
 
 
@@ -227,7 +227,7 @@ def test_signal_plan_refuses_a_buy_stored_in_pre_split_shares(orch, local_provid
     close, d = signal_inputs, _days_ago(200)
     local_provider.split_histories["TEST.NS"] = _split_history(close, close.index[-50])
     _store_test_buy(orch, 100_000.0, 2 * float(close.loc[:d].iloc[-1]), d)
-    r = orch.handle("Rebalance my portfolio", "t")
+    r = orch.handle("Rebalance my portfolio", DEFAULT_PORTFOLIO, "t")
     assert r.text.startswith(f"I couldn't complete that: TEST: since your buy on {d}, each share has become 2")
     assert "Re-enter it as 2× the shares" in r.text
 
@@ -236,7 +236,7 @@ def test_signal_plan_asks_for_a_check_when_the_split_record_and_prices_disagree(
     close, d = signal_inputs, _days_ago(200)
     local_provider.split_histories["TEST.NS"] = _split_history(close, close.index[-50])
     _store_test_buy(orch, 100_000.0, 10 * float(close.loc[:d].iloc[-1]), d)
-    r = orch.handle("Rebalance my portfolio", "t")
+    r = orch.handle("Rebalance my portfolio", DEFAULT_PORTFOLIO, "t")
     assert "The two do not agree" in r.text and "Re-enter it as" not in r.text
 
 
@@ -268,7 +268,7 @@ def test_signal_plan_keeps_a_buy_already_in_post_split_shares(orch, local_provid
     close, d = signal_inputs, _days_ago(200)
     local_provider.split_histories["TEST.NS"] = _split_history(close, close.index[-50])
     _store_test_buy(orch, 100_000.0, float(close.loc[:d].iloc[-1]), d)
-    p = orch.handle("Rebalance my portfolio", "t").data["payload"]
+    p = orch.handle("Rebalance my portfolio", DEFAULT_PORTFOLIO, "t").data["payload"]
     assert "TEST" in [a["symbol"] for a in p["actions"]]
 
 
@@ -278,14 +278,14 @@ def test_signal_plan_does_not_mistake_dividends_for_a_split(orch, local_provider
     close, d = signal_inputs, _days_ago(200)
     local_provider.split_histories["TEST.NS"] = _split_history(2 * close)
     _store_test_buy(orch, 100_000.0, 2 * float(close.loc[:d].iloc[-1]), d)
-    p = orch.handle("Rebalance my portfolio", "t").data["payload"]
+    p = orch.handle("Rebalance my portfolio", DEFAULT_PORTFOLIO, "t").data["payload"]
     assert "TEST" in [a["symbol"] for a in p["actions"]] and not any("split" in w for w in p["warnings"])
 
 
 def test_signal_plan_says_when_it_could_not_check_for_splits(orch, signal_inputs):
     d = _days_ago(200)
     _store_test_buy(orch, 100_000.0, float(signal_inputs.loc[:d].iloc[-1]), d)
-    p = orch.handle("Rebalance my portfolio", "t").data["payload"]
+    p = orch.handle("Rebalance my portfolio", DEFAULT_PORTFOLIO, "t").data["payload"]
     assert any(w.startswith("Could not check TEST (no local split history") for w in p["warnings"])
 
 
@@ -293,12 +293,12 @@ def test_stop_check_flags_a_split_instead_of_a_stop_hit(orch, local_provider, si
     close, d = signal_inputs, _days_ago(200)
     local_provider.split_histories["TEST.NS"] = _split_history(close, close.index[-50])
     _store_test_buy(orch, 0.0, 2 * float(close.loc[:d].iloc[-1]), d)
-    r = orch.handle("Check my stops", "t")
+    r = orch.handle("Check my stops", DEFAULT_PORTFOLIO, "t")
     assert "through splits or bonus issues" in r.text and "STOP HIT" not in r.text
 
 
 def test_knowledge_answer_never_contains_live_data(orch):
-    r = orch.handle("What is RSI?", "k")
+    r = orch.handle("What is RSI?", DEFAULT_PORTFOLIO, "k")
     assert r.intent == "knowledge" and "Static knowledge" in r.text and "Relative Strength" in r.text
 
 
@@ -410,15 +410,62 @@ def test_rejected_portfolio_post_leaves_the_stored_portfolio_intact(orch):
     bad = {"cash": 0, "transactions": [{"symbol": "TEST", "side": "SELL", "quantity": 5, "price": 10,
                                         "trade_date": "2025-01-01"}]}
     assert client.post("/portfolio", json=bad, headers=h).status_code == 400
-    stored = orch.store.portfolio("default")
+    stored = orch.store.portfolio(DEFAULT_PORTFOLIO)
     assert stored["cash"] == 100 and len(stored["transactions"]) == 1
 
 
 def test_held_status_does_not_depend_on_how_the_ticker_was_typed(orch):
-    orch.save_portfolio(0.0, "moderate", "medium", [
+    orch.save_portfolio(DEFAULT_PORTFOLIO, 0.0, "moderate", "medium", [
         {"symbol": "TEST.NS", "side": "BUY", "quantity": 5, "price": 10, "trade_date": "2025-01-01"}])
-    assert orch.analysis(orch.session("h"), "TEST").held
-    assert orch.store.portfolio("default")["transactions"][0]["symbol"] == "TEST"
+    assert orch.analysis(orch.session(DEFAULT_PORTFOLIO, "h"), "TEST").held
+    assert orch.store.portfolio(DEFAULT_PORTFOLIO)["transactions"][0]["symbol"] == "TEST"
+
+
+def test_one_analysis_serves_two_portfolios_with_the_same_held_flag(orch, monkeypatch):
+    svc = orch.service()
+    analyze, calls = svc.analyze, []
+    monkeypatch.setattr(svc, "analyze", lambda *a, **k: calls.append(a) or analyze(*a, **k))
+    for portfolio in ("alice", "bob"):
+        orch.analysis(orch.session(portfolio, "shared"), "TEST")
+    assert len(calls) == 1
+
+
+def test_old_sessions_are_dropped_past_the_cap(orch, monkeypatch):
+    import backend.api.orchestrator as orchestrator
+    monkeypatch.setattr(orchestrator, "SESSIONS_KEPT", 2)
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    for session_id in ("a", "b", "c"):
+        orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, session_id)
+    follow_ups = [orch.handle("What about fundamentals?", DEFAULT_PORTFOLIO, session_id).intent for session_id in ("a", "c")]
+    assert follow_ups == ["help", "domain"]
+
+
+def _weak_ref_to_analysis(orch, s, symbol):
+    """A weak reference to `symbol`'s analysis, so a test can see when the orchestrator lets go of it."""
+    import weakref
+    return weakref.ref(orch.analysis(s, symbol))
+
+
+def test_expired_analyses_are_evicted(orch, monkeypatch):
+    import gc
+    import backend.api.orchestrator as orchestrator
+    monkeypatch.setattr(orchestrator, "ANALYSIS_REUSE_S", 0)
+    s = orch.session(DEFAULT_PORTFOLIO, "evict")
+    expired = _weak_ref_to_analysis(orch, s, "TEST")
+    orch.analysis(s, "PEER")
+    gc.collect()
+    assert expired() is None
+
+
+def test_analyses_past_the_cap_drop_the_oldest(orch, monkeypatch):
+    import gc
+    import backend.api.orchestrator as orchestrator
+    monkeypatch.setattr(orchestrator, "ANALYSES_KEPT", 1)
+    s = orch.session(DEFAULT_PORTFOLIO, "cap")
+    oldest = _weak_ref_to_analysis(orch, s, "TEST")
+    orch.analysis(s, "PEER")
+    gc.collect()
+    assert oldest() is None
 
 
 def test_api_market_endpoint(orch, local_provider):
@@ -527,9 +574,31 @@ def test_portfolio_single_transaction_add_and_delete(app_client, orch):
     tx = {"symbol": "TEST", "side": "BUY", "quantity": 3, "price": 100, "trade_date": "2025-01-02"}
     assert app_client.post("/portfolio/transactions", json=tx, headers=h).status_code == 200
     assert app_client.post("/portfolio/transactions", json={**tx, "side": "SELL", "quantity": 9}, headers=h).status_code == 400
-    assert len(orch.store.portfolio("default")["transactions"]) == 1
+    assert len(orch.store.portfolio(DEFAULT_PORTFOLIO)["transactions"]) == 1
     assert app_client.delete("/portfolio/transactions/0", headers=h).status_code == 200
-    assert orch.store.portfolio("default")["transactions"] == []
+    assert orch.store.portfolio(DEFAULT_PORTFOLIO)["transactions"] == []
+
+
+def test_two_transactions_added_at_once_are_both_kept(app_client, orch, monkeypatch):
+    """Each add reads the stored list and writes it back whole, so two at once could keep only the later one."""
+    import threading
+    read, both_reading = orch.store.portfolio, threading.Barrier(2, timeout=1)
+
+    def read_together(name):
+        try:            # under the lock the second add cannot read until the first has saved, so this times out
+            both_reading.wait()
+        except threading.BrokenBarrierError:
+            pass
+        return read(name)
+    monkeypatch.setattr(orch.store, "portfolio", read_together)
+    tx = {"symbol": "TEST", "side": "BUY", "quantity": 3, "price": 100, "trade_date": "2025-01-02"}
+    adds = [threading.Thread(target=app_client.post, args=("/portfolio/transactions",),
+                             kwargs={"json": tx, "headers": {"X-API-Key": KEY}}) for _ in range(2)]
+    for add in adds:
+        add.start()
+    for add in adds:
+        add.join()
+    assert len(read(DEFAULT_PORTFOLIO)["transactions"]) == 2
 
 
 def test_ui_technical_chart_carries_geometry_markers_cone_and_records(app_client):
@@ -557,11 +626,23 @@ def test_pattern_geometry_points_are_the_swing_points_used():
 
 
 def test_portfolio_history_rebuilds_value_from_transactions(app_client, orch):
-    orch.save_portfolio(0.0, "moderate", "medium", [
+    orch.save_portfolio(DEFAULT_PORTFOLIO, 0.0, "moderate", "medium", [
         {"symbol": "TEST", "side": "BUY", "quantity": 10, "price": 100, "trade_date": "2025-06-02"}])
     h = app_client.get("/ui/portfolio/history", headers={"X-API-Key": KEY}).json()
     assert h["dates"][0] >= "2025-06-02" and h["invested"][-1] == pytest.approx(1000)
     assert all(v > 0 for v in h["value"])
+
+
+@pytest.mark.parametrize("sees_alices_buy", [
+    lambda orch, s: orch.hub.verdict("TEST", s)["held"],
+    lambda orch, s: orch.hub.portfolio_history(s.portfolio)["invested"][-1] == 1000,
+    lambda orch, s: "TEST" in [h["symbol"] for h in orch.portfolio_report(s)[0].holdings]],
+    ids=["verdict", "history", "report"])
+def test_two_portfolios_do_not_see_each_others_holdings(app_client, orch, sees_alices_buy):
+    for portfolio, symbol, quantity in (("alice", "TEST", 10), ("bob", "PEER", 5)):
+        orch.save_portfolio(portfolio, 0.0, "moderate", "medium", [
+            {"symbol": symbol, "side": "BUY", "quantity": quantity, "price": 100, "trade_date": "2025-06-02"}])
+    assert sees_alices_buy(orch, orch.session("alice", "web")) and not sees_alices_buy(orch, orch.session("bob", "web"))
 
 
 def test_performance_endpoint_reports_missing_build_cleanly(app_client, monkeypatch, tmp_path):
@@ -580,7 +661,7 @@ def test_builder_spends_within_capital_and_apply_records_the_buys(app_client, or
     assert len(b["backcast"]["dates"]) == len(b["backcast"]["basket"]) == len(b["backcast"]["nifty"])
     body = {"holdings": [{"symbol": x["symbol"], "shares": x["shares"], "price": x["price"]} for x in b["holdings"]]}
     assert app_client.post("/ui/builder/apply", json=body, headers=h).status_code == 200
-    txs = orch.store.portfolio("default")["transactions"]
+    txs = orch.store.portfolio(DEFAULT_PORTFOLIO)["transactions"]
     assert [t["symbol"] for t in txs] == [x["symbol"] for x in b["holdings"]]
     assert all(t["side"] == "BUY" and t["trade_date"] == _date.today().isoformat() for t in txs)
 
@@ -627,7 +708,7 @@ def test_agent_ask_carries_the_chat_session_to_the_agent(orch, monkeypatch):
     monkeypatch.setattr(SelfAgentClient, "ask", lambda self, question, subject="", *, session: sessions.append(session))
     client = TestClient(create_app(orch, api_key=KEY))
     client.post("/ui/agent/ask", json={"message": "Why?", "session_id": "web-1"}, headers={"X-API-Key": KEY})
-    assert sessions == ["web-1"]
+    assert sessions == [f"{DEFAULT_PORTFOLIO}:web-1"]
 
 
 def test_phone_install_manifest_and_service_worker_are_served(app_client):
@@ -916,7 +997,7 @@ def test_the_app_reads_company_news_from_the_newswire_not_google(monkeypatch, tm
 
 def test_the_news_view_lists_linked_headlines_not_evidence_lines(orch):
     from backend.advisory import report as R
-    a = orch.analysis(orch.session("news"), "TEST")
+    a = orch.analysis(orch.session(DEFAULT_PORTFOLIO, "news"), "TEST")
     shown = R.render_domain(a, "news_sentiment")
     assert shown.startswith("### ") and "· News & sentiment" in shown and "source=" not in shown
 
@@ -1106,17 +1187,34 @@ def test_analyst_note_falls_back_to_the_computed_note_when_models_are_off(app_cl
     assert r["written_by"] is None and r["text"] == an.computed_note(f) and "switched off" in r["draft_rejected"][0]
 
 
+def test_the_analyst_note_is_not_shared_between_a_holder_and_a_non_holder(app_client, orch, monkeypatch):
+    """The note quotes the verdict, which says HOLD / ADD to someone who holds the stock and BUY to anyone else."""
+    import backend.advisory.analyst as an
+    import backend.api.hub as hubmod
+    from tests.app.test_nlu_llm import _analyst_facts
+    f, writer = _analyst_facts(), _Picker("A draft.")
+    monkeypatch.setattr(hubmod.Hub, "ml_enabled", lambda self: True)
+    monkeypatch.setattr(hubmod.Hub, "writer", lambda self: writer)
+    monkeypatch.setattr(hubmod.Hub, "ai_forecast", lambda self, sym, model: {})
+    monkeypatch.setattr(an, "facts", lambda **inputs: f)
+    orch.save_portfolio("holder", 0.0, "moderate", "medium", [
+        {"symbol": "TEST", "side": "BUY", "quantity": 10, "price": 100, "trade_date": "2025-06-02"}])
+    for portfolio in ("holder", "non-holder"):
+        orch.hub.analyst_note("TEST", orch.session(portfolio, "note"))
+    assert len(writer.prompts) == 2
+
+
 def test_an_unrecognised_question_is_routed_by_the_language_model(orch, monkeypatch):
     writer = _Picker("market_regime")
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: writer)
-    reply = orch.handle("what is going on out there?", "route")
+    reply = orch.handle("what is going on out there?", DEFAULT_PORTFOLIO, "route")
     assert reply.intent == "market_regime" and "Nifty market state" in reply.text
     assert "market_regime:" in writer.prompts[0]
 
 
 def test_a_question_the_language_model_cannot_place_says_so_instead_of_guessing(orch, monkeypatch):
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
-    reply = orch.handle("what is the weather in Mumbai?", "route2")
+    reply = orch.handle("what is the weather in Mumbai?", DEFAULT_PORTFOLIO, "route2")
     assert reply.data["no_answer"] and "don't have a lesson" in reply.text
 
 
@@ -1125,13 +1223,13 @@ def test_chat_works_without_a_language_model(orch, monkeypatch):
     def no_writer(self):
         raise LLMUnavailable("no torch and no Space")
     monkeypatch.setattr(type(orch.hub), "writer", no_writer)
-    assert orch.handle("what is going on out there?", "route3").data["no_answer"]
+    assert orch.handle("what is going on out there?", DEFAULT_PORTFOLIO, "route3").data["no_answer"]
 
 
 def test_a_vague_question_is_not_answered_with_an_unrelated_lesson(orch, monkeypatch):
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
     for question in ("is it a good day", "anything new", "what is going on out there?"):
-        assert orch.handle(question, "vague").data["no_answer"], question
+        assert orch.handle(question, DEFAULT_PORTFOLIO, "vague").data["no_answer"], question
 
 
 @pytest.fixture

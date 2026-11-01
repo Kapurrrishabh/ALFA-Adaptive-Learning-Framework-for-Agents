@@ -40,6 +40,7 @@ MARKETS: Dict[str, Market] = {
 }
 
 DEFAULT_MARKET = "NSE"
+DEFAULT_PORTFOLIO = "default"      # the one portfolio the shared API key and the CLI use
 
 
 def resolve_symbol(symbol: str, market: Optional[str] = None) -> str:

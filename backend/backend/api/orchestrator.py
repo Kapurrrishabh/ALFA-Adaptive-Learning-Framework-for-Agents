@@ -35,7 +35,13 @@ from backend.advisory.service import AnalysisService, StockAnalysis
 from backend.database.storage import Store
 
 log = logging.getLogger("stockintel.orchestrator")
-SESSION_REUSE_S = 900
+ANALYSIS_REUSE_S = 900
+# Provisional: the largest analysis stored by the live app takes about 0.2 MB once loaded (tracemalloc),
+# so a full cache holds about 40 MB.
+ANALYSES_KEPT = 200
+# Provisional, not measured: far more open chats than one deployment has. A dropped session only loses
+# its chat context, so its next "why?" asks which stock.
+SESSIONS_KEPT = 2000
 SYMBOL_RE = re.compile(r"^\^?[A-Z0-9&\-]{1,20}(\.(NS|BO))?$")
 DOMAINS = ("technical", "candlestick", "pattern", "fundamental", "news_sentiment", "risk",
            "regime", "forecast", "historical")
@@ -71,9 +77,9 @@ def _split_note(symbol: str, lots: List[Tuple[str, float, float]], history: pd.D
 
 @dataclass
 class Session:
+    portfolio: str
     session_id: str
     symbols: List[Tuple[str, str]] = field(default_factory=list)
-    analyses: Dict[str, Tuple[float, StockAnalysis]] = field(default_factory=dict)
     budget: Optional[float] = None
     horizon: str = "medium"
     risk_profile: str = "moderate"
@@ -99,19 +105,20 @@ class Reply:
 
 
 class Orchestrator:
-    def __init__(self, provider: Provider, store: Store, portfolio_name: str = "default",
+    def __init__(self, provider: Provider, store: Store,
                  llm_mode: str = "off", use_rss_news: bool = True, llm_client: Any = None):
         if llm_mode not in ("off", "narrate", "agent"):
             raise ValueError(f"llm_mode must be off, narrate or agent; got {llm_mode!r}")
         self.provider, self.store = provider, store
-        self.portfolio_name = portfolio_name
         self.llm_mode = llm_mode
         self.use_rss_news = use_rss_news
         self._services: Dict[str, AnalysisService] = {}
-        self.sessions: Dict[str, Session] = {}
+        self.sessions: Dict[Tuple[str, str], Session] = {}
+        self._analyses: Dict[str, Tuple[float, StockAnalysis]] = {}
         import threading
         self._locks: Dict[str, Any] = {}
         self._locks_guard = threading.Lock()
+        self._caches_guard = threading.Lock()
         self.universe = load_universe()
         self.known = set(self.universe["symbol"])
         self.research_phrases = [p for phrases, _, _ in CRITERIA.values() for p in phrases]
@@ -131,10 +138,20 @@ class Orchestrator:
                                                      forecast_models=models, pattern_priors=priors)
         return self._services[market]
 
-    def session(self, session_id: str) -> Session:
-        return self.sessions.setdefault(session_id, Session(session_id))
+    def session(self, portfolio: str, session_id: str) -> Session:
+        key = (portfolio, session_id)
+        with self._caches_guard:
+            s = self.sessions.pop(key, None) or Session(portfolio, session_id)
+            self.sessions[key] = s
+            if len(self.sessions) > SESSIONS_KEPT:
+                del self.sessions[next(iter(self.sessions))]
+        return s
 
-    def save_portfolio(self, cash: float, risk_profile: str, horizon: str,
+    def portfolio_lock(self, portfolio: str):
+        """Held around a read-modify-write of one portfolio, so two requests cannot drop each other's change."""
+        return self._key_lock("portfolio:" + portfolio)
+
+    def save_portfolio(self, portfolio: str, cash: float, risk_profile: str, horizon: str,
                        transactions: List[Dict[str, Any]]) -> int:
         """Validate (FIFO, no oversells) before anything is written."""
         if risk_profile not in RISK_PROFILES:
@@ -142,12 +159,12 @@ class Orchestrator:
         txs = [Transaction(**{k: t[k] for k in ("symbol", "side", "quantity", "price", "trade_date")},
                            fees=t.get("fees", 0.0), sector=t.get("sector")) for t in transactions]
         build_positions(txs)
-        self.store.save_portfolio(self.portfolio_name, cash, risk_profile, horizon,
+        self.store.save_portfolio(portfolio, cash, risk_profile, horizon,
                                   [t.__dict__ for t in txs])
         return len(txs)
 
-    def holdings(self) -> Tuple[Dict[str, Position], float, Dict[str, Any]]:
-        p = self.store.portfolio(self.portfolio_name)
+    def holdings(self, portfolio: str) -> Tuple[Dict[str, Position], float, Dict[str, Any]]:
+        p = self.store.portfolio(portfolio)
         if p is None:
             return {}, 0.0, {}
         txs = [Transaction(**t) for t in p["transactions"]]
@@ -156,13 +173,13 @@ class Orchestrator:
     def analysis(self, s: Session, symbol: str, market: str = "NSE", horizon: Optional[str] = None) -> StockAnalysis:
         if not SYMBOL_RE.match(symbol.upper()):
             raise ValueError(f"{symbol!r} is not a valid ticker symbol")
-        positions, _, _ = self.holdings()
+        positions, _, _ = self.holdings(s.portfolio)
         pos = positions.get(canonical_symbol(symbol, market))
         held = pos is not None and pos.quantity > 0
         key = f"{market}:{symbol.upper()}:{horizon or s.horizon}:{held}"
         with self._key_lock(key):
-            hit = s.analyses.get(key)
-            if hit and time.time() - hit[0] < SESSION_REUSE_S:
+            hit = self._analyses.get(key)
+            if hit and time.time() - hit[0] < ANALYSIS_REUSE_S:
                 return hit[1]
             return self._compute_analysis(s, key, symbol, market, horizon, held)
 
@@ -175,7 +192,13 @@ class Orchestrator:
     def _compute_analysis(self, s: Session, key: str, symbol: str, market: str,
                           horizon: Optional[str], held: bool) -> StockAnalysis:
         a = self.service(market).analyze(symbol, held=held, horizon=horizon or s.horizon)
-        s.analyses[key] = (time.time(), a)
+        now = time.time()
+        with self._caches_guard:
+            for old in [k for k, (at, _) in self._analyses.items() if now - at >= ANALYSIS_REUSE_S]:
+                del self._analyses[old]
+            self._analyses[key] = (now, a)
+            if len(self._analyses) > ANALYSES_KEPT:
+                del self._analyses[next(iter(self._analyses))]
         previous = self.store.analyses(a.symbol, limit=1)
         alert = evaluate_alert(a, previous[0] if previous else None)
         if alert:
@@ -209,8 +232,8 @@ class Orchestrator:
         raise ValueError("Which stock? Name a ticker, e.g. 'Analyze RELIANCE'.")
 
     # --- entry point --------------------------------------------------------------
-    def handle(self, message: str, session_id: str = "default") -> Reply:
-        s = self.session(session_id)
+    def handle(self, message: str, portfolio: str, session_id: str) -> Reply:
+        s = self.session(portfolio, session_id)
         intent = classify(message, sorted(self.known), s.current is not None, self.research_phrases)
         if intent.horizon:
             s.horizon = intent.horizon
@@ -315,7 +338,7 @@ class Orchestrator:
 
     def _h_screen(self, s: Session, i: Intent) -> Reply:
         s.budget = i.amount
-        positions, _, _ = self.holdings()
+        positions, _, _ = self.holdings(s.portfolio)
         res = screen(self.service(), i.amount, risk_profile=s.risk_profile, horizon=s.horizon,
                      positions=positions, include_sectors=i.include_sectors,
                      exclude_sectors=i.exclude_sectors)
@@ -470,9 +493,9 @@ class Orchestrator:
 
     # portfolio ---------------------------------------------------------------------
     def portfolio_report(self, s: Session):
-        positions, cash, meta = self.holdings()
+        positions, cash, meta = self.holdings(s.portfolio)
         if not positions:
-            raise ValueError(f"No portfolio named {self.portfolio_name!r} is stored. Add holdings with "
+            raise ValueError("No portfolio is stored. Add holdings with "
                              "`stockintel portfolio import holdings.json` or POST /portfolio.")
         svc = self.service()
         prices = {sym: svc.history(sym)["close"] for sym, p in positions.items() if p.quantity > 0}
@@ -484,7 +507,7 @@ class Orchestrator:
     def _h_portfolio_summary(self, s: Session, i: Intent) -> Reply:
         rep, *_ = self.portfolio_report(s)
         d = rep.to_dict()
-        self.store.save_snapshot(self.portfolio_name, rep.total_value, d)
+        self.store.save_snapshot(s.portfolio, rep.total_value, d)
         return Reply(R.render_portfolio(d), i.name, {"payload": d}, ["portfolio_summary"])
 
     _h_portfolio_risk = _h_portfolio_exposure = _h_portfolio_changes = _h_portfolio_cash = \
@@ -535,10 +558,10 @@ class Orchestrator:
         res = what_if(positions, cash, prices, scenarios, meta.get("risk_profile", s.risk_profile))
         return Reply(R.render_what_if(res), i.name, {"payload": res}, ["portfolio_what_if"])
 
-    def signal_holdings(self) -> Tuple[list, float, List[str]]:
+    def signal_holdings(self, portfolio: str) -> Tuple[list, float, List[str]]:
         """Stored holdings, cash and warnings for a signal plan; refuses buys stored in pre-split shares."""
         from backend.advisory.signals.advisor import Holding
-        positions, cash, _ = self.holdings()
+        positions, cash, _ = self.holdings(portfolio)
         holdings = [Holding(k, p.lots) for k, p in positions.items() if p.quantity > 0]
         split_notes, unchecked = [], []
         for h in holdings:
@@ -557,7 +580,7 @@ class Orchestrator:
         from backend.advisory.signals.advisor import plan
         panel = universe_panel("nifty500", "10y")
         bench = self.service().history("^NSEI")["close"]
-        holdings, cash, split_warnings = self.signal_holdings()
+        holdings, cash, split_warnings = self.signal_holdings(s.portfolio)
         capital = i.amount if i.amount else cash
         if not capital and not holdings:
             raise ValueError("Tell me how much you want to invest (e.g. 'what should I buy with ₹1 lakh?') "
@@ -617,7 +640,7 @@ class Orchestrator:
 
     def _h_stops(self, s: Session, i: Intent) -> Reply:
         from backend.advisory.signals.advisor import STOP_PCT
-        positions, _, _ = self.holdings()
+        positions, _, _ = self.holdings(s.portfolio)
         if not positions:
             raise ValueError("No stored portfolio to check stops on.")
         planned = {a["symbol"]: a["stop_level"] for a in (self.store.latest_plan() or {}).get("actions", [])
@@ -653,7 +676,7 @@ class Orchestrator:
         sym, mkt = self._target(s, i)
         if mkt != "NSE":
             raise ValueError("The buy/sell signal covers NSE stocks only; try 'Analyze' for other markets.")
-        v = self.hub.verdict(sym)
+        v = self.hub.verdict(sym, s)
         lines = [f"{sym}: {v['verdict']}", v["headline"], ""]
         if v["why_buy"]:
             lines.append("Why you might buy:")

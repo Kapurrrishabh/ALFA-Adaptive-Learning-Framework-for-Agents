@@ -302,7 +302,7 @@ def _writer_comparison_inputs(monkeypatch, tmp_path, analyst_inputs, n):
     traded = pd.DataFrame(1.0, index=pd.bdate_range(end="2026-09-25", periods=5), columns=["AAA", "BBB", "CCC"])
     hub = NS(panel=lambda: NS(close=traded, volume=traded), analyst_inputs=analyst_inputs,
              names=lambda: pd.DataFrame({"symbol": list(traded.columns), "nifty200": [True] * 3}))
-    monkeypatch.setattr(cli, "_orchestrator", lambda args: None)
+    monkeypatch.setattr(cli, "_orchestrator", lambda args: NS(session=lambda portfolio, session_id: None))
     monkeypatch.setattr(hubmod, "Hub", lambda orch: hub)
     monkeypatch.setattr(compare_writers, "INPUTS", tmp_path / "analyst_inputs.json")
     return compare_writers.build_facts(n)
@@ -310,7 +310,7 @@ def _writer_comparison_inputs(monkeypatch, tmp_path, analyst_inputs, n):
 
 def test_the_writer_comparison_scores_the_inputs_the_analyst_note_is_written_from(monkeypatch, tmp_path):
     import json
-    sheets = _writer_comparison_inputs(monkeypatch, tmp_path, lambda sym: {"symbol": sym}, 2)
+    sheets = _writer_comparison_inputs(monkeypatch, tmp_path, lambda sym, s: {"symbol": sym}, 2)
     assert sheets == [{"symbol": "AAA"}, {"symbol": "BBB"}]
     assert json.loads((tmp_path / "analyst_inputs.json").read_text()) == sheets
 
@@ -319,7 +319,7 @@ def test_the_writer_comparison_stops_when_every_stock_is_refused(monkeypatch, tm
     """A GRU record calibrated the old way refuses every stock; skipping them all saved an empty input file."""
     from backend.database.sources.provider import DataUnavailable
 
-    def refuse(sym):
+    def refuse(sym, s):
         raise DataUnavailable("the GRU record carries an old calibration")
     with pytest.raises(DataUnavailable, match="only 0 of 2 stocks gave fact sheets"):
         _writer_comparison_inputs(monkeypatch, tmp_path, refuse, 2)
