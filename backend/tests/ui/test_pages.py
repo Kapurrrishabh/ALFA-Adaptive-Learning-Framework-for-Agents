@@ -1,5 +1,6 @@
 """The web app in a real browser: the navs at three widths, every page's basics, leaving a page mid-load,
-the search box, the theme toggle, and the shared dialog, toasts, and error and empty states."""
+the search box, the theme toggle, the shared dialog, toasts, and error and empty states, and what a keyboard
+or screen reader user gets."""
 import re
 
 import pytest
@@ -10,6 +11,8 @@ from .conftest import KEY  # noqa: E402
 
 pytestmark = pytest.mark.ui
 WIDTHS = [390, 800, 1366]   # provisional: a phone, the nav breakpoint itself, a laptop
+AXE_WIDTHS = [390, 1366]   # every element shown at 800 px is also shown at one of these
+THEMES = ["dark", "light"]
 SECTIONS = ["Home", "Markets", "Portfolio", "Ask", "Learn"]
 NO_PAGE = ["nowhere", "stock", "stock/%E0%A4"]
 PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signals", "builder", "chat", "learn",
@@ -75,7 +78,7 @@ def browser():
 @pytest.fixture(scope="module")
 def visits(browser, base_url):
     """What each page showed at each width: its h1 texts, the errors it logged, whether it scrolled sideways,
-    and the text of its empty states and banners."""
+    the text of its empty states and banners, and the names of its charts."""
     out = {}
     for width in WIDTHS:
         tab = Tab(browser, base_url, width)
@@ -85,7 +88,8 @@ def visits(browser, base_url):
             tab.go(f"#/{name}")
             out[(width, name)] = {"h1": tab.page.locator("h1").all_inner_texts(), "errors": tab.errors[seen:],
                                   "sideways": tab.page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"),
-                                  "states": tab.page.locator("#view .empty, #view .banner").all_inner_texts()}
+                                  "states": tab.page.locator("#view .empty, #view .banner").all_inner_texts(),
+                                  "charts": tab.page.locator("#view svg[role=img]").evaluate_all("els => els.map((el) => el.getAttribute('aria-label'))")}
         tab.context.close()
     return out
 
@@ -118,6 +122,41 @@ def test_no_empty_state_or_banner_shows_an_emoji(visits, width):
 @pytest.mark.parametrize("name", NO_PAGE)
 def test_an_address_with_no_page_says_so(visits, name):
     assert visits[(1366, name)]["h1"] == ["Page not found"]
+
+
+def test_every_chart_is_named_from_its_data(visits):
+    unnamed = {name: [c for c in visits[(1366, name)]["charts"] if not c or re.search(r"undefined|NaN|\[object", c)] for name in PAGES}
+    assert {name: charts for name, charts in unnamed.items() if charts} == {}
+
+
+def test_each_pattern_chart_names_its_proven_edges(visits):
+    names = [c for c in visits[(1366, "performance")]["charts"] if c.startswith("Excess return")]
+    assert [c.rsplit(". ", 1)[1] for c in names] == ["Proven edge: none", "Proven edge: double top"]
+
+
+@pytest.fixture(scope="module")
+def axe_findings(browser, base_url):
+    """axe's serious and critical findings on every page, in each theme, at a phone's and a laptop's width:
+    each rule with the elements it flagged."""
+    axe = pytest.importorskip("axe_playwright_python.sync_playwright", reason="axe is not installed: pip install -e '.[dev]'").Axe()
+    out = {}
+    for theme in THEMES:
+        for width in AXE_WIDTHS:
+            tab = Tab(browser, base_url, width)
+            if tab.page.evaluate("document.documentElement.dataset.theme") != theme:
+                tab.page.click("#theme")
+            for name in PAGES:
+                tab.go(f"#/{name}")
+                out[(theme, width, name)] = {v["id"]: [n["target"] for n in v["nodes"]] for v in axe.run(tab.page).response["violations"]
+                                             if v["impact"] in ("serious", "critical")}
+            tab.context.close()
+    return out
+
+
+@pytest.mark.parametrize("width", AXE_WIDTHS)
+@pytest.mark.parametrize("theme", THEMES)
+def test_no_page_has_a_serious_accessibility_finding(axe_findings, theme, width):
+    assert {name: axe_findings[(theme, width, name)] for name in PAGES if axe_findings[(theme, width, name)]} == {}
 
 
 def test_leaving_explore_mid_load_keeps_the_new_page(browser, base_url):
@@ -172,6 +211,140 @@ def test_tab_from_the_page_title_reaches_the_sub_nav(browser, base_url):
     tab.go("#/portfolio")
     tab.page.keyboard.press("Tab")
     assert tab.page.evaluate("document.activeElement.closest('.subnav') !== null")
+
+
+def tab_to(tab, selector, presses=40):
+    """Press Tab, as a keyboard user would, until focus is on an element matching selector."""
+    for _ in range(presses):
+        tab.page.keyboard.press("Tab")
+        if tab.page.evaluate("(sel) => document.activeElement.matches(sel)", selector):
+            return
+    raise AssertionError(f"{presses} presses of Tab never reached {selector}")
+
+
+@pytest.mark.parametrize("name, opens", [("portfolio", "#/stock/TEST"), ("builder", "#/stock/(TEST|PEER)")])
+def test_tab_then_enter_opens_a_stock_from_its_table(browser, base_url, name, opens):
+    tab = Tab(browser, base_url, 1366)
+    tab.go(f"#/{name}")
+    tab_to(tab, "table a")
+    tab.page.keyboard.press("Enter")
+    assert re.fullmatch(opens, tab.page.evaluate("location.hash"))
+
+
+def press_enter_on_the_pattern_card(browser, base_url):
+    """The stock page after Enter on the card of its one pattern, which the page highlights first."""
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/stock/TEST")
+    tab_to(tab, ".pattern-card")
+    tab.page.keyboard.press("Enter")
+    return tab
+
+
+def test_enter_on_the_highlighted_pattern_card_shows_all_patterns(browser, base_url):
+    tab = press_enter_on_the_pattern_card(browser, base_url)
+    assert tab.page.locator(".pattern-card").get_attribute("aria-pressed") == "false"
+
+
+def test_enter_on_a_pattern_card_keeps_the_focus_on_it(browser, base_url):
+    tab = press_enter_on_the_pattern_card(browser, base_url)
+    assert tab.page.evaluate("document.activeElement.matches('.pattern-card')")
+
+
+def test_the_range_pressed_last_is_the_only_one_announced_as_pressed(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/stock/TEST")
+    ranges = tab.page.locator(".card:has(> .mode-tabs) .seg")
+    ranges.get_by_role("button", name="1M", exact=True).click()
+    assert ranges.get_by_role("button", pressed=True).all_inner_texts() == ["1M"]
+
+
+def test_the_chart_tab_shown_is_the_one_announced_as_selected(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/stock/TEST")
+    tabs = tab.page.get_by_role("tablist", name="Chart")
+    tabs.get_by_role("tab", name="Intraday").click()
+    assert tabs.get_by_role("tab", selected=True).all_inner_texts() == ["Intraday"]
+
+
+def press_on_the_chart_tabs(browser, base_url, *keys):
+    """The stock page after Tab reaches its chart tabs and keys are pressed there."""
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/stock/TEST")
+    tab_to(tab, "[role=tab]")
+    for key in keys:
+        tab.page.keyboard.press(key)
+        tab.settle()
+    return tab
+
+
+def test_enter_on_a_chart_tab_keeps_the_focus_on_it(browser, base_url):
+    tab = press_on_the_chart_tabs(browser, base_url, "Enter")
+    assert tab.page.evaluate("document.activeElement.textContent") == "Technical"
+
+
+def test_arrow_right_on_a_chart_tab_shows_and_focuses_the_next_one(browser, base_url):
+    tab = press_on_the_chart_tabs(browser, base_url, "ArrowRight")
+    assert tab.page.evaluate("[document.activeElement.textContent, document.activeElement.ariaSelected]") == ["Intraday", "true"]
+
+
+def test_tab_from_the_chosen_chart_tab_goes_into_its_chart(browser, base_url):
+    tab = press_on_the_chart_tabs(browser, base_url, "ArrowRight", "Tab")
+    assert tab.page.evaluate("document.activeElement.closest('[role=tabpanel]') !== null")
+
+
+def test_a_late_answer_for_a_details_tab_arrowed_past_does_not_replace_the_one_shown(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    held = []
+    tab.go("#/stock/TEST")
+    tab.page.route("**/stocks/TEST/analysis", lambda route: held.append(route))
+    tab.page.get_by_role("tab", name="Overview").focus()
+    tab.page.keyboard.press("ArrowRight")
+    tab.wait_until(lambda: held)
+    tab.page.keyboard.press("ArrowRight")
+    news = tab.page.get_by_text("No recent news found.").or_(tab.page.get_by_text("News unavailable"))
+    news.wait_for()
+    for route in held:
+        route.continue_()
+    tab.settle()
+    assert tab.page.get_by_role("tab", selected=True).all_inner_texts()[-1] == "News" and news.count() == 1
+    assert tab.page.get_by_text("Every engine's evidence").count() == 0
+
+
+def test_a_sector_left_out_of_the_basket_is_announced_as_pressed(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/builder")
+    sectors = tab.page.get_by_role("group", name="Sectors to leave out")
+    sectors.get_by_role("button", name="Energy", exact=True).click()
+    assert sectors.get_by_role("button", pressed=True).all_inner_texts() == ["Energy"]
+
+
+def test_tapping_a_chart_shows_its_tooltip(browser, base_url):
+    tab = Tab(browser, base_url, 390, has_touch=True)
+    tab.go("#/portfolio")
+    chart = tab.page.locator("#view .chart")
+    chart.locator("svg > rect[fill=transparent]").tap()
+    assert chart.locator(".tip").is_visible()
+
+
+def test_a_pattern_with_a_proven_edge_says_so_in_words(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/performance")
+    assert [t for t in tab.page.locator("#view svg text").all_text_contents() if t.endswith("(edge)")] == ["double top (edge)"]
+
+
+def calibration_plot(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/performance")
+    return tab.page.get_by_role("img", name=re.compile("^How often stocks went up"))
+
+
+def test_each_calibration_horizon_has_its_own_dash(browser, base_url):
+    dashes = calibration_plot(browser, base_url).locator("path").evaluate_all("els => els.map((el) => el.getAttribute('stroke-dasharray'))")
+    assert len(set(dashes)) == len(dashes) == 2
+
+
+def test_the_calibration_plot_marks_its_reference_line_in_words(browser, base_url):
+    assert calibration_plot(browser, base_url).locator("text").all_text_contents().count("perfect") == 1
 
 
 def search_and_press_enter(tab, text):

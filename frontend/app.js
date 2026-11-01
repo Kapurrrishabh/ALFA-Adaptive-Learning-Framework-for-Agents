@@ -379,7 +379,7 @@ function candleChart(container, t, layers, selected, onPick) {
 
 function intradayPanel(ctx, sym) {
   const wrap = h("div"), plot = h("div", { class: "chart" }), note = h("div", { class: "chart-note" }); let rng = "5D";
-  const seg = h("div", { class: "seg" }, ...["1D", "5D", "1M"].map((r) => h("button", { class: r === rng ? "active" : "", onclick: (e) => { rng = r; for (const b of seg.children) b.classList.remove("active"); e.target.classList.add("active"); load(); } }, r)));
+  const seg = Segmented(["1D", "5D", "1M"].map((r) => [r, r]), rng, (r) => { rng = r; load(); });
   const draw = (d) => {
     plot.replaceChildren();
     const n = d.times.length, W = plot.clientWidth || 760, H = 360, volH = 50, m = { l: 8, r: 64, t: 12, b: 24 }, pw = W - m.l - m.r, ph = H - m.t - m.b - volH - 8, step = pw / n;
@@ -426,13 +426,13 @@ function intradayPanel(ctx, sym) {
   return wrap;
 }
 
-function miniPanel(container, dates, series, { bands = null, bars = false, fmt = (v) => num(v, 1), zero = false, fill = null, height = 120 } = {}) {
+function miniPanel(container, dates, series, label, { bands = null, bars = false, fmt = (v) => num(v, 1), zero = false, fill = null, height = 120 } = {}) {
   container.replaceChildren();
   const W = container.clientWidth || 300, H = height, m = { l: 4, r: 40, t: 6, b: 16 }, pw = W - m.l - m.r, ph = H - m.t - m.b, n = dates.length;
   const vals = series.flatMap((x) => x.values.filter((v) => v != null)).concat(bands ? bands.map((b) => b[0]) : []).concat(zero ? [0] : []);
   let lo = Math.min(...vals), hi = Math.max(...vals); if (hi === lo) hi = lo + 1;
   const X = (i) => m.l + (i / Math.max(1, n - 1)) * pw, Y = (v) => m.t + ph - ((v - lo) / (hi - lo)) * ph;
-  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
+  const last = series[0].values[series[0].values.length - 1], svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${label}: latest ${fmt(last)}` });
   for (const [v, lab, col] of bands || []) { svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: Y(v), y2: Y(v), stroke: css(col || "--line"), "stroke-dasharray": "4 3" }));
     const t = s("text", { x: m.l + pw + 4, y: Y(v) + 4, "font-size": 10, fill: css("--muted") }); t.textContent = lab; svg.append(t); }
   if (zero) svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: Y(0), y2: Y(0), stroke: css("--ink-2"), "stroke-width": 0.8 }));
@@ -442,7 +442,6 @@ function miniPanel(container, dates, series, { bands = null, bars = false, fmt =
     if (fill) svg.append(s("path", { d: `${d} L${X(n - 1)},${Y(0)} L${X(0)},${Y(0)} Z`, fill: css(fill), "fill-opacity": 0.15 }));
     svg.append(s("path", { d, fill: "none", stroke: css(sr.color), "stroke-width": 1.8 }));
   }
-  const last = series[0].values[series[0].values.length - 1];
   const t = s("text", { x: m.l + pw + 4, y: Y(last) + 4, "font-size": 11, "font-weight": 700, fill: css("--ink") }); t.textContent = fmt(last); svg.append(t);
   for (const i of [0, n - 1]) { const e = s("text", { x: X(i), y: H - 3, "font-size": 10, fill: css("--muted"), "text-anchor": i ? "end" : "start" }); e.textContent = new Date(dates[i]).toLocaleDateString("en-IN", { day: "numeric", month: "short" }); svg.append(e); }
   container.append(svg);
@@ -458,9 +457,9 @@ function analyticsSection(ctx, sym) {
   const root = h("div", { class: "grid" }, h("div", { class: "grid cols-3" }, gaugeCard, votesCard, ladderCard), h("div", { class: "grid cols-3" }, rsiCard, macdCard, ddCard));
   api(`/ui/stock/${encodeURIComponent(sym)}/indicators?bars=126`, { signal: ctx.signal }).then((k) => {
     const draw = () => {
-      miniPanel(rsiCard.querySelector(".rsi"), k.dates, [{ values: k.rsi, color: "--series-1" }], { bands: [[70, "70", "--down"], [30, "30", "--up"]], fmt: (v) => num(v, 0) });
-      miniPanel(macdCard.querySelector(".macd"), k.dates, [{ values: k.hist }], { bars: true, zero: true, fmt: (v) => num(v, 1) });
-      miniPanel(ddCard.querySelector(".dd"), k.dates, [{ values: k.drawdown_pct, color: "--down" }], { fill: "--down", zero: true, fmt: (v) => num(v, 1) + "%" });
+      miniPanel(rsiCard.querySelector(".rsi"), k.dates, [{ values: k.rsi, color: "--series-1" }], "RSI (14)", { bands: [[70, "70", "--down"], [30, "30", "--up"]], fmt: (v) => num(v, 0) });
+      miniPanel(macdCard.querySelector(".macd"), k.dates, [{ values: k.hist }], "MACD histogram", { bars: true, zero: true, fmt: (v) => num(v, 1) });
+      miniPanel(ddCard.querySelector(".dd"), k.dates, [{ values: k.drawdown_pct, color: "--down" }], "Drawdown", { fill: "--down", zero: true, fmt: (v) => num(v, 1) + "%" });
     };
     draw(); ctx.redraw(draw);
     rsiCard.append(h("div", { class: "chart-note" }, k.rsi[k.rsi.length - 1] > 70 ? "Above 70: stretched after a strong run." : k.rsi[k.rsi.length - 1] < 30 ? "Below 30: stretched after a sharp fall." : "Between 30 and 70: no extreme."));
@@ -472,7 +471,7 @@ function analyticsSection(ctx, sym) {
     const host = h("div"); votesCard.replaceChildren(h("div", { class: "panel-title" }, "How the engines vote"), host,
       h("div", { class: "chart-note" }, "Research engines, −1 bearish to +1 bullish. Grey = no usable signal. Context only — the buy rule is the momentum rank."));
     const draw = () => barChart(host, Object.entries(names).filter(([k2]) => st[k2]).map(([k2, lab]) => ({ label: lab, value: st[k2].score == null || st[k2].confidence === 0 ? 0 : st[k2].score,
-      color: st[k2].score == null || st[k2].confidence === 0 ? css("--muted") : st[k2].score >= 0 ? css("--up") : css("--down") })), { fmt: (v) => (v >= 0 ? "+" : "") + num(v, 2) });
+      color: st[k2].score == null || st[k2].confidence === 0 ? css("--muted") : st[k2].score >= 0 ? css("--up") : css("--down") })), "How the engines vote", { fmt: (v) => (v >= 0 ? "+" : "") + num(v, 2) });
     requestAnimationFrame(draw); ctx.redraw(draw);
   }).catch(showCardError(votesCard));
   api(`/ui/stock/${encodeURIComponent(sym)}/technical?bars=21`, { signal: ctx.signal }).then((t) => {
@@ -520,22 +519,23 @@ function technicalPanel(ctx, sym, opts = {}) {
     ai[model] = null;
     api(`/ui/stock/${encodeURIComponent(sym)}/ai?model=${model}`, { signal: ctx.signal }).then((r) => { ai[model] = r; draw(); drawCards(); })
       .catch((e) => { delete ai[model]; if (ctx.live()) toast(`${model}: ${errorWords(e)}`); }); } };
-  const seg = h("div", { class: "seg" }, ...[["1M", 21], ["3M", 63], ["6M", 126], ["1Y", 252], ["2Y", 500]].map(([lab, b]) => h("button", { class: b === bars ? "active" : "", onclick: (e) => { bars = b; for (const x of seg.children) x.classList.remove("active"); e.target.classList.add("active"); load(); } }, lab)));
+  const seg = Segmented([[21, "1M"], [63, "3M"], [126, "6M"], [252, "1Y"], [500, "2Y"]], bars, (b) => { bars = b; load(); });
   const draw = () => { if (!data) return; candleChart(plot, { ...data, fan: layers.ai && ai.chronos, alfa: layers.alfa && ai.alfa, gru: layers.gru && ai.gru, ghost: layers.kronos && ai.kronos }, layers, selected, (k) => { selected = selected === k ? null : k; draw(); drawCards(); }); };
   const drawCards = () => {
     if (!data) return;
     cards.replaceChildren(...(data.patterns.length > 1 ? [h("div", { class: "muted", style: "grid-column:1/-1;font-size:12px" },
-      selected == null ? "Showing all patterns — click a card to focus on one." : "Showing the highlighted pattern — click another card to switch, or the same card to show all.")] : []),
-      ...(data.patterns.length ? data.patterns.map((p, k) => h("div", { class: `pattern-card ${selected === k ? "sel" : ""}`, onclick: () => { selected = selected === k ? null : k; draw(); drawCards(); } },
-      h("div", { class: "spread" }, h("span", { class: "nm" }, p.pattern.replace(/_/g, " ")), h("span", { class: `edge-badge ${p.record.has_edge ? "yes" : "no"}` }, p.record.has_edge ? "Proven edge" : "No proven edge")),
-      h("div", { class: "muted", style: "font-size:12px" }, `${p.start_date} → ${p.end_date} · ${p.confirmation_status} · textbook ${p.direction > 0 ? "bullish" : p.direction < 0 ? "bearish" : "neutral"}`),
-      h("div", { style: "font-size:12.5px;margin-top:6px" }, p.supporting_features.join(" · ")),
-      h("div", { style: "font-size:12.5px;margin-top:6px" }, p.breakout_level ? `Breakout level ${inr(p.breakout_level)}` : null, p.target ? ` · textbook target ${inr(p.target)}` : null),
-      h("div", { class: "muted", style: "font-size:12px;margin-top:6px" }, p.record.summary)))
+      selected == null ? "Showing all patterns — choose a card to focus on one." : "Showing the highlighted pattern — choose another card to switch, or the same card to show all.")] : []),
+      ...(data.patterns.length ? data.patterns.map((p, k) => h("button", { class: "pattern-card", "aria-pressed": String(selected === k),
+        onclick: () => { selected = selected === k ? null : k; draw(); drawCards(); cards.querySelectorAll(".pattern-card")[k].focus(); } },
+      h("span", { class: "spread" }, h("span", { class: "nm" }, p.pattern.replace(/_/g, " ")), h("span", { class: `edge-badge ${p.record.has_edge ? "yes" : "no"}` }, p.record.has_edge ? "Proven edge" : "No proven edge")),
+      h("span", { class: "muted", style: "font-size:12px" }, `${p.start_date} → ${p.end_date} · ${p.confirmation_status} · textbook ${p.direction > 0 ? "bullish" : p.direction < 0 ? "bearish" : "neutral"}`),
+      h("span", { style: "font-size:12.5px;margin-top:6px" }, p.supporting_features.join(" · ")),
+      h("span", { style: "font-size:12.5px;margin-top:6px" }, p.breakout_level ? `Breakout level ${inr(p.breakout_level)}` : null, p.target ? ` · textbook target ${inr(p.target)}` : null),
+      h("span", { class: "muted", style: "font-size:12px;margin-top:6px" }, p.record.summary)))
       : [h("p", { class: "muted" }, "No chart pattern is forming in this window.")]));
     const counts = {}; for (const mk of data.markers) if (mk.direction !== 0) counts[mk.label] = (counts[mk.label] || 0) + 1;
     note.replaceChildren(data.cone_note, h("br"),
-      Object.keys(counts).length ? `Candle signals in the last ${RECENT_MARKERS} sessions: ${Object.entries(counts).map(([k, v]) => `${k} ×${v}`).join(", ")}. Hover a marker to see that formation's tested record.` : "",
+      Object.keys(counts).length ? `Candle signals in the last ${RECENT_MARKERS} sessions: ${Object.entries(counts).map(([k, v]) => `${k} ×${v}`).join(", ")}. Tap or hover over a marker to see that formation's tested record.` : "",
       ...AI_LAYERS.filter(([k, model]) => layers[k] && ai[model]).flatMap(([, model]) => [h("br"), h("span", { style: `color:var(${{ alfa: "--gold", gru: "--series-1" }[model] || "--ai"})` }, ai[model].note)]));
   };
   const load = async () => { plot.replaceChildren(skel(380)); try { data = await api(`/ui/stock/${encodeURIComponent(sym)}/technical?bars=${bars}`, { signal: ctx.signal });
@@ -554,11 +554,19 @@ function technicalPanel(ctx, sym, opts = {}) {
 }
 
 // ---------- generic charts (performance + portfolio) ----------
-const SERIES = ["--series-1", "--series-2", "--series-3", "--series-4"];
+const DASHED = "6 4";
+const SERIES = [["--series-1", "none"], ["--series-2", DASHED], ["--series-3", "1.5 3"], ["--series-4", "8 3 1.5 3"]];
 const textW = (str, size = 12) => { const c = textW.c || (textW.c = document.createElement("canvas").getContext("2d")); c.font = `${size}px Inter, system-ui, sans-serif`; return c.measureText(str).width; };
-function legend(items) { return h("div", { class: "legend" }, ...items.map(([name, col, dashed]) => h("span", {}, dashed ? h("span", { class: "legend-line", style: `border-color:var(${col});border-top-style:dashed;margin-right:6px` }) : h("span", { class: "sw", style: `background:var(${col})` }), name))); }
+function legend(items) {
+  return h("div", { class: "legend" }, ...items.map(([name, col, dash]) => {
+    if (!dash) return h("span", {}, h("span", { class: "sw", style: `background:var(${col})` }), name);
+    const line = s("svg", { class: "legend-dash", width: 16, height: 2, "aria-hidden": "true" });
+    line.append(s("line", { x1: 0, x2: 16, y1: 1, y2: 1, style: `stroke:var(${col});stroke-width:2;stroke-dasharray:${dash}` }));
+    return h("span", {}, line, name);
+  }));
+}
 
-function lineChart(container, dates, series, { height = 300, fmt = (v) => num(v), logScale = false } = {}) {
+function lineChart(container, dates, series, label, { height = 300, fmt = (v) => num(v), logScale = false } = {}) {
   container.replaceChildren();
   const endW = Math.max(...series.map((sr) => textW(`${sr.short || sr.name} ${fmt(sr.values[sr.values.length - 1])}`, 11)));
   const W = container.clientWidth || 700, H = height, m = { l: 8, r: Math.min(W * 0.45, 70 + endW), t: 10, b: 24 }, pw = W - m.l - m.r, ph = H - m.t - m.b;
@@ -566,7 +574,7 @@ function lineChart(container, dates, series, { height = 300, fmt = (v) => num(v)
   const tf = (v) => logScale ? Math.log(v) : v;
   let lo = Math.min(...all.map(tf)), hi = Math.max(...all.map(tf)); const pad = (hi - lo) * 0.06 || 1; lo -= pad; hi += pad;
   const x = (i) => m.l + (i / Math.max(1, dates.length - 1)) * pw, y = (v) => m.t + ph - ((tf(v) - lo) / (hi - lo)) * ph;
-  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${label}. Latest: ${series.map((sr) => `${sr.name} ${fmt(sr.values[sr.values.length - 1])}`).join(", ")}` });
   for (let k = 0; k <= 4; k++) { const tv = lo + (hi - lo) * k / 4, v = logScale ? Math.exp(tv) : tv, yy = m.t + ph - (k / 4) * ph;
     svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: yy, y2: yy, stroke: css("--line"), "stroke-dasharray": "2 4" })); const t = s("text", { x: m.l + pw + 6, y: yy + 4, "font-size": 11, fill: css("--muted") }); t.textContent = fmt(v); svg.append(t); }
   const every = Math.max(1, Math.ceil(dates.length / Math.max(2, Math.min(6, Math.floor(pw / 80)))));
@@ -574,7 +582,7 @@ function lineChart(container, dates, series, { height = 300, fmt = (v) => num(v)
   const ends = [];
   series.forEach((sr) => {
     let d = "", pen = false; sr.values.forEach((v, i) => { if (v == null) { pen = false; return; } d += (pen ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1); pen = true; });
-    svg.append(s("path", { d, fill: "none", stroke: css(sr.color), "stroke-width": 2, "stroke-dasharray": sr.dashed ? "6 4" : null, "stroke-linejoin": "round", filter: sr.dashed ? "none" : glow(svg, W, H, 2.5) }));
+    svg.append(s("path", { d, fill: "none", stroke: css(sr.color), "stroke-width": 2, "stroke-dasharray": sr.dashed ? DASHED : null, "stroke-linejoin": "round", filter: sr.dashed ? "none" : glow(svg, W, H, 2.5) }));
     const li = sr.values.length - 1; ends.push({ y: y(sr.values[li]), label: `${sr.short || sr.name} ${fmt(sr.values[li])}`, color: css(sr.color) });
   });
   ends.sort((a, b) => a.y - b.y); for (let k = 1; k < ends.length; k++) if (ends[k].y - ends[k - 1].y < 13) ends[k].y = ends[k - 1].y + 13;
@@ -593,19 +601,19 @@ function lineChart(container, dates, series, { height = 300, fmt = (v) => num(v)
 
 function forestPlot(container, rows, { threshold = null } = {}) {
   container.replaceChildren();
-  const ok = rows.filter((r) => r.excess_pct != null && r.ci_lo != null);
-  const W = container.clientWidth || 700, rowH = 22, m = { l: Math.min(W * 0.45, 16 + Math.max(...ok.map((r) => textW(r.pattern)))), r: 70, t: 22, b: 26 }, H = m.t + m.b + ok.length * rowH, pw = W - m.l - m.r;
+  const ok = rows.filter((r) => r.excess_pct != null && r.ci_lo != null), sig = (r) => threshold != null && r.z != null && Math.abs(r.z) >= threshold;
+  const name = (r) => sig(r) ? `${r.pattern} (edge)` : r.pattern;
+  const W = container.clientWidth || 700, rowH = 22, m = { l: Math.min(W * 0.45, 16 + Math.max(...ok.map((r) => textW(name(r))))), r: 70, t: 22, b: 26 }, H = m.t + m.b + ok.length * rowH, pw = W - m.l - m.r;
   const lim = Math.max(1, ...ok.map((r) => Math.max(Math.abs(r.ci_lo), Math.abs(r.ci_hi)))) * 1.05;
   const x = (v) => m.l + ((v + lim) / (2 * lim)) * pw;
-  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Excess return after each pattern with 95% interval" });
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Excess return after each pattern with 95% interval. Proven edge: ${ok.filter(sig).map((r) => r.pattern).join(", ") || "none"}` });
   for (const v of [-lim, -lim / 2, 0, lim / 2, lim]) { svg.append(s("line", { x1: x(v), x2: x(v), y1: m.t - 6, y2: H - m.b, stroke: v === 0 ? css("--ink-2") : css("--line"), "stroke-width": v === 0 ? 1.5 : 1 }));
     const t = s("text", { x: x(v), y: H - 8, "font-size": 11, fill: css("--muted"), "text-anchor": "middle" }); t.textContent = pct(v, 1); svg.append(t); }
   const hdr = s("text", { x: x(0), y: 12, "font-size": 11, fill: css("--muted"), "text-anchor": "middle" }); hdr.textContent = "← worse than normal   0 = no effect   better than normal →"; svg.append(hdr);
   const tip = h("div", { class: "tip" });
   ok.forEach((r, k) => {
-    const yy = m.t + k * rowH + rowH / 2, sig = threshold != null && r.z != null && Math.abs(r.z) >= threshold;
-    const col = sig ? (r.excess_pct > 0 ? css("--up") : css("--down")) : css("--muted");
-    const lab = s("text", { x: m.l - 10, y: yy + 4, "font-size": 12, fill: css("--ink"), "text-anchor": "end" }); lab.textContent = r.pattern; svg.append(lab);
+    const yy = m.t + k * rowH + rowH / 2, col = sig(r) ? (r.excess_pct > 0 ? css("--up") : css("--down")) : css("--muted");
+    const lab = s("text", { x: m.l - 10, y: yy + 4, "font-size": 12, fill: css("--ink"), "text-anchor": "end" }); lab.textContent = name(r); svg.append(lab);
     svg.append(s("line", { x1: x(r.ci_lo), x2: x(r.ci_hi), y1: yy, y2: yy, stroke: col, "stroke-width": 2 }));
     svg.append(s("circle", { cx: x(r.excess_pct), cy: yy, r: 4.5, fill: col, stroke: css("--card"), "stroke-width": 2 }));
     const n = s("text", { x: m.l + pw + 8, y: yy + 4, "font-size": 11, fill: css("--muted") }); n.textContent = `${r.events} events`; svg.append(n);
@@ -619,7 +627,7 @@ function forestPlot(container, rows, { threshold = null } = {}) {
   container.append(svg, tip);
 }
 
-function barChart(container, items, { fmt = (v) => pct(v, 1), ref = null, refLabel = "" } = {}) {
+function barChart(container, items, label, { fmt = (v) => pct(v, 1), ref = null, refLabel = "" } = {}) {
   container.replaceChildren();
   const W = container.clientWidth || 500, labW = Math.max(...items.map((i) => textW(i.label)));
   // long labels in a narrow card go on their own line above the bar instead of being clipped
@@ -628,7 +636,8 @@ function barChart(container, items, { fmt = (v) => pct(v, 1), ref = null, refLab
   const vals = items.map((i) => i.value).concat(ref != null ? [ref] : []);
   const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals) * 1.08 || 1;
   const x = (v) => m.l + ((v - lo) / (hi - lo)) * pw;
-  const svg = s("svg", { viewBox: `0 0 ${W} ${H + (ref != null ? 16 : 0)}`, role: "img" });
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H + (ref != null ? 16 : 0)}`, role: "img",
+    "aria-label": `${label}: ${items.map((it) => `${it.label} ${fmt(it.value)}`).join(", ")}${ref != null ? `; ${refLabel} ${fmt(ref)}` : ""}` });
   items.forEach((it, k) => {
     const yy = m.t + k * rowH, bh = stacked ? 16 : Math.min(22, rowH - 10), by = stacked ? yy + 22 : yy + 5;
     const x0 = x(Math.min(0, it.value)), x1 = x(Math.max(0, it.value));
@@ -640,32 +649,34 @@ function barChart(container, items, { fmt = (v) => pct(v, 1), ref = null, refLab
   if (stacked) items.forEach((_, k) => { const by = m.t + k * rowH + 22; svg.append(s("line", { x1: x(0), x2: x(0), y1: by - 3, y2: by + 19, stroke: css("--ink-2") })); });
   else svg.append(s("line", { x1: x(0), x2: x(0), y1: m.t, y2: H - m.b, stroke: css("--ink-2") }));
   if (ref != null) { svg.append(s("line", { x1: x(ref), x2: x(ref), y1: m.t, y2: H - m.b + 4, stroke: css("--down"), "stroke-dasharray": "4 3", "stroke-width": 1.5 }));
-    const t = s("text", { x: x(ref), y: H + 12, "font-size": 11, fill: css("--down"), "text-anchor": "middle" }); t.textContent = refLabel; svg.append(t); }
+    const t = s("text", { x: x(ref), y: H + 12, "font-size": 11, fill: css("--down"), "text-anchor": "middle" }); t.textContent = `${refLabel} ${fmt(ref)}`; svg.append(t); }
   container.append(svg);
 }
 
-function calibrationPlot(container, pointsByH) {
+function calibrationPlot(container, pointsByH, label) {
   container.replaceChildren();
   const W = Math.min(container.clientWidth || 360, 420), H = W, m = { l: 44, r: 12, t: 12, b: 38 }, p = W - m.l - m.r;
   const lo = 0.25, hi = 0.75, x = (v) => m.l + ((v - lo) / (hi - lo)) * p, y = (v) => m.t + p - ((v - lo) / (hi - lo)) * p;
-  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", style: `max-width:${W}px` });
+  const said = (pts) => pts.map((q) => `said ${num(q.predicted * 100, 0)}%, went up ${num(q.actual * 100, 0)}%`).join("; ");
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", style: `max-width:${W}px`, "aria-label": `${label}. ${Object.entries(pointsByH).map(([hz, pts]) => `${hz}-day: ${said(pts)}`).join(". ")}` });
   for (const v of [0.3, 0.4, 0.5, 0.6, 0.7]) { svg.append(s("line", { x1: x(v), x2: x(v), y1: m.t, y2: m.t + p, stroke: css("--line") }), s("line", { x1: m.l, x2: m.l + p, y1: y(v), y2: y(v), stroke: css("--line") }));
     const a = s("text", { x: x(v), y: m.t + p + 14, "font-size": 10.5, fill: css("--muted"), "text-anchor": "middle" }); a.textContent = `${v * 100}%`; svg.append(a);
     const b = s("text", { x: m.l - 6, y: y(v) + 4, "font-size": 10.5, fill: css("--muted"), "text-anchor": "end" }); b.textContent = `${v * 100}%`; svg.append(b); }
   svg.append(s("line", { x1: x(lo), y1: y(lo), x2: x(hi), y2: y(hi), stroke: css("--ink-2"), "stroke-dasharray": "5 4" }));
+  const pf = s("text", { x: x(0.72), y: y(0.72) - 5, "font-size": 10.5, fill: css("--ink-2"), "text-anchor": "end", transform: `rotate(-45 ${x(0.72)} ${y(0.72)})` }); pf.textContent = "perfect"; svg.append(pf);
   const lx = s("text", { x: m.l + p / 2, y: H - 4, "font-size": 11, fill: css("--muted"), "text-anchor": "middle" }); lx.textContent = "model said: chance of going up"; svg.append(lx);
-  Object.entries(pointsByH).forEach(([hz, pts], k) => { const col = css(SERIES[k]); let d = "";
+  Object.entries(pointsByH).forEach(([hz, pts], k) => { const col = css(SERIES[k][0]); let d = "";
     pts.forEach((q, i) => { d += (i ? "L" : "M") + x(q.predicted) + " " + y(q.actual); });
-    svg.append(s("path", { d, fill: "none", stroke: col, "stroke-width": 1.5, opacity: 0.6 }));
+    svg.append(s("path", { d, fill: "none", stroke: col, "stroke-width": 1.5, "stroke-dasharray": SERIES[k][1], opacity: 0.6 }));
     for (const q of pts) svg.append(s("circle", { cx: x(q.predicted), cy: y(q.actual), r: 4.5, fill: col, stroke: css("--card"), "stroke-width": 2 })); });
   container.append(svg);
 }
 
-function donut(container, parts) {
+function donut(container, parts, label) {
   container.replaceChildren();
   const size = 180, r = 72, sw = 26, c = size / 2, total = parts.reduce((a, b) => a + b.value, 0) || 1;
   const palette = ["--series-1", "--series-2", "--series-3", "--series-4", "--pattern", "--up", "--down", "--muted"];
-  const svg = s("svg", { viewBox: `0 0 ${size} ${size}`, width: size, height: size, role: "img" });
+  const svg = s("svg", { viewBox: `0 0 ${size} ${size}`, width: size, height: size, role: "img", "aria-label": `${label}: ${parts.map((p) => `${p.label} ${num(p.value, 1)}%`).join(", ")}` });
   let a0 = -Math.PI / 2;
   parts.forEach((p, k) => { const a1 = a0 + (p.value / total) * Math.PI * 2 - 0.02;
     const large = a1 - a0 > Math.PI ? 1 : 0, P = (a) => `${c + r * Math.cos(a)} ${c + r * Math.sin(a)}`;
@@ -697,7 +708,7 @@ async function pagePerformance(view, ctx) {
   const plot1 = h("div", { class: "chart" });
   const names = Object.keys(mom.curves); const cols = ["--series-1", "--series-3", "--series-2", "--series-4"];
   const series = names.map((n, k) => ({ name: n, short: ["Momentum", "Mom + overlay", "Equal wt", "Nifty 500 (price)"][k], values: mom.curves[n], color: cols[k], dashed: n.includes("real") }));
-  curveCard.append(legend(series.map((x) => [x.name, x.color, x.dashed])), plot1);
+  curveCard.append(legend(series.map((x) => [x.name, x.color, x.dashed && DASHED])), plot1);
   const liveBars = h("div"), yearBars = h("div");
   const liveCard = h("div", { class: "card" }, h("h3", {}, "Reality check: the live momentum ETF"), h("p", { class: "sub" }, `Real fund tracking the same NSE formula, ${live.window}. Real money, no survivorship bias.`), liveBars,
     h("h3", { style: "margin-top:14px" }, "Year by year"), yearBars,
@@ -709,8 +720,8 @@ async function pagePerformance(view, ctx) {
     h("p", { class: "sub" }, `${new Set(d.forecast.coverage.map((c) => c.symbol)).size} large caps, ${fh.map((x) => `${num(x.n, 0)} (${x.horizon}-day)`).join(", ")} out-of-sample predictions. Dashed line: accuracy of simply guessing "up" every time.`), acc,
     h("div", { class: "verdict-line" }, beats.length ? `Verdict: beat always guessing “up” at ${beats.map((x) => `${x.horizon}-day (${num(x.accuracy * 100, 1)}% vs ${num(x.always_up_accuracy * 100, 1)}%)`).join(", ")}.`
       : `Verdict: no better than always guessing “up” at any of the ${fh.length} horizons. That's why the app never shows a predicted direction.`));
-  const calCard = h("div", { class: "card" }, h("h3", {}, "Calibration: when the model said X%, how often did it go up?"), h("p", { class: "sub" }, "A useful model's dots sit on the dashed diagonal."),
-    legend(Object.keys(d.forecast.calibration).map((hz, k) => [`${hz}-day`, SERIES[k]])), cal);
+  const calCard = h("div", { class: "card" }, h("h3", {}, "Calibration: when the model said X%, how often did it go up?"), h("p", { class: "sub" }, "A useful model's dots sit on the diagonal marked “perfect”."),
+    legend(Object.keys(d.forecast.calibration).map((hz, k) => [`${hz}-day`, ...SERIES[k]])), cal);
   view.append(h("div", { class: "grid cols-2", style: "margin-top:18px" }, fcCard, calCard));
   // 3. ranges
   // provisional: within 3 points of the 80% target counts as calibrated
@@ -740,16 +751,16 @@ async function pagePerformance(view, ctx) {
       h("div", { class: "verdict-line" }, `Verdict: Chronos — ${om.verdicts.chronos}; it is shown on charts with this record.` + (kr ? ` Kronos — ${om.verdicts.kronos}; it is off by default and marked experimental.` : ""))));
   }
   const drawAll = () => {
-    lineChart(plot1, mom.dates, series, { fmt: (v) => "₹" + num(v, 2), logScale: true });
-    barChart(liveBars, live.bars.map((b, k) => ({ label: b.label, value: b.cagr, color: css(["--series-1", "--series-4", "--series-1", "--series-2"][k]), faded: !b.real })), { fmt: (v) => pct(v, 1) + "/yr" });
-    barChart(yearBars, live.yearly.flatMap((y) => [{ label: `${y.year} momentum ETF`, value: y.etf, color: css("--series-1") }, { label: `${y.year} Nifty 500 price index`, value: y.nifty500, color: css("--series-4") }]));
-    barChart(acc, d.forecast.horizons.map((x) => ({ label: `${x.horizon}-day accuracy`, value: x.accuracy * 100, color: css("--series-1") })), { fmt: (v) => num(v, 1) + "%", ref: Math.max(...d.forecast.horizons.map((x) => x.always_up_accuracy)) * 100, refLabel: "always-up guess" });
-    calibrationPlot(cal, d.forecast.calibration);
-    barChart(cov, bands.map((b) => ({ label: `${b.horizon}-day, median of ${b.n} stocks`, value: b.mid, color: css("--series-3") })), { fmt: (v) => num(v, 0) + "%", ref: 80, refLabel: "target 80%" });
-    barChart(ins, d.insider.map((r, k) => ({ label: r.test, value: r.excess_20d, color: css(k === 1 ? "--muted" : "--series-1") })), { fmt: (v) => pct(v, 2) });
+    lineChart(plot1, mom.dates, series, "Growth of ₹1", { fmt: (v) => "₹" + num(v, 2), logScale: true });
+    barChart(liveBars, live.bars.map((b, k) => ({ label: b.label, value: b.cagr, color: css(["--series-1", "--series-4", "--series-1", "--series-2"][k]), faded: !b.real })), "Growth a year", { fmt: (v) => pct(v, 1) + "/yr" });
+    barChart(yearBars, live.yearly.flatMap((y) => [{ label: `${y.year} momentum ETF`, value: y.etf, color: css("--series-1") }, { label: `${y.year} Nifty 500 price index`, value: y.nifty500, color: css("--series-4") }]), "Year by year");
+    barChart(acc, d.forecast.horizons.map((x) => ({ label: `${x.horizon}-day accuracy`, value: x.accuracy * 100, color: css("--series-1") })), "Direction accuracy", { fmt: (v) => num(v, 1) + "%", ref: Math.max(...d.forecast.horizons.map((x) => x.always_up_accuracy)) * 100, refLabel: "always-up guess" });
+    calibrationPlot(cal, d.forecast.calibration, "How often stocks went up, against the chance the model gave");
+    barChart(cov, bands.map((b) => ({ label: `${b.horizon}-day, median of ${b.n} stocks`, value: b.mid, color: css("--series-3") })), "Share of outcomes inside the 80% band", { fmt: (v) => num(v, 0) + "%", ref: 80, refLabel: "target" });
+    barChart(ins, d.insider.map((r, k) => ({ label: r.test, value: r.excess_20d, color: css(k === 1 ? "--muted" : "--series-1") })), "Return over the next 20 trading days versus other stocks", { fmt: (v) => pct(v, 2) });
     forestPlot(f1, candles, { threshold: d.bonferroni_z }); forestPlot(f2, chartsP, { threshold: d.bonferroni_z });
     if (om) barChart(omBars, [...om.chronos.horizons.flatMap((x) => [{ label: `Chronos ${x.horizon}-day`, value: x.chronos_direction_acc * 100, color: css("--ai") }, { label: `Base rate ${x.horizon}-day`, value: x.base_rate_acc * 100, color: css("--muted") }]),
-      ...(om.kronos ? [{ label: `Kronos ${om.kronos.horizon}-day`, value: om.kronos.direction_acc * 100, color: css("--ai") }, { label: "Base rate (Kronos sample)", value: om.kronos.base_rate_acc * 100, color: css("--muted") }] : [])], { fmt: (v) => num(v, 1) + "%" });
+      ...(om.kronos ? [{ label: `Kronos ${om.kronos.horizon}-day`, value: om.kronos.direction_acc * 100, color: css("--ai") }, { label: "Base rate (Kronos sample)", value: om.kronos.base_rate_acc * 100, color: css("--muted") }] : [])], "Direction accuracy against the base rate", { fmt: (v) => num(v, 1) + "%" });
   };
   requestAnimationFrame(drawAll); ctx.redraw(drawAll);
 }
@@ -783,6 +794,22 @@ function Field(label, input, hint) {
   const field = h("div", { class: "field" }, h("label", { for: input.id }, label), input, note, error);
   field.showError = (msg) => { error.textContent = msg || ""; if (msg) input.setAttribute("aria-invalid", "true"); else input.removeAttribute("aria-invalid"); };
   return field;
+}
+function Segmented(options, current, onPick) {
+  const el = h("div", { class: "seg" }, ...options.map(([value, label]) => h("button", { "aria-pressed": String(value === current),
+    onclick: (e) => { for (const b of el.children) b.setAttribute("aria-pressed", String(b === e.currentTarget)); onPick(value); } }, label)));
+  return el;
+}
+// a screen reader announces role=tab as a row the arrow keys move along, with one Tab stop for the whole row
+function Tabs(className, label, names, onPick) {
+  const panel = h("div", { role: "tabpanel", id: uid("panel") });
+  const tabs = names.map((k, i) => h("button", { role: "tab", id: `${panel.id}-${i}`, "aria-controls": panel.id, onclick: () => pick(i) }, k));
+  let picks = 0;
+  const pick = (i) => { tabs.forEach((b, j) => { b.setAttribute("aria-selected", String(i === j)); b.tabIndex = i === j ? 0 : -1; });
+    const mine = ++picks; panel.setAttribute("aria-labelledby", tabs[i].id); onPick(names[i], panel, () => mine === picks); };
+  const list = h("div", { class: className, role: "tablist", "aria-label": label, onkeydown: (e) => { const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+    if (step) { e.preventDefault(); const i = (tabs.indexOf(e.target) + step + tabs.length) % tabs.length; pick(i); tabs[i].focus(); } } }, ...tabs);
+  return { list, panel, show: (k) => pick(names.indexOf(k)) };
 }
 function Dialog(ctx, title, body, [label, run]) {
   const opener = document.activeElement, titleId = uid("dialog"), text = typeof body === "string" ? h("p", { id: `${titleId}-text` }, body) : null;
@@ -839,7 +866,7 @@ async function pageExplore(view, ctx) {
   const movers = h("div", { class: "list" });
   const moversCard = h("div", { class: "card" }, h("div", { class: "spread" }, h("h3", {}, "Top movers · Nifty 200"), tabsHost), movers);
   const showMovers = (which) => { movers.replaceChildren(...d[which].map((r) => stockRow(r, priceChange(r.price, r.change_pct)))); };
-  const seg = h("div", { class: "seg" }, ...["gainers", "losers"].map((w, i) => h("button", { class: i === 0 ? "active" : "", onclick: (e) => { for (const b of seg.children) b.classList.remove("active"); e.target.classList.add("active"); showMovers(w); } }, w === "gainers" ? "Gainers" : "Losers")));
+  const seg = Segmented([["gainers", "Gainers"], ["losers", "Losers"]], "gainers", showMovers);
   tabsHost.append(seg);
   const momCard = h("div", { class: "card" }, h("div", { class: "spread" }, h("h3", {}, "Top momentum picks"), h("a", { class: "btn ghost small", href: "#/signals" }, "Build my plan →")),
     h("p", { class: "sub" }, "NSE Nifty200 Momentum 30 method — the one signal with a measured edge"),
@@ -889,15 +916,12 @@ async function pageStock(view, ctx) {
       chip("52W low", inr(o.low_52w, 0)), chip("52W high", inr(o.high_52w, 0)), chip("P/E", num(o.stats["P/E (TTM)"], 1)), chip("Mkt cap", compactInr(o.stats["Market cap"]))),
     h("div", { class: "muted", style: "font-size:12px;margin-top:8px" }, `Daily close ${o.as_of} · NSE`));
   const modes = { "Technical": () => technicalPanel(ctx, sym, { bars: 63 }), "Intraday": () => intradayPanel(ctx, sym), "Price & projection": () => technicalPanel(ctx, sym, { line: true, bars: 126 }) };
-  const built = {}; const tabsEl = h("div", { class: "mode-tabs" });
-  const show = (k) => { for (const b of tabsEl.children) b.classList.toggle("active", b.textContent === k); built[k] = built[k] || modes[k](); chartCard.replaceChildren(tabsEl, built[k]); built[k].redraw(); };
-  tabsEl.append(...Object.keys(modes).map((k) => h("button", { onclick: () => show(k) }, k)));
-  show("Technical");
+  const built = {}, chart = Tabs("mode-tabs", "Chart", Object.keys(modes), (k, panel) => { built[k] = built[k] || modes[k](); panel.replaceChildren(built[k]); built[k].redraw(); });
+  chartCard.replaceChildren(chart.list, chart.panel); chart.show("Technical");
   const panes = { Overview: () => overviewPane(o), Research: () => researchPane(ctx, sym), News: () => newsPane(ctx, sym), Insider: () => insiderPane(ctx, sym) };
-  const tabs = h("div", { class: "tabs" }); const pane = h("div");
-  const showPane = (k) => { for (const b of tabs.children) b.classList.toggle("active", b.textContent === k); pane.replaceChildren(skel(100)); Promise.resolve(panes[k]()).then((el) => pane.replaceChildren(el)).catch((e) => pane.replaceChildren(ErrorState(e, () => showPane(k)))); };
-  tabs.append(...Object.keys(panes).map((k) => h("button", { onclick: () => showPane(k) }, k)));
-  tabsCard.replaceChildren(tabs, pane); showPane("Overview");
+  const details = Tabs("tabs", "Details", Object.keys(panes), (k, pane, current) => { pane.replaceChildren(skel(100));
+    Promise.resolve(panes[k]()).then((el) => current() && pane.replaceChildren(el)).catch((e) => current() && pane.replaceChildren(ErrorState(e, () => details.show(k)))); });
+  tabsCard.replaceChildren(details.list, details.panel); details.show("Overview");
   api(`/ui/stock/${encodeURIComponent(sym)}/analyst`, { signal: ctx.signal }).then((a) => analystCard.replaceChildren(h("div", { class: "panel-title" }, "Analyst note"),
     h("p", { class: "analyst-text" }, a.text),
     h("div", { class: "muted", style: "font-size:12px" }, a.written_by ? `Written by ${a.written_by} from our models' numbers; every number was checked against them.`
@@ -1026,18 +1050,18 @@ async function pagePortfolio(view, ctx) {
   const holdings = h("div", { class: "card" }, h("h3", {}, `Holdings (${rep.holdings.length})`), h("div", { class: "table-wrap" }, h("table", {},
     h("tr", {}, h("th", {}, "Stock"), h("th", { class: "r" }, "Qty"), h("th", { class: "r" }, "Avg / LTP"), h("th", { class: "r" }, "Value"), h("th", { class: "r" }, "Returns")),
     ...rep.holdings.map((x) => h("tr", { class: "link", onclick: () => location.hash = `#/stock/${encodeURIComponent(x.symbol)}` },
-      h("td", {}, h("div", { class: "stack" }, h("div", { class: "avatar" }, initials(x.symbol)), h("div", {}, h("div", { class: "t" }, x.symbol), h("div", { class: "s" }, `${x.sector} · ${num(x.weight_pct, 1)}%`)))),
+      h("td", {}, h("div", { class: "stack" }, h("div", { class: "avatar" }, initials(x.symbol)), h("div", {}, h("div", { class: "t" }, h("a", { href: `#/stock/${encodeURIComponent(x.symbol)}` }, x.symbol)), h("div", { class: "s" }, `${x.sector} · ${num(x.weight_pct, 1)}%`)))),
       h("td", { class: "r num" }, num(x.quantity, 0)), h("td", { class: "r num" }, h("div", {}, inr(x.avg_cost)), h("div", { class: "muted" }, inr(x.price))),
       h("td", { class: "r num" }, inr(x.value, 0)), h("td", { class: `r num ${cls(x.unrealized_pl)}` }, h("div", {}, inr(x.unrealized_pl, 0)), h("div", {}, pct(x.unrealized_pl_pct))))))));
   const donutHost = h("div");
   const alloc = h("div", { class: "card" }, h("h3", {}, "Sector allocation"), h("p", { class: "sub" }, "Share of total value, cash included"), donutHost);
   const histHost = h("div", { class: "chart" });
   const histCard = h("div", { class: "card" }, h("h3", {}, "Value over time"), h("p", { class: "sub" }, "Your holdings as they actually were on each day (cash excluded), against the money you put in"), histHost);
-  const drawDonut = () => donut(donutHost, Object.entries(rep.sector_exposure_pct).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ label: k, value: v })));
+  const drawDonut = () => donut(donutHost, Object.entries(rep.sector_exposure_pct).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ label: k, value: v })), "Sector allocation");
   requestAnimationFrame(drawDonut); ctx.redraw(drawDonut);
   api("/ui/portfolio/history", { signal: ctx.signal }).then((ph) => { if (!ph.dates.length) { histHost.replaceChildren(h("p", { class: "muted" }, "No history yet.")); return; }
-    const draw = () => { lineChart(histHost, ph.dates, [{ name: "Holdings value", short: "Value", values: ph.value, color: "--series-1" }, { name: "Money invested", short: "Invested", values: ph.invested, color: "--series-4", dashed: true }], { fmt: (v) => compactInr(v), height: 260 });
-      histHost.prepend(legend([["Holdings value", "--series-1"], ["Money invested", "--series-4", true]])); };
+    const draw = () => { lineChart(histHost, ph.dates, [{ name: "Holdings value", short: "Value", values: ph.value, color: "--series-1" }, { name: "Money invested", short: "Invested", values: ph.invested, color: "--series-4", dashed: true }], "Value over time", { fmt: (v) => compactInr(v), height: 260 });
+      histHost.prepend(legend([["Holdings value", "--series-1"], ["Money invested", "--series-4", DASHED]])); };
     draw(); ctx.redraw(draw); }).catch((e) => histHost.replaceChildren(ErrorState(e, route)));
   const r = rep.risk || {};
   const risk = h("div", { class: "card" }, h("h3", {}, "Risk"),
@@ -1078,7 +1102,7 @@ async function pageSignals(view, ctx) {
       cards.push(h("div", { class: "card" }, h("h3", {}, `${label} (${acts.length})`), h("table", {},
         h("tr", {}, h("th", {}, "Stock"), h("th", { class: "r" }, "Shares"), h("th", { class: "r" }, "Price"), h("th", { class: "r" }, "Amount"), h("th", { class: "r" }, "Stop-loss"), h("th", {}, "Why")),
         ...acts.map((a) => h("tr", { class: "link", onclick: () => location.hash = `#/stock/${encodeURIComponent(a.symbol)}` },
-          h("td", {}, h("b", {}, a.symbol), a.rank ? h("div", { class: "muted", style: "font-size:12px" }, `rank #${a.rank}`) : null),
+          h("td", {}, h("a", { href: `#/stock/${encodeURIComponent(a.symbol)}` }, h("b", {}, a.symbol)), a.rank ? h("div", { class: "muted", style: "font-size:12px" }, `rank #${a.rank}`) : null),
           h("td", { class: "r num" }, a.shares || "—"), h("td", { class: "r num" }, inr(a.price)), h("td", { class: "r num" }, a.value ? inr(a.value, 0) : "—"),
           h("td", { class: "r num" }, a.stop_level ? inr(a.stop_level) : "—"),
           h("td", { style: "font-size:12.5px;color:var(--ink-2)" }, a.reasons.join(" · "), a.tax_note ? h("div", { class: "muted" }, "Tax: " + a.tax_note) : null))))));
@@ -1088,7 +1112,7 @@ async function pageSignals(view, ctx) {
     out.replaceChildren(...cards);
   };
   view.append(h("div", { class: "card" }, h("p", { class: "muted", style: "margin-top:0" }, "Combines your portfolio with new money and tells you what to sell, buy and hold — with share counts, stops and tax notes."),
-    h("div", { class: "row" }, h("label", { class: "row" }, "New money ₹", cap), strat, risk, h("button", { class: "btn primary", onclick: run }, "Build plan"))), out);
+    h("div", { class: "row" }, h("label", { class: "row" }, "New money ₹", cap), h("label", { class: "row" }, "Strategy", strat), h("label", { class: "row" }, "Risk", risk), h("button", { class: "btn primary", onclick: run }, "Build plan"))), out);
 }
 
 async function pageChat(view, ctx) {
@@ -1255,13 +1279,12 @@ async function pageBuilder(view, ctx) {
   const cap = h("input", { type: "number", min: "1000", step: "1000", value: state.capital, class: "big-input", "aria-label": "Amount to invest" });
   cap.addEventListener("input", () => set({ capital: +cap.value }));
   const capChips = h("div", { class: "chips" }, ...[25000, 50000, 100000, 500000].map((v) => h("button", { class: "chip", onclick: () => { cap.value = v; set({ capital: v }); } }, compactInr(v))));
-  const seg = (key, opts) => { const el = h("div", { class: "seg" }, ...opts.map(([v, lab]) => h("button", { class: state[key] === v ? "active" : "",
-    onclick: (e) => { for (const b of el.children) b.classList.remove("active"); e.target.classList.add("active"); set({ [key]: v }); } }, lab))); return el; };
+  const seg = (key, opts) => Segmented(opts, state[key], (v) => set({ [key]: v }));
   const nOut = h("b", { class: "num" }, state.n), nRange = h("input", { type: "range", min: 3, max: 25, value: state.n, "aria-label": "Number of stocks" });
   nRange.addEventListener("input", () => { nOut.textContent = nRange.value; set({ n: +nRange.value }); });
-  const sectors = h("div", { class: "chips" });
-  api("/ui/sectors", { signal: ctx.signal }).then((list) => sectors.replaceChildren(...list.map((sec) => { const b = h("button", { class: `chip ${state.exclude.includes(sec) ? "off" : ""}` }, sec);
-    b.addEventListener("click", () => { b.classList.toggle("off"); set({ exclude: state.exclude.includes(sec) ? state.exclude.filter((x) => x !== sec) : [...state.exclude, sec] }); }); return b; })))
+  const sectors = h("div", { class: "chips", role: "group", "aria-label": "Sectors to leave out" });
+  api("/ui/sectors", { signal: ctx.signal }).then((list) => sectors.replaceChildren(...list.map((sec) => { const b = h("button", { class: "chip", "aria-pressed": String(state.exclude.includes(sec)) }, sec);
+    b.addEventListener("click", () => { set({ exclude: state.exclude.includes(sec) ? state.exclude.filter((x) => x !== sec) : [...state.exclude, sec] }); b.setAttribute("aria-pressed", String(state.exclude.includes(sec))); }); return b; })))
     .catch((e) => sectors.replaceChildren(ErrorState(e, route)));
   view.append(h("div", { class: "card" }, h("p", { class: "muted", style: "margin-top:0" }, "Pick an amount and a style; the basket rebuilds as you change anything. Stocks come from the Nifty 200."),
     h("div", { class: "grid cols-2 builder-controls" },
@@ -1293,16 +1316,16 @@ async function pageBuilder(view, ctx) {
     const table = h("div", { class: "card" }, h("div", { class: "spread" }, h("h3", { style: "margin:0" }, "Your basket"), h("button", { class: "btn primary", onclick: apply }, "Add all to my portfolio")),
       h("div", { class: "table-wrap" }, h("table", { class: "basket" }, h("tr", {}, h("th", {}, "Stock"), h("th", { class: "r" }, "Shares"), h("th", { class: "r" }, "Price"), h("th", { class: "r" }, "Amount"), h("th", {}, "Weight"), h("th", { class: "r" }, "Stop-loss")),
         ...b.holdings.map((x) => h("tr", { class: "link", title: x.why, onclick: () => location.hash = `#/stock/${encodeURIComponent(x.symbol)}` },
-          h("td", {}, h("div", { class: "stack" }, h("div", { class: "avatar" }, initials(x.symbol)), h("div", {}, h("div", { class: "t" }, x.name), h("div", { class: "s" }, `#${x.rank} · ${x.sector}`)))),
+          h("td", {}, h("div", { class: "stack" }, h("div", { class: "avatar" }, initials(x.symbol)), h("div", {}, h("div", { class: "t" }, h("a", { href: `#/stock/${encodeURIComponent(x.symbol)}` }, x.name)), h("div", { class: "s" }, `#${x.rank} · ${x.sector}`)))),
           h("td", { class: "r num" }, x.shares), h("td", { class: "r num" }, inr(x.price)), h("td", { class: "r num" }, inr(x.value, 0)),
           h("td", {}, h("div", { class: "wbar" }, h("span", { style: `width:${(x.weight_pct / maxW) * 100}%` }), h("em", { class: "num" }, `${num(x.weight_pct, 1)}%`))),
           h("td", { class: "r num" }, x.stop ? inr(x.stop, 0) : "—"))))));
     const donutHost = h("div"), curveHost = h("div", { class: "chart" });
     out.replaceChildren(kpis, table, h("div", { class: "grid cols-2" },
       h("div", { class: "card" }, h("h3", {}, "Sector split"), h("p", { class: "sub" }, "Share of the amount, cash included"), donutHost),
-      h("div", { class: "card" }, h("h3", {}, "This basket over the past year"), h("p", { class: "sub" }, b.note), legend([["This basket", "--series-1"], ["Nifty 50", "--series-4", true]]), curveHost)), warn || "");
-    drawCharts = () => { donut(donutHost, Object.entries(r.sector_exposure_pct).sort((a, c) => c[1] - a[1]).map(([k, v]) => ({ label: k, value: v })));
-      lineChart(curveHost, b.backcast.dates, [{ name: "This basket", short: "Basket", values: b.backcast.basket, color: "--series-1" }, { name: "Nifty 50", short: "Nifty", values: b.backcast.nifty, color: "--series-4", dashed: true }], { fmt: (v) => compactInr(v), height: 240 }); };
+      h("div", { class: "card" }, h("h3", {}, "This basket over the past year"), h("p", { class: "sub" }, b.note), legend([["This basket", "--series-1"], ["Nifty 50", "--series-4", DASHED]]), curveHost)), warn || "");
+    drawCharts = () => { donut(donutHost, Object.entries(r.sector_exposure_pct).sort((a, c) => c[1] - a[1]).map(([k, v]) => ({ label: k, value: v })), "Sector split");
+      lineChart(curveHost, b.backcast.dates, [{ name: "This basket", short: "Basket", values: b.backcast.basket, color: "--series-1" }, { name: "Nifty 50", short: "Nifty", values: b.backcast.nifty, color: "--series-4", dashed: true }], "This basket over the past year", { fmt: (v) => compactInr(v), height: 240 }); };
     requestAnimationFrame(drawCharts);
   };
   build();
