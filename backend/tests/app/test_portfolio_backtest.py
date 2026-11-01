@@ -18,6 +18,7 @@ import pytest
 from backend.advisory.calculators.backtest import strategies as S
 from backend.advisory.calculators.backtest.engine import BacktestConfig, run
 from backend.database.sources import panel
+from backend.database.sources.amfi import Scheme
 from backend.database.sources.panel import Listing
 from backend.user.portfolio import cas, cas_worker, importers
 from backend.user.portfolio.portfolio import Transaction, analyze, build_positions, risk_decomposition, what_if
@@ -275,9 +276,15 @@ ZERODHA_COLUMNS = ["Symbol", "ISIN", "Sector", "Quantity Available", "Quantity D
 HOLDING = {"Symbol": "SYNTHA", "ISIN": "INE000D01019", "Sector": "SYNTHETIC", "Quantity Available": 14,
            "Quantity Discrepant": 0, "Quantity Long Term": 0, "Quantity Pledged (Margin)": 0,
            "Quantity Pledged (Loan)": 0, "Average Price": 412.39, "Previous Closing Price": 455.5}
+ZERODHA_FUND_COLUMNS = ["Symbol", "ISIN", "Instrument Type", "Quantity Available", "Quantity Discrepant",
+                        "Quantity Pledged (Margin)", "Quantity Pledged (Loan)", "Average Price",
+                        "Previous Closing Price", "Unrealized P&L", "Unrealized P&L Pct."]
+FUND_HOLDING = {"Symbol": "SYNTHETIC MULTICAP FUND - DIRECT PLAN", "ISIN": "INF000S01011", "Quantity Available": 12.345,
+                "Quantity Discrepant": 0, "Quantity Pledged (Margin)": 0, "Quantity Pledged (Loan)": 0,
+                "Average Price": 810.0, "Previous Closing Price": 800.5}
 
 
-def zerodha_holdings(*holdings):
+def zerodha_holdings(*holdings, funds=()):
     """Zerodha's holdings workbook as third-party descriptions lay it out: Equity, Mutual Funds and Combined sheets,
     each with a client line, a dated title and a summary above its table."""
     def sheet(kind, columns, rows):
@@ -285,7 +292,7 @@ def zerodha_holdings(*holdings):
                 ["Invested Value", 1000.0], [], columns] + [[h.get(c) for c in columns] for h in rows]
     combined = ZERODHA_COLUMNS[:3] + ["Instrument Type"] + ZERODHA_COLUMNS[3:]
     return workbook({"Equity": sheet("Equity", ZERODHA_COLUMNS, holdings),
-                     "Mutual Funds": sheet("Mutual Funds", [], []),
+                     "Mutual Funds": sheet("Mutual Funds", ZERODHA_FUND_COLUMNS, funds),
                      "Combined": sheet("Combined", combined, [{**h, "Instrument Type": "-"} for h in holdings])})
 
 
@@ -313,7 +320,22 @@ def test_a_sheet_that_understates_its_size_is_still_read_in_full():
 
 def test_the_sheets_left_unread_are_named():
     assert importers.parse(zerodha_holdings(HOLDING)).warnings == [
-        "Only the 'Equity' sheet was read, not 'Mutual Funds' or 'Combined'."]
+        "Only the 'Equity' and 'Mutual Funds' sheets were read, not 'Combined'."]
+
+
+def test_one_sheet_read_of_several_is_named_alone():
+    assert importers.parse(workbook({"Transactions": GROWW_ORDERS, "Summary": [["Total", 200]]})).warnings == [
+        "Only the 'Transactions' sheet was read, not 'Summary'."]
+
+
+def test_a_bad_row_in_a_workbook_of_several_sheets_names_its_sheet():
+    with pytest.raises(ValueError, match="^Sheet 'Mutual Funds', Row 9: Quantity Available is empty"):
+        importers.parse(zerodha_holdings(HOLDING, funds=[{**FUND_HOLDING, "Quantity Available": None}]))
+
+
+def test_a_bad_row_in_a_csv_file_is_named_by_its_row_alone():
+    with pytest.raises(ValueError, match="^Row 2: quantity is empty"):
+        importers.parse(b"symbol_or_isin,side,quantity,price,trade_date\nRELIANCE,BUY,,1300,2026-01-15\n")
 
 
 def test_pledged_shares_are_shown_in_the_note_not_added_to_the_quantity():
@@ -549,7 +571,7 @@ NAMES = {"RELIANCE": "Reliance Industries", "TATAMOTORS": "Tata Motors", "TATAST
 
 def file_row(isin=None, symbol=None, name=None, quantity=1.0):
     return importers.Row(line=2, name=name, isin=isin, symbol=symbol, quantity=quantity, price=None,
-                         trade_date=None, side="BUY", note=None)
+                         trade_date=None, side="BUY", note=None, fees=None, scheme_code=None, doubt=None)
 
 
 def test_an_isin_maps_to_its_listed_symbol():
@@ -590,6 +612,51 @@ def test_a_name_offers_at_most_three_choices():
 def test_every_row_is_counted_in_one_state():
     rows = [file_row(isin="INE002A01018"), file_row(name="Tata Steel Limited"), file_row(symbol="GONE")]
     assert importers.counts(importers.match(rows, DIRECTORY, NAMES)) == {"matched": 1, "check": 1, "not_found": 1}
+
+
+def amfi_scheme(code, isin, plan):
+    return Scheme(code=code, isin_growth=isin, isin_reinvestment=None, fund="Synthetic Multicap Fund", plan=plan,
+                  option="Growth", nav=800.5, nav_date=date(2026, 9, 30), scheme_type="Open Ended Schemes",
+                  category="Equity Scheme - Multi Cap Fund", amc="Synthetic Mutual Fund")
+
+
+DIRECT_GROWTH = amfi_scheme(100001, "INF000S01011", "Direct Plan")
+REGULAR_GROWTH = amfi_scheme(100002, "INF000S01029", "Regular Plan")
+SCHEMES = [DIRECT_GROWTH, REGULAR_GROWTH]
+GROWW_ORDERS = [["Personal Details"], ["Name", "A. Holder"], ["PAN", "ABCDE1234F"], [],
+                ["TRANSACTIONS FROM Jan 01 2025 TO Jun 30 2026"], [],
+                ["Scheme Name", "Transaction Type", "Units", "NAV", "Amount", "Date"],
+                ["Synthetic Multicap Fund Direct Growth", "PURCHASE", "10", "20", "200", "15 Jan 2026"],
+                ["Synthetic Multicap Fund Direct Growth", "REDEEM", "4", "30", "120", "20 Mar 2026"]]
+
+
+def test_a_zerodha_fund_sheet_isin_maps_to_its_scheme():
+    fund, = importers.match_funds(importers.parse(zerodha_holdings(HOLDING, funds=[FUND_HOLDING])).funds, SCHEMES)
+    assert (fund.state, fund.scheme) == ("matched", DIRECT_GROWTH)
+
+
+def test_zerodha_sheets_dated_apart_are_refused_as_two_statements():
+    title = b"Mutual Funds Holdings Statement as on 2026-06-"
+    apart = rewritten(zerodha_holdings(HOLDING, funds=[FUND_HOLDING]),
+                      lambda _, part: part.replace(title + b"30", title + b"29"))
+    with pytest.raises(ValueError, match="Upload one statement at a time"):
+        importers.parse(apart)
+
+
+def test_a_groww_fund_order_history_keeps_each_orders_side_and_date():
+    funds = importers.parse(workbook({"Transactions": GROWW_ORDERS})).funds
+    assert [(r.side, r.trade_date) for r in funds] == [("BUY", date(2026, 1, 15)), ("SELL", date(2026, 3, 20))]
+
+
+def test_groww_fund_rows_are_never_matched_automatically():
+    found = importers.match_funds(importers.parse(workbook({"Transactions": GROWW_ORDERS})).funds, SCHEMES)
+    assert [(m.state, m.choices) for m in found] == [("check", [DIRECT_GROWTH])] * 2
+
+
+def test_a_file_naming_more_funds_than_we_search_for_is_refused(monkeypatch):
+    monkeypatch.setattr(importers, "MAX_FUND_NAMES", 1)
+    with pytest.raises(ValueError, match="names more than 1 funds"):
+        importers.match_funds([file_row(name="Synthetic Multicap"), file_row(name="Synthetic Flexi Cap")], SCHEMES)
 
 
 PDF, PASSWORD = b"%PDF-1.7 synthetic statement", "Pass-phrase-7"
@@ -779,3 +846,132 @@ def test_a_cas_field_that_casparser_renamed_is_a_server_error_not_dropped(caspar
     casparser(f"return {json.dumps(statement)!r}")
     with pytest.raises(RuntimeError, match="failed with KeyError"):
         cas.read(PDF, PASSWORD)
+
+
+def cams(transactions, close, opened="0.000", warnings=0, **scheme):
+    """What cas.read gives for CAMS_CAS, with its one scheme's transactions, balances and other `scheme` keys set."""
+    parsed = json.loads(json.dumps(CAMS_KEPT))
+    parsed["folios"][0]["schemes"][0].update(transactions=transactions, open=opened, close=close, **scheme)
+    return {**parsed, "parse_warning_count": warnings}
+
+
+def cas_trade(kind, units, nav="810.00", amount=None):
+    return {"date": "2024-05-10", "type": kind, "units": units, "nav": nav, "amount": amount}
+
+
+@pytest.mark.parametrize("kind, units, side", [
+    ("PURCHASE", "1.000", "BUY"), ("PURCHASE_SIP", "1.000", "BUY"), ("SWITCH_IN", "1.000", "BUY"),
+    ("SWITCH_IN_MERGER", "1.000", "BUY"), ("DIVIDEND_REINVEST", "1.000", "BUY"), ("REDEMPTION", "-1.000", "SELL"),
+    ("SWITCH_OUT", "-1.000", "SELL"), ("SWITCH_OUT_MERGER", "-1.000", "SELL")])
+def test_a_cas_purchase_or_sale_becomes_a_buy_or_sell(kind, units, side):
+    opened, close = ("0.000", "1.000") if side == "BUY" else ("1.000", "0.000")
+    *_, row = cas.statement(cams([cas_trade(kind, units)], close=close, opened=opened)).funds
+    assert (row.side, row.quantity, row.price, row.trade_date) == (side, 1.0, 810.0, date(2024, 5, 10))
+
+
+def test_a_fund_whose_units_all_came_in_a_merger_is_matched():
+    funds = cas.statement(cams([cas_trade("SWITCH_IN_MERGER", "12.345")], close="12.345")).funds
+    assert [m.state for m in importers.match_funds(funds, SCHEMES)] == ["matched"]
+
+
+@pytest.mark.parametrize("kind", ["GIFT_IN", "SEGREGATION"])
+def test_units_a_cas_shows_no_purchase_of_are_kept_to_check_with_no_date_or_cost(kind):
+    funds = cas.statement(cams([cas_trade(kind, "12.345")], close="12.345")).funds
+    assert [(m.state, m.row.quantity, m.row.trade_date, m.row.price)
+            for m in importers.match_funds(funds, SCHEMES)] == [("check", 12.345, None, None)]
+
+
+def test_stamp_duty_becomes_the_fees_of_the_purchase_it_follows():
+    row, = cas.statement(cams([cas_trade("PURCHASE", "12.345"), cas_trade("STAMP_DUTY_TAX", None, None, "0.50")],
+                              close="12.345")).funds
+    assert row.fees == 0.5
+
+
+def test_cas_tax_rows_are_left_out_with_a_note():
+    parsed = cas.statement(cams([cas_trade("PURCHASE", "1.000"), cas_trade("REDEMPTION", "-1.000"),
+                                 cas_trade("STT_TAX", None, None, "0.01")], close="0.000"))
+    assert ([r.side for r in parsed.funds], parsed.warnings) == (
+        ["BUY", "SELL"], ["This statement's rows that are not purchases or sales are left out: stt tax (1)."])
+
+
+def test_units_held_before_a_cas_began_are_a_row_with_no_date_or_cost():
+    first, = cas.statement(cams([], opened="5.000", close="5.000")).funds
+    assert (first.quantity, first.trade_date, first.price) == (5.0, None, None)
+
+
+def test_a_cas_scheme_whose_isin_code_plan_and_units_agree_is_matched():
+    funds = cas.statement(cams([cas_trade("PURCHASE", "12.345")], close="12.345")).funds
+    assert [m.state for m in importers.match_funds(funds, SCHEMES)] == ["matched"]
+
+
+def test_a_cas_units_mismatch_makes_the_scheme_check():
+    funds = cas.statement(cams([cas_trade("PURCHASE", "12.345")], close="10.000")).funds
+    assert [m.state for m in importers.match_funds(funds, SCHEMES)] == ["check"]
+
+
+def test_casparsers_warnings_make_its_rows_check():
+    funds = cas.statement(cams([cas_trade("PURCHASE", "12.345")], close="12.345", warnings=1)).funds
+    assert [m.state for m in importers.match_funds(funds, SCHEMES)] == ["check"]
+
+
+def test_casparsers_warnings_make_a_demat_share_check_too():
+    shares = cas.statement({**NSDL_KEPT, "parse_warning_count": 1}).rows
+    assert [m.state for m in importers.match(shares, {"INE000D01019": Listing("SYNTHA", "equity_l")}, {})] == ["check"]
+
+
+def test_a_casparser_code_missing_from_amfis_list_is_only_offered():
+    funds = cas.statement(cams([cas_trade("PURCHASE", "12.345")], close="12.345", amfi="999999")).funds
+    found, = importers.match_funds(funds, SCHEMES)
+    assert (found.state, found.choices) == ("check", [DIRECT_GROWTH])
+
+
+def test_casparser_giving_a_regular_holding_the_direct_plan_offers_the_regular_one_first():
+    # casparser-isin's README shows it: "Axis Long Term Equity Fund - Growth" got the Direct plan with a score of 100
+    funds = cas.statement(cams([cas_trade("PURCHASE", "12.345")], close="12.345",
+                               scheme="Synthetic Multicap Fund - Growth")).funds
+    found, = importers.match_funds(funds, SCHEMES)
+    assert (found.state, found.choices) == ("check", [REGULAR_GROWTH, DIRECT_GROWTH])
+
+
+def test_a_summary_cas_is_refused_with_the_detailed_one_asked_for():
+    with pytest.raises(ValueError, match="Ask CAMS or KFintech for the detailed one"):
+        cas.statement({**cams([], close="0.000"), "cas_type": "SUMMARY"})
+
+
+def test_a_cas_neither_detailed_nor_summary_is_a_server_error():
+    with pytest.raises(RuntimeError, match="'UNKNOWN'"):
+        cas.statement({**cams([], close="0.000"), "cas_type": "UNKNOWN"})
+
+
+def test_a_cas_with_no_period_has_no_statement_date():
+    parsed = cas.statement({**cams([], opened="5.000", close="5.000"), "statement_period": {"from": "", "to": ""}})
+    assert (parsed.as_of, parsed.funds[0].note) == (None, "Held when the statement began, so it gives no date or cost.")
+
+
+@pytest.mark.parametrize("to", ["30-Sep-2026", "30-09-2026", "30/09/2026"])
+def test_a_cdsl_period_written_in_any_of_its_forms_dates_the_statement(to):
+    cdsl = {**NSDL_KEPT, "file_type": "CDSL", "statement_period": {"from": "", "to": to}}
+    assert cas.statement(cdsl).as_of == date(2026, 9, 30)
+
+
+def test_demat_shares_come_with_no_cost_so_it_is_asked_for():
+    share, = cas.statement(NSDL_KEPT).rows
+    assert (share.isin, share.quantity, share.price) == ("INE000D01019", 5.0, None)
+
+
+def test_a_demat_fund_is_matched_by_its_isin():
+    fund, = importers.match_funds(cas.statement(NSDL_KEPT).funds, SCHEMES)
+    assert (fund.state, fund.scheme, fund.row.quantity, fund.row.price) == ("matched", DIRECT_GROWTH, 10.0, 700.0)
+
+
+def test_a_demat_funds_short_plan_name_does_not_outvote_its_isin():
+    parsed = json.loads(json.dumps(NSDL_KEPT))
+    parsed["accounts"][0]["mutual_funds"][0]["name"] = "SYNTHETIC MULTICAP FUND - DIR GR"
+    fund, = importers.match_funds(cas.statement(parsed).funds, SCHEMES)
+    assert (fund.state, fund.scheme) == ("matched", DIRECT_GROWTH)
+
+
+def test_demat_bonds_and_pension_schemes_are_named_as_left_out():
+    assert cas.statement(NSDL_KEPT).warnings == [
+        "This statement's bonds (1) and NPS pension schemes (1) are left out: a portfolio here holds only shares and "
+        "funds."]

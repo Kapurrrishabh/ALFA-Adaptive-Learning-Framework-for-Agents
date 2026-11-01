@@ -1,4 +1,4 @@
-"""Broker exports (Zerodha, Groww) and our CSV template, read into rows and matched to NSE's listings.
+"""Broker exports (Zerodha, Groww) and our CSV template, read into rows and matched to NSE's listings and AMFI's funds.
 
 The layouts come from third-party descriptions, not the brokers, so a file that fits none is refused, never
 guessed at. Every row is kept and a gap in the file stays a gap. Only a statement's title, its header and the
@@ -15,10 +15,10 @@ import zipfile
 import zlib
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
 
 from backend.config import canonical_symbol
-from backend.database.sources.amfi import name_words
+from backend.database.sources.amfi import DIRECT, Scheme, name_words, search
 from backend.database.sources.panel import Listing
 
 # provisional (2026-10-30): the worst hostile .xlsx we built took 120 times its unzipped size in memory (a styles
@@ -35,7 +35,12 @@ DAMAGED = (LookupError, SyntaxError, TypeError, OSError, NotImplementedError, zi
 SHORTER_RANGE = "Download a shorter date range and upload each file."
 PDF_SWITCHED_OFF = "PDF statements aren't switched on for this server. Upload your broker's Excel or CSV file instead."
 MAX_CHOICES = 3
+# provisional: one fund search took 20 to 40 ms on AMFI's list of 2026-10-28, so this many take about 3 s
+MAX_FUND_NAMES = 100
 STATES = ("matched", "check", "not_found")
+SIDES = {"BUY": "BUY", "SELL": "SELL"}
+GROWW_SIDES = {"PURCHASE": "BUY", "REDEEM": "SELL"}
+ISO_DATE = "%Y-%m-%d"
 ISIN = re.compile(r"^IN[A-Z0-9]{10}$")
 SERIES = re.compile(r"-(BE|BZ)$")            # Zerodha writes the trading series after the symbol: "SYNTHB-BE"
 COMPANY_WORDS = {"ltd", "limited"}          # brokers and NSE write these differently, so they never decide a match
@@ -51,7 +56,7 @@ class ImportUnsupported(Exception):
 
 @dataclass(frozen=True)
 class Row:
-    line: int
+    line: Optional[int]             # None in a PDF statement
     name: Optional[str]
     isin: Optional[str]
     symbol: Optional[str]
@@ -60,13 +65,17 @@ class Row:
     trade_date: Optional[date]      # None in holdings files: they say what is held, not when it was bought
     side: str
     note: Optional[str]
+    fees: Optional[float]           # None where the file lists no charges
+    scheme_code: Optional[int]      # a fund's AMFI code, where the file gives one
+    doubt: Optional[str]            # why the row is only offered even when it is found
 
 
 @dataclass(frozen=True)
 class Statement:
     source: str
     as_of: Optional[date]
-    rows: List[Row]
+    rows: List[Row]                 # shares, ETFs and REITs, for `match`
+    funds: List[Row]                # mutual funds, for `match_funds`
     warnings: List[str]
 
 
@@ -79,11 +88,20 @@ class Match:
 
 
 @dataclass(frozen=True)
+class FundMatch:
+    row: Row
+    state: str
+    scheme: Optional[Scheme]
+    choices: List[Scheme]
+
+
+@dataclass(frozen=True)
 class Layout:
     source: str
     columns: Tuple[str, ...]
     title: Optional[Tuple[str, str]]    # how a cell above the header starts, before the date; the date's format
     read: Callable[[Cell, int], Row]
+    is_fund: bool
 
 
 def parse(data: bytes) -> Statement:
@@ -110,8 +128,8 @@ def parse(data: bytes) -> Statement:
 
 def match(rows: Sequence[Row], directory: Dict[str, Listing], names: Dict[str, str]) -> List[Match]:
     """Each row to an NSE listing by its ISIN, or by its symbol when it has none. Anything less sure is only offered
-    in `choices`: a symbol whose ISIN the lists lack, a name (from `names`, symbol -> company name), and any row
-    with a quantity of 0, which Zerodha shows when every share is pledged."""
+    in `choices`: a symbol whose ISIN the lists lack, a name (from `names`, symbol -> company name), any row
+    with a quantity of 0, which Zerodha shows when every share is pledged, and any row with a doubt."""
     by_symbol: Dict[str, Listing] = {}
     for listing in directory.values():
         by_symbol.setdefault(listing.symbol, listing)
@@ -119,7 +137,7 @@ def match(rows: Sequence[Row], directory: Dict[str, Listing], names: Dict[str, s
     for row in rows:
         by_its_symbol = by_symbol.get(SERIES.sub("", canonical_symbol(row.symbol or "")))
         listing = directory.get(row.isin) if row.isin else by_its_symbol
-        if listing and row.quantity:
+        if listing and row.quantity and not row.doubt:
             out.append(Match(row, "matched", listing, []))
             continue
         # an ISIN the lists lack can be an old one (a split changes it) or another share that now has the symbol
@@ -129,8 +147,57 @@ def match(rows: Sequence[Row], directory: Dict[str, Listing], names: Dict[str, s
     return out
 
 
-def counts(matches: Sequence[Match]) -> Dict[str, int]:
+def match_funds(rows: Sequence[Row], schemes: List[Scheme]) -> List[FundMatch]:
+    """Each fund row to one of AMFI's current `schemes` by its ISIN. As in `match`, anything less sure is only
+    offered: an ISIN whose row gives an AMFI code of another scheme, or a name that says the other plan (which is
+    then offered first); a name alone; a quantity of 0; and a doubt. A file naming more than MAX_FUND_NAMES funds
+    to find by name raises ValueError, which the route answers with 400."""
+    by_isin = {isin: s for s in schemes for isin in (s.isin_growth, s.isin_reinvestment) if isin}
+    by_code = {s.code: s for s in schemes}
+    plans: Dict[Tuple[str, str, Optional[str]], List[Scheme]] = {}
+    for s in schemes:
+        plans.setdefault((s.amc, s.fund, s.option), []).append(s)
+    by_name: Dict[str, List[Scheme]] = {}
+    out = []
+    for row in rows:
+        scheme = by_isin.get(row.isin) if row.isin else None
+        offered = [scheme] if scheme else []
+        if row.scheme_code is not None:
+            # casparser finds a CAMS scheme's ISIN and code from its name, and can give the other plan a full score
+            coded = by_code.get(row.scheme_code)
+            offered += [coded] if coded and coded is not scheme else []
+            says_direct = "direct" in name_words(row.name or "")
+            if coded is not scheme:
+                scheme = None
+            elif scheme and says_direct != (scheme.plan == DIRECT):
+                offered = sorted(plans[scheme.amc, scheme.fund, scheme.option],
+                                 key=lambda s: (s.plan == DIRECT) != says_direct)[:MAX_CHOICES]
+                scheme = None
+        if scheme and row.quantity and not row.doubt:
+            out.append(FundMatch(row, "matched", scheme, []))
+            continue
+        if not offered and row.name:
+            if row.name not in by_name:
+                if len(by_name) == MAX_FUND_NAMES:
+                    raise ValueError(f"This file names more than {MAX_FUND_NAMES} funds that we have to find by "
+                                     "name. Upload a statement with fewer funds.")
+                by_name[row.name] = _fund_choices(row.name, schemes, by_code)
+            offered = by_name[row.name]
+        out.append(FundMatch(row, "check" if offered else "not_found", None, offered))
+    return out
+
+
+def counts(matches: Sequence[Union[Match, FundMatch]]) -> Dict[str, int]:
     return {state: sum(m.state == state for m in matches) for state in STATES}
+
+
+def _fund_choices(name: str, schemes: List[Scheme], by_code: Dict[int, Scheme]) -> List[Scheme]:
+    """For each of the first funds that fund search finds for `name`, the plan it lists first."""
+    try:
+        funds = search(schemes, name, limit=MAX_CHOICES)
+    except ValueError:      # too little of a name to search by
+        return []
+    return [by_code[fund["plans"][0]["code"]] for fund in funds]
 
 
 def _choices(name: str, by_symbol: Dict[str, Listing], names: Dict[str, str]) -> List[Listing]:
@@ -217,16 +284,27 @@ def _statement(sheets: Dict[str, List[Sequence[object]]]) -> Statement:
             if (fit := _fit(layout, texts[title])) is not None]
     if not fits:
         raise ValueError(f"This file doesn't match a layout we read. We read {'; '.join(map(_describe, LAYOUTS))}.")
-    if len(fits) > 1:
+    statements = {(layout.source, as_of) for layout, _, _, (as_of, *_) in fits}
+    titles = [title for _, title, *_ in fits]
+    # one statement can take two sheets: Zerodha puts shares on one and funds on another, both dated alike
+    if len(statements) > 1 or len({layout for layout, *_ in fits}) < len(fits) or len(set(titles)) < len(fits):
         raise ValueError("This file matches more than one layout: "
                          + ", ".join(f"{layout.source} on sheet {_short(title)!r}" for layout, title, *_ in fits)
                          + ". Upload one statement at a time.")
-    layout, title, rows, (as_of, header, columns) = fits[0]
-    read = [layout.read(_cells(row, columns, line), line)
-            for line, row in enumerate(rows[header + 1:], start=header + 2) if any(texts[title][line - 1])]
-    others = [repr(_short(t)) for t in sheets if t != title]
-    warnings = [f"Only the {_short(title)!r} sheet was read, not {' or '.join(others)}."] if others else []
-    return Statement(layout.source, as_of, read, warnings)
+    (source, as_of), = statements
+    read: Dict[bool, List[Row]] = {False: [], True: []}
+    for layout, title, rows, (_, header, columns) in fits:
+        try:
+            read[layout.is_fund] += [layout.read(_cells(row, columns, line), line) for line, row
+                                     in enumerate(rows[header + 1:], start=header + 2) if any(texts[title][line - 1])]
+        except ValueError as exc:   # a row number alone doesn't say which sheet of a workbook it is on
+            if len(sheets) == 1:
+                raise
+            raise ValueError(f"Sheet {_short(title)!r}, {exc}") from exc
+    others = [repr(_short(t)) for t in sheets if t not in titles]
+    sheets_read = f"{' and '.join(repr(_short(t)) for t in titles)} sheet{'s were' if len(titles) > 1 else ' was'}"
+    warnings = [f"Only the {sheets_read} read, not {' or '.join(others)}."] if others else []
+    return Statement(source, as_of, read[False], read[True], warnings)
 
 
 def _fit(layout: Layout, texts: List[List[Optional[str]]]) -> Optional[Tuple[Optional[date], int, Dict[str, int]]]:
@@ -295,7 +373,7 @@ def _price(cell: Cell, column: str, line: int) -> Optional[float]:
     return _number(cell, column, line, required=False) or None
 
 
-def _date(cell: Cell, column: str, line: int) -> Optional[date]:
+def _date(cell: Cell, column: str, line: int, form: str) -> Optional[date]:
     value = cell(column)
     if isinstance(value, datetime):
         return value.date()
@@ -303,39 +381,61 @@ def _date(cell: Cell, column: str, line: int) -> Optional[date]:
         return value
     text = _text(value)
     try:
-        return date.fromisoformat(text) if text else None
+        return datetime.strptime(text, form).date() if text else None
     except ValueError:
-        raise ValueError(f"Row {line}: {column} is {text!r}, not a date written as YYYY-MM-DD.") from None
+        raise ValueError(f"Row {line}: {column} is {text!r}, not a date written like "
+                         f"{datetime(2026, 1, 15).strftime(form)}.") from None
 
 
-def _side(cell: Cell, column: str, line: int) -> str:
+def _side(cell: Cell, column: str, line: int, sides: Dict[str, str]) -> str:
     side = (_text(cell(column)) or "").upper()
-    if side not in ("BUY", "SELL"):
-        raise ValueError(f"Row {line}: {column} is {cell(column)!r}, not buy or sell.")
-    return side
+    if side not in sides:
+        raise ValueError(f"Row {line}: {column} is {cell(column)!r}, not {' or '.join(sides).lower()}.")
+    return sides[side]
+
+
+def _set_aside(cell: Cell, line: int) -> List[str]:
+    """The note on what Zerodha holds back, which its shares and funds sheets list alike."""
+    aside = [f"{n:.10g} {label}" for column, label in ZERODHA_SET_ASIDE.items()
+             if (n := _number(cell, column, line, required=False))]
+    return [f"The file also shows {' and '.join(aside)}. Check the quantity is right."] if aside else []
 
 
 def _zerodha_holding(cell: Cell, line: int) -> Row:
     held_long = _number(cell, "Quantity Long Term", line, required=False)
-    aside = [f"{n:.10g} {label}" for column, label in ZERODHA_SET_ASIDE.items()
-             if (n := _number(cell, column, line, required=False))]
-    notes = ([f"{held_long:.10g} of these were held over a year."] if held_long else []) + \
-        ([f"The file also shows {' and '.join(aside)}. Check the quantity is right."] if aside else [])
+    notes = ([f"{held_long:.10g} of these were held over a year."] if held_long else []) + _set_aside(cell, line)
     return Row(line, name=None, isin=_text(cell("ISIN")), symbol=_text(cell("Symbol")),
                quantity=_number(cell, "Quantity Available", line, required=True),
-               price=_price(cell, "Average Price", line), trade_date=None, side="BUY", note=" ".join(notes) or None)
+               price=_price(cell, "Average Price", line), trade_date=None, side="BUY", note=" ".join(notes) or None,
+               fees=None, scheme_code=None, doubt=None)
+
+
+def _zerodha_fund(cell: Cell, line: int) -> Row:
+    return Row(line, name=_text(cell("Symbol")), isin=_text(cell("ISIN")), symbol=None,
+               quantity=_number(cell, "Quantity Available", line, required=True),
+               price=_price(cell, "Average Price", line), trade_date=None, side="BUY",
+               note=" ".join(_set_aside(cell, line)) or None, fees=None, scheme_code=None, doubt=None)
 
 
 def _groww_holding(cell: Cell, line: int) -> Row:
     return Row(line, name=_text(cell("Stock Name")), isin=_text(cell("ISIN")), symbol=None,
                quantity=_number(cell, "Quantity", line, required=True), price=_price(cell, "Average buy price", line),
-               trade_date=None, side="BUY", note=None)
+               trade_date=None, side="BUY", note=None, fees=None, scheme_code=None, doubt=None)
+
+
+def _groww_fund_order(cell: Cell, line: int) -> Row:
+    return Row(line, name=_text(cell("Scheme Name")), isin=None, symbol=None,
+               quantity=_number(cell, "Units", line, required=True), price=_price(cell, "NAV", line),
+               trade_date=_date(cell, "Date", line, "%d %b %Y"),
+               side=_side(cell, "Transaction Type", line, GROWW_SIDES), note=None, fees=None, scheme_code=None,
+               doubt=None)
 
 
 def _trade(cell: Cell, line: int) -> Row:
     return Row(line, name=None, isin=_text(cell("isin")), symbol=_text(cell("symbol")),
                quantity=_number(cell, "quantity", line, required=True), price=_price(cell, "price", line),
-               trade_date=_date(cell, "trade_date", line), side=_side(cell, "trade_type", line), note=None)
+               trade_date=_date(cell, "trade_date", line, ISO_DATE), side=_side(cell, "trade_type", line, SIDES),
+               note=None, fees=None, scheme_code=None, doubt=None)
 
 
 def _template_row(cell: Cell, line: int) -> Row:
@@ -343,15 +443,23 @@ def _template_row(cell: Cell, line: int) -> Row:
     is_isin = bool(ISIN.match(given))
     return Row(line, name=None, isin=given if is_isin else None, symbol=None if is_isin else given or None,
                quantity=_number(cell, "quantity", line, required=True), price=_price(cell, "price", line),
-               trade_date=_date(cell, "trade_date", line), side=_side(cell, "side", line), note=None)
+               trade_date=_date(cell, "trade_date", line, ISO_DATE), side=_side(cell, "side", line, SIDES),
+               note=None, fees=None, scheme_code=None, doubt=None)
 
 
 LAYOUTS = (
     Layout("Zerodha holdings",
            ("Symbol", "ISIN", "Quantity Available", "Quantity Long Term", "Average Price", *ZERODHA_SET_ASIDE),
-           ("Equity Holdings Statement as on", "%Y-%m-%d"), _zerodha_holding),
+           ("Equity Holdings Statement as on", ISO_DATE), _zerodha_holding, is_fund=False),
+    Layout("Zerodha holdings", ("Symbol", "ISIN", "Quantity Available", "Average Price", *ZERODHA_SET_ASIDE),
+           ("Mutual Funds Holdings Statement as on", ISO_DATE), _zerodha_fund, is_fund=True),
     Layout("Groww stocks", ("Stock Name", "ISIN", "Quantity", "Average buy price"),
-           ("Holdings statement for stocks as on", "%d-%m-%Y"), _groww_holding),
-    Layout("Zerodha tradebook", ("symbol", "isin", "trade_date", "trade_type", "quantity", "price"), None, _trade),
-    Layout("CSV template", ("symbol_or_isin", "side", "quantity", "price", "trade_date"), None, _template_row),
+           ("Holdings statement for stocks as on", "%d-%m-%Y"), _groww_holding, is_fund=False),
+    # Groww gives funds only as orders, with neither an ISIN nor an AMFI code
+    Layout("Groww mutual funds", ("Scheme Name", "Transaction Type", "Units", "NAV", "Date"), None,
+           _groww_fund_order, is_fund=True),
+    Layout("Zerodha tradebook", ("symbol", "isin", "trade_date", "trade_type", "quantity", "price"), None, _trade,
+           is_fund=False),
+    Layout("CSV template", ("symbol_or_isin", "side", "quantity", "price", "trade_date"), None, _template_row,
+           is_fund=False),
 )
