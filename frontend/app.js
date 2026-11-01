@@ -25,12 +25,12 @@ const compactInr = (v) => v == null ? "—" : "₹" + Intl.NumberFormat("en-IN",
 const initials = (sym) => (sym || "?").replace(/[^A-Z0-9]/gi, "").slice(0, 2).toUpperCase();
 const skel = (hgt = 16, w = "100%") => h("div", { class: "skeleton", style: `height:${hgt}px;width:${w}` });
 // The small markdown the answers use (### title, - bullets, **bold**, [label](https://…)), built as
-// nodes like everything else, so an answer can never inject markup; links go only to http(s).
+// nodes like everything else, so an answer can never inject markup; links go only to http(s) or to the app's own #/ pages.
 function inline(text) {
   const out = [];
-  for (const part of String(text).split(/(\*\*[^*]+\*\*|\[[^\]]+\]\(https?:\/\/[^)\s]+\))/)) {
-    const bold = part.match(/^\*\*([^*]+)\*\*$/), link = part.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
-    out.push(bold ? h("strong", {}, bold[1]) : link ? h("a", { href: link[2], target: "_blank", rel: "noopener noreferrer" }, link[1]) : part);
+  for (const part of String(text).split(/(\*\*[^*]+\*\*|\[[^\]]+\]\((?:https?:\/\/|#\/)[^)\s]+\))/)) {
+    const bold = part.match(/^\*\*([^*]+)\*\*$/), link = part.match(/^\[([^\]]+)\]\(((?:https?:\/\/|#\/)[^)\s]+)\)$/);
+    out.push(bold ? h("strong", {}, bold[1]) : link ? h("a", link[2].startsWith("#/") ? { href: link[2] } : { href: link[2], target: "_blank", rel: "noopener noreferrer" }, link[1]) : part);
   }
   return out;
 }
@@ -1168,6 +1168,13 @@ async function pageLearn(view, ctx) {
     ...t.lessons.map((l) => h("details", {}, h("summary", {}, l.title), h("p", {}, l.text), h("a", { class: "btn ghost small", href: `#/chat?q=${encodeURIComponent("Explain " + l.title + " with an example")}` }, "Ask a follow-up →")))))));
 }
 
+// a plain fetch: the guide is a public markdown file, and api() reads JSON
+async function pageGuide(view, ctx) {
+  const res = await fetch("/static/guide.md", { signal: ctx.signal });
+  if (!res.ok) throw new Error(`/static/guide.md answered ${res.status} ${res.statusText}`);
+  view.append(h("div", { class: "card" }, md(await res.text())));
+}
+
 async function pageReports(view, ctx) {
   const list = await api("/reports", { signal: ctx.signal });
   view.append(h("div", { class: "card" }, h("p", { class: "muted", style: "margin-top:0" }, "18-section reports generated from the engines. Open any stock and press “Research report” to create one."),
@@ -1356,6 +1363,7 @@ const ROUTES = [
   { path: "performance", title: "Track record", section: "Learn", label: "Track record", render: pagePerformance },
   { path: "reports", title: "My reports", section: "Learn", label: "My reports", render: pageReports },
   { path: "report", title: "Report", section: "Learn", render: pageReport },
+  { path: "guide", title: "How to use StockIntel", section: "Learn", label: "Guide", render: pageGuide },
 ];
 const NOT_FOUND = { title: "Page not found", render: (view) => view.append(EmptyState("compass", `There is no page at ${location.hash}.`, null,
   h("a", { class: "btn primary", href: "#/home" }, "Go to Home"))) };
