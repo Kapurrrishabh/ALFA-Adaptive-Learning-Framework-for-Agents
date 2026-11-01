@@ -1138,18 +1138,18 @@ def test_a_claim_in_brackets_that_no_passage_entails_serves_the_plain_answer(mar
 
 
 def test_a_passages_figure_in_brackets_after_another_subject_is_read_with_its_sentence(market, router):
-    """"The Nifty fell (over 500 points) after the RBI's announcement." was served: a passage held the bracket word for
-    word, so it was left out unread, and the 500 points were the Sensex's. `literal` cannot pin this, as the passages
-    joined hold every word; this fake knows whose fall the figure was."""
+    """"The Nifty fell (over 500 points) after the RBI's announcement." was served, though the 500 points were the
+    Sensex's: the entailment model reads a bracket as an aside. This fake does too, and knows whose fall the figure
+    was; `literal` cannot pin this, as the passages joined hold every word."""
     from backend.models.agent import phrase
     fell = Chunk("ET, 7 Oct 2026: Tata Steel shares fell 3%. Refinery stocks fell after the RBI hike.", [],
                  "https://n.test/fell", "2026-10-07")
-    tied = lambda pairs: [float("3%" not in said or "Tata Steel" in said) for _, said in pairs]
+    tied = lambda pairs: [float("3%" not in re.sub(r"\(.*?\)", "", said) or "Tata Steel" in said) for _, said in pairs]
     built = news_reference(FakeWriter("Refinery stocks fell (3%) after the RBI hike (ET, 7 Oct 2026)."), news=(fell,),
                            entails=tied)
     turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
     assert turn.served == phrase.recent_plain(None, None, [fell])
-    assert "no passage says “Refinery stocks fell (3%) after the RBI hike.”" in turn.unphrased_because
+    assert "no passage says “Refinery stocks fell 3% after the RBI hike.”" in turn.unphrased_because
 
 
 def test_a_reply_that_only_names_a_source_serves_the_plain_answer(market, router):

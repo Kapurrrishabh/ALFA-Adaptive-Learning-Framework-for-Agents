@@ -151,11 +151,12 @@ def _ask(writer, system, content):
 def _unentailed(text, chunks, entails):
     """Why `text` says something no source entails, sentence by sentence, or nothing when every sentence is entailed."""
     # Only a bracket naming the passages' own sources is left out: kept on its sentence, "(Mint, 6 Oct 2026)" failed 3 of
-    # 21 faithful replies. Any other is a claim, as in "The Nifty fell (over 500 points)" when the Sensex fell by them.
+    # 21 faithful replies. Any other is read without its brackets, which the model takes as an aside: "The Nifty fell
+    # (over 500 points)" scored 0.91 for passages where the Sensex fell by them, and 0.07 written without the brackets.
     sources = [chunk.text for chunk in chunks]
     cited = {_citation(chunk) for chunk in chunks}
     kept = lambda bracket: "" if all(part.strip() in cited for part in bracket.group(1).split(";")) \
-        else bracket.group(0)
+        else f" {bracket.group(1)}"
     claims = [claim for claim in (_BRACKETED.sub(kept, part).strip() for part in sentences(text))
               if re.search(r"\w", claim)]
     if not claims:
