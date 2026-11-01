@@ -11,8 +11,11 @@ import json
 import os
 import secrets
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from backend.config import BUSY_WAIT_S
 
 DEFAULT_URL = "http://127.0.0.1:8010"
 CREDENTIALS = Path.home() / ".stockintel" / "selfagent.json"
@@ -24,6 +27,17 @@ CONVERSATIONS_KEPT = 1000
 
 class AgentUnavailable(Exception):
     pass
+
+
+@contextmanager
+def _unless_busy(lock: threading.Lock):
+    """The agent answers one question at a time, and a queued question would hold a server thread."""
+    if not lock.acquire(timeout=BUSY_WAIT_S):
+        raise AgentUnavailable("the agent is answering someone else; try again in a moment")
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 class SelfAgentClient:
@@ -39,9 +53,9 @@ class SelfAgentClient:
         try:
             r = httpx.get(self.url + "/model", timeout=2)
             r.raise_for_status()
-            return {"available": True, "url": self.url, **r.json()}
+            return {"available": True, **r.json()}
         except (httpx.HTTPError, ValueError) as exc:
-            return {"available": False, "url": self.url, "reason": f"{type(exc).__name__}: {exc}"}
+            return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
 
     def _credentials(self) -> Dict[str, str]:
         if CREDENTIALS.exists():
@@ -72,7 +86,7 @@ class SelfAgentClient:
         import httpx
         from websockets.exceptions import WebSocketException
         from websockets.sync.client import connect
-        with self._lock:
+        with _unless_busy(self._lock):
             try:
                 self._token = self._token or self._login()
                 ws_url = self.url.replace("http", "ws", 1) + "/chat"

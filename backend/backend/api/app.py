@@ -4,7 +4,8 @@ Auth: every endpoint except /health and the static dashboard requires the
 X-API-Key header to equal STOCKINTEL_API_KEY (compared in constant time).
 The server refuses to start without a key. Rate limit: token bucket per key.
 All handlers are read-only over market data; the only writes are the user's
-own portfolio, reports and alert acknowledgements in the local database.
+own portfolio, reports, alert acknowledgements and daily model-call counts in
+the local database.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from backend.config import DEFAULT_PORTFOLIO, FORECAST_DAYS, resolve_symbol
 from backend.database.sources.provider import DataUnavailable
 from backend.database.sources.quality import DataQualityError
 from backend.api.jsonutil import sanitize
+from backend.api.quota import QuotaExceeded
 from backend.knowledge_base.lessons import knowledge_base
 from backend.paths import FRONTEND
 from backend.api.nlu import ALIASES
@@ -131,6 +133,11 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     async def _value(_: Request, exc: ValueError):
         return JSONResponse(status_code=400, content={"error": "bad_request", "detail": str(exc)})
 
+    @app.exception_handler(QuotaExceeded)
+    async def _quota(_: Request, exc: QuotaExceeded):
+        return JSONResponse(status_code=429, content={"error": "quota", "detail": str(exc), "limit": exc.limit,
+                                                      "resets_at": exc.resets_at.isoformat()})
+
     def ticker(t: str) -> str:
         t = t.upper()
         if not SYMBOL_RE.match(t):
@@ -202,9 +209,9 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     def ui_indicators(t: str, bars: int = Query(default=126, ge=30, le=1000)):
         return ok(hub.indicators(ticker(t), bars))
 
-    @app.get("/ui/stock/{t}/ai", dependencies=[Depends(auth)])
-    def ui_ai(t: str, model: Literal["chronos", "kronos", "alfa", "gru"] = "chronos"):
-        return ok(hub.ai_forecast(ticker(t), model))
+    @app.get("/ui/stock/{t}/ai")
+    def ui_ai(t: str, model: Literal["chronos", "kronos", "alfa", "gru"] = "chronos", owner: str = Depends(auth)):
+        return ok(hub.ai_forecast(ticker(t), model, owner))
 
     @app.get("/ui/ticker", dependencies=[Depends(auth)])
     def ui_ticker():
@@ -263,9 +270,14 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     def ui_agent_ask(body: ChatIn, owner: str = Depends(auth)):
         from backend.models.agent.client import AgentUnavailable
         try:
-            return ok(agent_client.ask(body.message, "", session=owner + ":" + body.session_id))
+            with orch.model_call(owner):
+                return ok(agent_client.ask(body.message, "", session=owner + ":" + body.session_id))
         except AgentUnavailable as exc:
             raise HTTPException(503, str(exc)) from None
+
+    @app.get("/ui/usage")
+    def ui_usage(owner: str = Depends(auth)):
+        return orch.usage(owner)
 
     @app.get("/ui/stock/{t}/insider", dependencies=[Depends(auth)])
     def ui_insider(t: str):

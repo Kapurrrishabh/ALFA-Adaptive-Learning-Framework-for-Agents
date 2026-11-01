@@ -14,11 +14,14 @@ import logging
 import math
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from backend.api import quota
 from backend.advisory.calculators import performance
 from backend.advisory import report as R
 from backend.user.portfolio.alerts import evaluate as evaluate_alert
@@ -151,6 +154,22 @@ class Orchestrator:
         """Held around a read-modify-write of one portfolio, so two requests cannot drop each other's change."""
         return self._key_lock("portfolio:" + portfolio)
 
+    @contextmanager
+    def model_call(self, portfolio: str):
+        """Charge one call to the Space, Claude or the agent to the portfolio's day; a call that fails is refunded."""
+        now = datetime.now(timezone.utc)
+        quota.charge(self.store, portfolio, "lm", now)
+        try:
+            yield
+        except Exception:
+            quota.refund(self.store, portfolio, "lm", now)
+            raise
+
+    def usage(self, portfolio: str) -> Dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        return {"used": self.store.usage(portfolio, quota.day_ist(now)).get("lm", 0), "limit": quota.USER_LIMITS["lm"],
+                "resets_at": quota.resets_at(now).isoformat()}
+
     def save_portfolio(self, portfolio: str, cash: float, risk_profile: str, horizon: str,
                        transactions: List[Dict[str, Any]]) -> int:
         """Validate (FIFO, no oversells) before anything is written."""
@@ -248,20 +267,26 @@ class Orchestrator:
             return self._agent_reply(s, message, intent)
         reply = self._deterministic(s, intent)
         if reply.data.get("no_answer"):          # our patterns or the reference index had nothing; let the LM place it
-            routed = self._routed(message, intent)
+            try:
+                routed = self._routed(s, message, intent)
+            except quota.QuotaExceeded as exc:
+                routed = intent
+                reply.text += f"\n\n{exc}"
             if routed.name != intent.name:
                 reply = self._deterministic(s, routed)
         if self.llm_mode == "narrate" and reply.data.get("payload") is not None:
-            reply = self._narrate(message, reply)
+            reply = self._narrate(s, message, reply)
         return reply
 
-    def _routed(self, message: str, intent: Intent) -> Intent:
+    def _routed(self, s: Session, message: str, intent: Intent) -> Intent:
         """Our patterns did not recognise the question; let the language model pick one of our handlers."""
         from backend.api import intent_lm
         from backend.api.nlu import ROUTABLE
         from backend.models.external.llm import LLMUnavailable
         try:
-            name = intent_lm.choose(message, ROUTABLE, self.hub.writer())
+            writer = self.hub.writer()
+            with self.model_call(s.portfolio):
+                name = intent_lm.choose(message, ROUTABLE, writer)
         except (LLMUnavailable, DataUnavailable) as exc:
             log.info("no language model to route %r: %s", message, exc)
             return intent
@@ -723,13 +748,18 @@ class Orchestrator:
                      "help", {"no_answer": True})
 
     # --- LLM modes --------------------------------------------------------------------
-    def _narrate(self, question: str, reply: Reply) -> Reply:
+    def _narrate(self, s: Session, question: str, reply: Reply) -> Reply:
         from backend.models.external.llm import LLMUnavailable, Narrator, compact_payload
         payload = reply.data["payload"]
         if isinstance(payload, dict) and "results" in payload:
             payload = compact_payload(payload)
         try:
-            text, meta = Narrator(self.llm_client).narrate(question, payload, reply.text)
+            with self.model_call(s.portfolio):
+                text, meta = Narrator(self.llm_client).narrate(question, payload, reply.text)
+        except quota.QuotaExceeded as exc:
+            reply.text += f"\n\n{exc}"
+            reply.llm = {"error": str(exc)}
+            return reply
         except LLMUnavailable as exc:
             reply.text += f"\n\n(Conversational layer unavailable: {exc}. Showing the computed answer.)"
             reply.llm = {"error": str(exc)}
@@ -802,7 +832,13 @@ class Orchestrator:
     def _agent_reply(self, s: Session, message: str, intent: Intent) -> Reply:
         from backend.models.external.llm import LLMUnavailable, ToolAgent
         try:
-            text, meta = ToolAgent(self.llm_client, self.agent_tools(s)).run(message, s.history[-8:])
+            with self.model_call(s.portfolio):
+                text, meta = ToolAgent(self.llm_client, self.agent_tools(s)).run(message, s.history[-8:])
+        except quota.QuotaExceeded as exc:
+            reply = self._deterministic(s, intent)
+            reply.text += f"\n\n{exc}"
+            reply.llm = {"error": str(exc)}
+            return reply
         except LLMUnavailable as exc:
             reply = self._deterministic(s, intent)
             reply.text += f"\n\n(Agent unavailable: {exc}. Answered with the rule-based router.)"
