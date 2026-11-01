@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from backend.advisory.fusion.evidence import utcnow_iso
+from backend.config import DEFAULT_PORTFOLIO
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS ohlcv (
@@ -46,7 +47,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol TEXT NOT NULL, created_at TEXT NOT NULL, kind TEXT NOT NULL,
     severity TEXT NOT NULL, message TEXT NOT NULL, reasons TEXT NOT NULL,
-    acknowledged INTEGER NOT NULL DEFAULT 0
+    acknowledged INTEGER NOT NULL DEFAULT 0   -- no longer read, see alert_acks; dropping a column cannot be undone
 );
 CREATE TABLE IF NOT EXISTS portfolios (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,12 +85,22 @@ CREATE TABLE IF NOT EXISTS model_versions (
     backtest TEXT, limitations TEXT, created_at TEXT NOT NULL, approved_by TEXT,
     UNIQUE (name, version)
 );
+CREATE TABLE IF NOT EXISTS alert_acks (
+    portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+    alert_id INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+    PRIMARY KEY (portfolio_id, alert_id)
+);
 CREATE TABLE IF NOT EXISTS usage (
     who TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL, count INTEGER NOT NULL,
     PRIMARY KEY (who, day, kind)
 );
 """
 EVERYONE = "*"
+_OWN_REPORTS = ("SELECT r.id, r.symbol, r.created_at, r.body FROM reports r"
+                " JOIN portfolios p ON p.id = r.portfolio_id WHERE p.name = ?")
+# Provisional: a report is about 6 KB (render_report on synthetic data), so a full portfolio keeps about 0.3 MB.
+# Raise it if users ask for reports older than the newest 50.
+REPORTS_KEPT = 50
 
 
 def _refuse_everyone(who: str) -> None:
@@ -128,6 +139,23 @@ class Store:
         if path != ":memory:":
             self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
+        self._add_owner_columns()
+
+    def _add_owner_columns(self) -> None:
+        """Older files have reports and plans with no owner. The shared key's one user wrote them, so the default
+        portfolio owns them; with no default portfolio they stay ownerless, and nobody can read them."""
+        with self.conn:
+            self.conn.execute("BEGIN")      # else sqlite3 runs the ALTER on its own, apart from the backfill
+            for table in ("reports", "signal_plans"):
+                if "portfolio_id" not in {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN portfolio_id INTEGER"
+                                      " REFERENCES portfolios(id) ON DELETE CASCADE")
+                    self.conn.execute(f"UPDATE {table} SET portfolio_id = (SELECT id FROM portfolios WHERE name = ?)",
+                                      (DEFAULT_PORTFOLIO,))
+
+    def _portfolio_id(self, name: str) -> Optional[int]:
+        row = self.conn.execute("SELECT id FROM portfolios WHERE name = ?", (name,)).fetchone()
+        return None if row is None else int(row[0])
 
     # --- market data cache -------------------------------------------------
     def save_ohlcv(self, symbol: str, df: pd.DataFrame, source: str) -> int:
@@ -160,20 +188,30 @@ class Store:
                                  "ORDER BY analysis_ts DESC, id DESC LIMIT ?", (symbol, limit))
         return [json.loads(r["payload"]) for r in rows]
 
-    def save_report(self, symbol: str, body: str) -> int:
+    def save_report(self, portfolio: str, symbol: str, body: str) -> int:
+        pid = self._portfolio_id(portfolio)
+        if pid is None:
+            raise ValueError("Set up your portfolio first: each report is kept with it. "
+                             "Add your cash or a holding, then ask for the report again.")
         with self.conn:
-            cur = self.conn.execute("INSERT INTO reports (symbol, created_at, body) VALUES (?,?,?)",
-                                    (symbol, utcnow_iso(), body))
+            cur = self.conn.execute("INSERT INTO reports (portfolio_id, symbol, created_at, body) VALUES (?,?,?,?)",
+                                    (pid, symbol, utcnow_iso(), body))
+            self.conn.execute("DELETE FROM reports WHERE portfolio_id = ? AND id NOT IN (SELECT id FROM reports"
+                              " WHERE portfolio_id = ? ORDER BY id DESC LIMIT ?)", (pid, pid, REPORTS_KEPT))
         return int(cur.lastrowid)
 
-    def reports(self, symbol: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
-        q = "SELECT id, symbol, created_at, body FROM reports"
-        args: tuple = ()
+    def reports(self, portfolio: str, symbol: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+        q = _OWN_REPORTS
+        args: tuple = (portfolio,)
         if symbol:
-            q += " WHERE symbol = ?"
-            args = (symbol,)
-        q += " ORDER BY id DESC LIMIT ?"
+            q += " AND r.symbol = ?"
+            args += (symbol,)
+        q += " ORDER BY r.id DESC LIMIT ?"
         return [dict(r) for r in self.conn.execute(q, args + (limit,))]
+
+    def report(self, portfolio: str, report_id: int) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(_OWN_REPORTS + " AND r.id = ?", (portfolio, report_id)).fetchone()
+        return None if row is None else dict(row)
 
     # --- predictions (reproducibility) --------------------------------------
     @staticmethod
@@ -203,15 +241,20 @@ class Store:
                               (realized, utcnow_iso(), pred_id))
 
     # --- signal plans --------------------------------------------------------------
-    def save_plan(self, payload: Dict[str, Any]) -> int:
+    def save_plan(self, portfolio: str, payload: Dict[str, Any]) -> Optional[int]:
+        """Not kept for a portfolio that is not set up: only the stop check reads plans, and it needs holdings."""
+        pid = self._portfolio_id(portfolio)
+        if pid is None:
+            return None
         with self.conn:
-            cur = self.conn.execute("INSERT INTO signal_plans (created_at, as_of, strategy, payload)"
-                                    " VALUES (?,?,?,?)", (utcnow_iso(), payload["as_of"], payload["strategy"],
-                                                          json.dumps(payload, default=str)))
+            cur = self.conn.execute("INSERT INTO signal_plans (portfolio_id, created_at, as_of, strategy, payload)"
+                                    " VALUES (?,?,?,?,?)", (pid, utcnow_iso(), payload["as_of"], payload["strategy"],
+                                                            json.dumps(payload, default=str)))
         return int(cur.lastrowid)
 
-    def latest_plan(self) -> Optional[Dict[str, Any]]:
-        row = self.conn.execute("SELECT payload FROM signal_plans ORDER BY id DESC LIMIT 1").fetchone()
+    def latest_plan(self, portfolio: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute("SELECT s.payload FROM signal_plans s JOIN portfolios p ON p.id = s.portfolio_id"
+                                " WHERE p.name = ? ORDER BY s.id DESC LIMIT 1", (portfolio,)).fetchone()
         return json.loads(row["payload"]) if row else None
 
     # --- pooled pattern validation --------------------------------------------
@@ -237,14 +280,22 @@ class Store:
                 (symbol, utcnow_iso(), kind, severity, message, json.dumps(reasons)))
         return int(cur.lastrowid)
 
-    def alerts(self, include_acknowledged: bool = False, limit: int = 50) -> List[Dict[str, Any]]:
-        q = "SELECT * FROM alerts" + ("" if include_acknowledged else " WHERE acknowledged = 0")
-        rows = self.conn.execute(q + " ORDER BY id DESC LIMIT ?", (limit,))
+    def alerts(self, portfolio: str, symbols: List[str], include_acknowledged: bool = False,
+               limit: int = 50) -> List[Dict[str, Any]]:
+        """Alerts on `symbols`, each marked acknowledged or not by this portfolio."""
+        marks = ",".join("?" * len(symbols))
+        # filtered outside: in the inner query `acknowledged` would mean the old column of that name
+        q = ("SELECT * FROM (SELECT a.id, a.symbol, a.created_at, a.kind, a.severity, a.message, a.reasons,"
+             " EXISTS (SELECT 1 FROM alert_acks k JOIN portfolios p ON p.id = k.portfolio_id"
+             f" WHERE k.alert_id = a.id AND p.name = ?) AS acknowledged FROM alerts a WHERE a.symbol IN ({marks}))")
+        q += "" if include_acknowledged else " WHERE NOT acknowledged"
+        rows = self.conn.execute(q + " ORDER BY id DESC LIMIT ?", (portfolio, *symbols, limit))
         return [{**dict(r), "reasons": json.loads(r["reasons"])} for r in rows]
 
-    def acknowledge_alert(self, alert_id: int) -> None:
+    def acknowledge_alert(self, portfolio: str, alert_id: int) -> None:
         with self.conn:
-            self.conn.execute("UPDATE alerts SET acknowledged = 1 WHERE id = ?", (alert_id,))
+            self.conn.execute("INSERT OR IGNORE INTO alert_acks (portfolio_id, alert_id) SELECT p.id, a.id"
+                              " FROM portfolios p JOIN alerts a ON a.id = ? WHERE p.name = ?", (alert_id, portfolio))
 
     # --- portfolios ----------------------------------------------------------
     def save_portfolio(self, name: str, cash: float, risk_profile: str, horizon: str,
@@ -274,19 +325,19 @@ class Store:
         return {**dict(row), "transactions": tx}
 
     def save_snapshot(self, portfolio: str, value: float, payload: Dict[str, Any]) -> None:
-        row = self.conn.execute("SELECT id FROM portfolios WHERE name = ?", (portfolio,)).fetchone()
+        pid = self._portfolio_id(portfolio)
         with self.conn:
             self.conn.execute("INSERT INTO portfolio_snapshots (portfolio_id, created_at, value, payload)"
-                              " VALUES (?,?,?,?)", (row[0], utcnow_iso(), value,
+                              " VALUES (?,?,?,?)", (pid, utcnow_iso(), value,
                                                     json.dumps(payload, default=str)))
 
     def snapshots(self, portfolio: str, limit: int = 10) -> List[Dict[str, Any]]:
-        row = self.conn.execute("SELECT id FROM portfolios WHERE name = ?", (portfolio,)).fetchone()
-        if row is None:
+        pid = self._portfolio_id(portfolio)
+        if pid is None:
             return []
         return [{**dict(r), "payload": json.loads(r["payload"])} for r in self.conn.execute(
             "SELECT created_at, value, payload FROM portfolio_snapshots WHERE portfolio_id = ?"
-            " ORDER BY id DESC LIMIT ?", (row[0], limit))]
+            " ORDER BY id DESC LIMIT ?", (pid, limit))]
 
     # --- usage counters ------------------------------------------------------
     def spend(self, who: str, kind: str, day: str, limit: int, everyone_limit: int) -> Optional[str]:

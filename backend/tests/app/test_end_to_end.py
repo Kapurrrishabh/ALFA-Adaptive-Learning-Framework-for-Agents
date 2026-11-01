@@ -218,8 +218,8 @@ def _split_history(close, split_day=None):
     return pd.DataFrame({"close": close, "ratio": ratio})
 
 
-def _store_test_buy(orch, cash, price, day):
-    orch.save_portfolio(DEFAULT_PORTFOLIO, cash, "moderate", "long", [
+def _store_test_buy(orch, cash, price, day, portfolio=DEFAULT_PORTFOLIO):
+    orch.save_portfolio(portfolio, cash, "moderate", "long", [
         {"symbol": "TEST", "side": "BUY", "quantity": 10, "price": price, "trade_date": day}])
 
 
@@ -643,6 +643,108 @@ def test_two_portfolios_do_not_see_each_others_holdings(app_client, orch, sees_a
         orch.save_portfolio(portfolio, 0.0, "moderate", "medium", [
             {"symbol": symbol, "side": "BUY", "quantity": quantity, "price": 100, "trade_date": "2025-06-02"}])
     assert sees_alices_buy(orch, orch.session("alice", "web")) and not sees_alices_buy(orch, orch.session("bob", "web"))
+
+
+@pytest.fixture
+def two_portfolios_reports(app_client, orch):
+    """Report ids made by alice in chat and by the API's own portfolio."""
+    for portfolio in ("alice", DEFAULT_PORTFOLIO):
+        _store_test_buy(orch, 0.0, 100, "2025-06-02", portfolio)
+    alices = orch.handle("Generate a report on TEST", "alice", "r").data["report_id"]
+    return {"alice": alices, "mine": app_client.post("/reports/TEST", headers={"X-API-Key": KEY}).json()["id"]}
+
+
+def test_the_report_list_leaves_out_another_portfolios_reports(app_client, two_portfolios_reports):
+    listed = app_client.get("/reports", headers={"X-API-Key": KEY}).json()
+    assert [r["id"] for r in listed] == [two_portfolios_reports["mine"]]
+
+
+def test_another_portfolios_report_cannot_be_opened(app_client, two_portfolios_reports):
+    opened = {who: app_client.get(f"/reports/{rid}", headers={"X-API-Key": KEY}).status_code
+              for who, rid in two_portfolios_reports.items()}
+    assert opened == {"alice": 404, "mine": 200}
+
+
+@pytest.mark.parametrize("method, path", [("get", "/reports"), ("get", "/reports/1"), ("post", "/reports/TEST"),
+                                          ("get", "/alerts"), ("post", "/alerts/1/ack")])
+def test_owned_report_and_alert_routes_refuse_anonymous_callers(app_client, method, path):
+    assert getattr(app_client, method)(path).status_code == 401
+
+
+def test_a_report_before_the_portfolio_is_set_up_is_a_plain_400(app_client):
+    r = app_client.post("/reports/TEST", headers={"X-API-Key": KEY})
+    assert r.status_code == 400 and r.json()["detail"].startswith("Set up your portfolio first")
+
+
+def test_a_portfolio_keeps_only_its_own_newest_reports(orch):
+    from backend.database.storage import REPORTS_KEPT
+    for portfolio in ("alice", DEFAULT_PORTFOLIO):
+        _store_test_buy(orch, 0.0, 100, "2025-06-02", portfolio)
+    orch.store.save_report("alice", "TEST", "alice's report")
+    for n in range(REPORTS_KEPT + 1):
+        orch.store.save_report(DEFAULT_PORTFOLIO, "TEST", f"report {n}")
+    kept = {p: [r["body"] for r in orch.store.reports(p, limit=REPORTS_KEPT + 1)] for p in ("alice", DEFAULT_PORTFOLIO)}
+    assert kept == {"alice": ["alice's report"], DEFAULT_PORTFOLIO: [f"report {n}" for n in range(REPORTS_KEPT, 0, -1)]}
+
+
+def test_one_portfolios_plan_does_not_move_anothers_stops(orch):
+    from backend.advisory.signals.advisor import STOP_PCT
+    for portfolio in ("alice", "bob"):
+        _store_test_buy(orch, 0.0, 100, "2025-06-02", portfolio)
+    orch.store.save_plan("bob", {"as_of": END, "strategy": "momentum", "actions": [{"symbol": "TEST", "stop_level": 55.5}]})
+    stops = [re.search(r"stop ₹([\d,.]+)", orch.handle("Check my stops", p, "s").text).group(1) for p in ("alice", "bob")]
+    assert stops == [f"{100 * (1 - STOP_PCT):,.2f}", "55.50"]
+
+
+def test_a_plan_for_new_money_needs_no_portfolio_set_up(app_client, signal_inputs):
+    """A plan is kept with its portfolio, and a new user has none yet; the plan itself must still come back."""
+    assert app_client.get("/signals?capital=100000", headers={"X-API-Key": KEY}).status_code == 200
+
+
+def test_acknowledging_an_alert_hides_it_only_from_that_portfolio(app_client, orch):
+    for portfolio in ("alice", DEFAULT_PORTFOLIO):
+        _store_test_buy(orch, 0.0, 100, "2025-06-02", portfolio)
+    alert = orch.store.save_alert("TEST", "price_move", "high", "TEST moved 6%", ["moved 6%"])
+    h = {"X-API-Key": KEY}
+    app_client.post(f"/alerts/{alert}/ack", headers=h)
+    assert [len(app_client.get("/alerts", headers=h).json()), len(orch.alerts("alice"))] == [0, 1]
+
+
+def test_alerts_list_only_the_stocks_the_portfolio_holds(app_client, orch):
+    """Anyone's analysis writes an alert, so an unfiltered list would show which stocks other users looked up."""
+    _store_test_buy(orch, 0.0, 100, "2025-06-02")
+    for symbol in ("TEST", "PEER"):
+        orch.store.save_alert(symbol, "price_move", "high", f"{symbol} moved 6%", ["moved 6%"])
+    assert [a["symbol"] for a in app_client.get("/alerts", headers={"X-API-Key": KEY}).json()] == ["TEST"]
+
+
+OLD_OWNERLESS_TABLES = """
+CREATE TABLE portfolios (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, cash REAL NOT NULL DEFAULT 0,
+    risk_profile TEXT NOT NULL DEFAULT 'moderate', horizon TEXT NOT NULL DEFAULT 'medium', created_at TEXT NOT NULL);
+CREATE TABLE reports (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, created_at TEXT NOT NULL, body TEXT NOT NULL);
+CREATE TABLE signal_plans (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, as_of TEXT NOT NULL,
+    strategy TEXT NOT NULL, payload TEXT NOT NULL);
+INSERT INTO reports (symbol, created_at, body) VALUES ('TEST', '2026-01-02', 'an old report');
+INSERT INTO signal_plans (created_at, as_of, strategy, payload) VALUES ('2026-01-02', '2026-01-02', 'momentum', '{}');
+"""
+
+
+@pytest.mark.parametrize("had_default, visible", [(True, True), (False, False)])
+def test_an_older_database_gives_its_reports_and_plans_to_the_default_portfolio_only(tmp_path, had_default, visible):
+    """With no default portfolio the old rows have no known owner; one set up later, or a restart, must not claim them."""
+    import sqlite3
+    from backend.database.storage import Store
+    path = str(tmp_path / "old.db")
+    old = sqlite3.connect(path)
+    old.executescript(OLD_OWNERLESS_TABLES)
+    if had_default:
+        old.execute("INSERT INTO portfolios (name, created_at) VALUES (?, '2026-01-01')", (DEFAULT_PORTFOLIO,))
+    old.commit()
+    old.close()
+    Store(path).save_portfolio(DEFAULT_PORTFOLIO, 0.0, "moderate", "medium", [])
+    reopened = Store(path)
+    seen = [bool(reopened.reports(DEFAULT_PORTFOLIO)), reopened.latest_plan(DEFAULT_PORTFOLIO) is not None]
+    assert seen == [visible, visible]
 
 
 def test_performance_endpoint_reports_missing_build_cleanly(app_client, monkeypatch, tmp_path):

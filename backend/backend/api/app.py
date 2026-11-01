@@ -432,23 +432,30 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     def chat(body: ChatIn, owner: str = Depends(auth)):
         return ok(orch.handle(body.message, owner, body.session_id).to_dict())
 
-    @app.get("/reports", dependencies=[Depends(auth)])
-    def reports(symbol: Optional[str] = None):
-        return ok(orch.store.reports(ticker(symbol) if symbol else None))
+    @app.get("/reports")
+    def reports(symbol: Optional[str] = None, owner: str = Depends(auth)):
+        return ok(orch.store.reports(owner, ticker(symbol) if symbol else None))
+
+    @app.get("/reports/{report_id}")
+    def report(report_id: int, owner: str = Depends(auth)):
+        r = orch.store.report(owner, report_id)
+        if r is None:
+            raise HTTPException(404, f"no report #{report_id}")
+        return ok(r)
 
     @app.post("/reports/{t}")
     def make_report(t: str, owner: str = Depends(auth)):
         a = orch.analysis(session(owner), ticker(t))
         body = R.render_report(a)
-        return {"id": orch.store.save_report(a.symbol, body), "report": body}
+        return {"id": orch.store.save_report(owner, a.symbol, body), "report": body}
 
-    @app.get("/alerts", dependencies=[Depends(auth)])
-    def alerts(include_acknowledged: bool = False):
-        return ok(orch.store.alerts(include_acknowledged))
+    @app.get("/alerts")
+    def alerts(include_acknowledged: bool = False, owner: str = Depends(auth)):
+        return ok(orch.alerts(owner, include_acknowledged))
 
-    @app.post("/alerts/{alert_id}/ack", dependencies=[Depends(auth)])
-    def ack(alert_id: int):
-        orch.store.acknowledge_alert(alert_id)
+    @app.post("/alerts/{alert_id}/ack")
+    def ack(alert_id: int, owner: str = Depends(auth)):
+        orch.store.acknowledge_alert(owner, alert_id)
         return {"status": "acknowledged", "id": alert_id}
 
     @app.get("/signals")
@@ -462,7 +469,7 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
         words = {"lowvol": "low volatility", "blend": "blend", "momentum": ""}[strategy]
         p = orch._signal_plan(s, Intent(name="signals", amount=capital or None, raw=words))
         payload = sanitize(p.to_dict())
-        orch.store.save_plan(payload)
+        orch.store.save_plan(owner, payload)
         return ok({**payload, "text": render(p)})
 
     @app.get("/market", dependencies=[Depends(auth)])

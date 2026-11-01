@@ -170,6 +170,11 @@ class Orchestrator:
         txs = [Transaction(**t) for t in p["transactions"]]
         return build_positions(txs), float(p["cash"]), p
 
+    def alerts(self, portfolio: str, include_acknowledged: bool = False) -> List[Dict[str, Any]]:
+        """Only on held stocks: anyone's analysis writes alerts, so the full list would show what others looked up."""
+        positions, _, _ = self.holdings(portfolio)
+        return self.store.alerts(portfolio, [sym for sym, p in positions.items() if p.quantity > 0], include_acknowledged)
+
     def analysis(self, s: Session, symbol: str, market: str = "NSE", horizon: Optional[str] = None) -> StockAnalysis:
         if not SYMBOL_RE.match(symbol.upper()):
             raise ValueError(f"{symbol!r} is not a valid ticker symbol")
@@ -290,7 +295,7 @@ class Orchestrator:
         sym, mkt = self._target(s, i)
         a = self.analysis(s, sym, mkt)
         body = R.render_report(a)
-        rid = self.store.save_report(a.symbol, body)
+        rid = self.store.save_report(s.portfolio, a.symbol, body)
         return Reply(body, "report", {"report_id": rid}, ["analyze_stock", "save_report"])
 
     def _h_domain(self, s: Session, i: Intent) -> Reply:
@@ -605,7 +610,7 @@ class Orchestrator:
         from backend.advisory.signals.advisor import render
         p = self._signal_plan(s, i)
         payload = sanitize(p.to_dict())
-        self.store.save_plan(payload)
+        self.store.save_plan(s.portfolio, payload)
         return Reply(render(p), "signals", {"payload": payload}, ["signal_plan"])
 
     def _h_market_regime(self, s: Session, i: Intent) -> Reply:
@@ -643,7 +648,7 @@ class Orchestrator:
         positions, _, _ = self.holdings(s.portfolio)
         if not positions:
             raise ValueError("No stored portfolio to check stops on.")
-        planned = {a["symbol"]: a["stop_level"] for a in (self.store.latest_plan() or {}).get("actions", [])
+        planned = {a["symbol"]: a["stop_level"] for a in (self.store.latest_plan(s.portfolio) or {}).get("actions", [])
                    if a.get("stop_level")}
         lines = [f"Stop check ({STOP_PCT:.0%} stops):"]
         for sym, p in positions.items():
@@ -694,9 +699,9 @@ class Orchestrator:
         return Reply("\n".join(lines), "should_buy", {"payload": v}, ["verdict"])
 
     def _h_alerts(self, s: Session, i: Intent) -> Reply:
-        alerts = self.store.alerts()
+        alerts = self.alerts(s.portfolio)
         if not alerts:
-            return Reply("No unacknowledged alerts.", "alerts", {"payload": []})
+            return Reply("No unacknowledged alerts on the stocks you hold.", "alerts", {"payload": []})
         text = "\n\n".join(f"[{a['severity'].upper()}] {a['message']}" for a in alerts[:10])
         return Reply(text, "alerts", {"payload": alerts}, ["alerts"])
 

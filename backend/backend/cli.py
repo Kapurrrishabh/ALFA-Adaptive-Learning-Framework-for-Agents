@@ -43,7 +43,7 @@ def cmd_analyze(args) -> int:
         print(json.dumps(sanitize(a.to_dict()), indent=2))
     elif args.report:
         body = R.render_report(a)
-        orch.store.save_report(a.symbol, body)
+        orch.store.save_report(DEFAULT_PORTFOLIO, a.symbol, body)
         print(body)
     else:
         if args.llm == "narrate":
@@ -373,7 +373,7 @@ def cmd_signals(args) -> int:
              risk_mode=args.risk, n=args.positions, universe=uni, insider_trades=_insider_or_none(),
              measured=performance.momentum_evidence(performance.track_record()))
     p.warnings += split_warnings
-    orch.store.save_plan(sanitize(p.to_dict()))
+    orch.store.save_plan(DEFAULT_PORTFOLIO, sanitize(p.to_dict()))
     print(json.dumps(sanitize(p.to_dict()), indent=2) if args.json else render(p))
     return 0
 
