@@ -68,9 +68,9 @@ LATELY = re.compile(RECENT.pattern + r"|\b(fall(s|ing|en)?|fell|drop(s|ped|ping)
 # provisional, on `judge`'s scale (bge cosine) and from 32 questions with a move word: lessons beside the point
 # ("FCF yield" for bond yields) scored 0.53-0.62 and lessons that answered 0.66-0.84
 LESSON_FLOOR = 0.63
-# provisional: on 190 labelled lesson, tax and news wordings, the lesson first in `lessons`' order (ask.lessons_from) of
-# BM25's first 3, 4 and 5 sections was served right 157, 159 and 160 times; one wording is too few to choose 5 for
-LESSONS_RANKED = 4
+# provisional: on 256 labelled lesson, tax and news wordings, the lesson first in `lessons`' order (ask.lessons_from) of
+# BM25's first 4, 6 and 8 sections was served right 202, 207 and 209 times, losing none; 2 more are too few to pick 8
+LESSONS_RANKED = 6
 
 
 class SearchFailed(RuntimeError):
