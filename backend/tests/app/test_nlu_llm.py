@@ -380,6 +380,7 @@ def test_the_reference_answers_the_questions_the_app_offers(question, title):
     ("take me through what volatility is", "Volatility"),
     ("what's the fund's p/e ratio", "P/E ratio (price to earnings)"),
     ("can the model predict tomorrow's price", "Why the system does not predict exact prices"),
+    ("tax on selling stocks", "Taxes on listed equity (verify current rules)"),   # "Taxes" was cut to "taxe"
 ])
 def test_the_agents_one_lesson_is_the_one_the_question_names(question, title):
     # the agent reads only the top hit (run/ask.py), so a chat word such as "help" or "simple" placed in another

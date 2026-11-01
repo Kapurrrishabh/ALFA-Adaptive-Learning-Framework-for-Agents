@@ -58,13 +58,15 @@ def _tokens(text: str) -> List[str]:
         # matched lesson text: "what's the fund's p/e ratio" got the expense-ratio lesson
         if t in STOP or (len(t) == 1 and t.isalpha()):
             continue
+        if len(t) > 4 and t.endswith("xes"):    # "taxes" -> "tax"; cutting only the "s" left "taxe"
+            t = t[:-2]
         out.append(t[:-1] if len(t) > 4 and t.endswith("s") and not t.endswith("ss") else t)
     return out
 
 
 def _shares_word(query: List[str], title: List[str]) -> bool:
     """Whether a question and a heading name the same thing, allowing for the crude stemmer above:
-    "tax" and "taxe" (from "Taxes") count as the same word."""
+    "test" and "testing" count as the same word."""
     return any(a == b or (len(min(a, b, key=len)) >= 3 and (a.startswith(b) or b.startswith(a)))
                for a in query for b in title)
 
