@@ -381,12 +381,27 @@ def test_the_reference_answers_the_questions_the_app_offers(question, title):
     ("what's the fund's p/e ratio", "P/E ratio (price to earnings)"),
     ("can the model predict tomorrow's price", "Why the system does not predict exact prices"),
     ("tax on selling stocks", "Taxes on listed equity (verify current rules)"),   # "Taxes" was cut to "taxe"
+    # wordings reviewers saw lose their lesson when another lesson's prose was reworded
+    ("tax on shares sold this year", "Taxes on listed equity (verify current rules)"),
+    ("why can't you predict prices", "Why the system does not predict exact prices"),
+    ("how do i figure out p/e ratio", "P/E ratio (price to earnings)"),
+    ("volatility in both directions", "Volatility"),
+    ("what is a stop loss order", "Stop-loss"),          # a hyphenated heading word is named by its parts
 ])
 def test_the_agents_one_lesson_is_the_one_the_question_names(question, title):
     # the agent reads only the top hit (run/ask.py), so a chat word such as "help" or "simple" placed in another
     # lesson takes that hit, and the question gets the wrong lesson or none; the app's top-3 can still look right
     from backend.knowledge_base.lessons import knowledge_base
     assert [lesson.title for lesson, _ in knowledge_base().search(question, k=1)] == [title]
+
+
+def test_a_lesson_whose_text_is_reworded_to_mention_another_topic_does_not_take_its_question(tmp_path):
+    from backend.knowledge_base.lessons import KB_DIR, KnowledgeBase
+    for path in KB_DIR.glob("*.md"):
+        (tmp_path / path.name).write_text(path.read_text().replace(
+            "## PEG ratio\n", "## PEG ratio\nA high p/e ratio is not a signal here.\n"))
+    hits = KnowledgeBase(tmp_path).search("what is a p/e ratio", k=1)
+    assert [lesson.title for lesson, _ in hits] == ["P/E ratio (price to earnings)"]
 
 
 @pytest.mark.parametrize("question", ["is it a good day", "anything new", "what is going on out there?",
