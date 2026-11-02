@@ -4,8 +4,10 @@ import pytest
 
 from backend.models.external.llm import LLMUnavailable, Narrator, ToolAgent, verify_numbers
 from backend.api.nlu import classify, extract_amount, extract_horizon, extract_risk, extract_sectors, extract_tickers
+from backend.knowledge_base.lessons import knowledge_base
 
 KNOWN = ["RELIANCE", "HDFCBANK", "TCS", "INFY", "M&M"]
+FORMS = knowledge_base().short_forms
 
 
 @pytest.mark.parametrize("text,amount", [
@@ -57,16 +59,37 @@ def test_horizon_risk_and_sector_parsing():
     ("thanks!", False, "greeting"),
     ("why is the market going down?", False, "market_regime"),
     ("is the nifty falling?", False, "market_regime"),
+    ("why has the sensex been so weak?", False, "market_regime"),    # was a full stock analysis of ^BSESN
     ("the market looks weak", False, "market_regime"),
     ("tell me a joke", False, "help"),
     ("what is a stop-loss?", False, "knowledge"),
     ("check my stops", False, "stops"),
     ("what are my stops?", False, "stops"),
     ("what is an alert?", False, "knowledge"),
+    ("what is NAV?", False, "knowledge"),
+    ("what is the meaning of NAV?", False, "knowledge"),
+    ("what is the full form of NAV?", False, "knowledge"),
+    ("can you explain NAV?", False, "knowledge"),
+    ("tell me about NAV", True, "knowledge"),
+    ("please explain ELSS", False, "knowledge"),
+    ("what is HHI?", False, "knowledge"),
+    ("tell me about TCS", False, "analyze"),
+    ("what is IRCTC in the news for?", False, "domain"),
+    ("how are short term capital gains taxed in India?", False, "knowledge"),
+    ("how are rate cuts priced in by the market?", False, "help"),
+    ("how are its margins calculated?", True, "domain"),
+    ("is Infosys overbought?", False, "domain"),
+    ("is TCS a better buy than Infosys?", False, "analyze"),
+    ("which of TCS and Infosys is a better buy?", False, "analyze"),
 ])
 def test_intent_classification(text, session, intent):
     phrases = ["fundamentally strong", "improving earnings", "positive momentum"]
-    assert classify(text, KNOWN, session, phrases).name == intent
+    assert classify(text, KNOWN, FORMS, session, phrases).name == intent
+
+
+@pytest.mark.parametrize("session", [False, True])
+def test_a_lesson_word_that_is_one_of_our_symbols_stays_a_stock(session):
+    assert classify("what is NAV?", KNOWN + ["NAV"], FORMS, session).symbols == [("NAV", "NSE")]
 
 
 PAYLOAD = {"rsi_14": 68.4, "revenue_growth": {"value": 18.2}, "de": 0.31, "label": "WATCH", "vol": 0.231,
@@ -185,9 +208,10 @@ def test_narrator_only_accepts_figures_from_the_draft_or_evidence_claims():
 
 
 @pytest.mark.parametrize("text", ["Should I buy TCS?", "Is it a good time to buy INFY?", "TCS buy or not",
-                                  "should I sell RELIANCE", "Is TCS worth buying?"])
+                                  "should I sell RELIANCE", "Is TCS worth buying?", "is RELIANCE.NS a good buy right now?",
+                                  "Is TCS a buy at this price?"])
 def test_should_buy_questions_get_the_verdict_intent(text):
-    assert classify(text, KNOWN, False, []).name == "should_buy"
+    assert classify(text, KNOWN, FORMS, False, []).name == "should_buy"
 
 
 def _analyst_facts(rank=161, edge=(-0.008, 0.02), gru_mae=6.479, drawer="generative", nll_gain_lo=0.019):
@@ -346,27 +370,69 @@ class _Picker:
     ("market_regime", "market_regime"),
     ("  Market_Regime.  ", "market_regime"),      # labels are read loosely, so spacing and case cannot break routing
     ("NONE", "help"),
-    ("the market is falling because of global cues", "help"),   # prose is not a label, so it is discarded
+    ("the market is falling because of global cues", None),   # prose is not a label, so it is discarded
 ])
 def test_the_language_model_only_picks_one_of_our_handlers(answer, intent):
     from backend.api.intent_lm import choose
     from backend.api.nlu import ROUTABLE
-    picked = choose("what is happening out there?", ROUTABLE, _Picker(answer))
-    assert (picked or "help") == intent
+    assert choose("what is happening out there?", ROUTABLE, _Picker(answer), declined="help") == intent
 
 
 @pytest.mark.parametrize("question,title", [
     ("what is a Sharpe ratio?", "Sharpe ratio"),
     ("what is a stop-loss?", "Stop-loss"),          # a Learn-page chip, so it must have an entry
     ("what is LTCG tax", "Taxes on listed equity (verify current rules)"),   # found through a synonym and a stem
+    ("how much tax is due on shares I sold", "Taxes on listed equity (verify current rules)"),  # ELSS also says "tax"
+    ("is the price of a share unpredictable", "Why the system does not predict exact prices"),
+    ("is debt bad for a business", "Debt/equity, interest coverage and current ratio"),
+    ("is a correlated stock risky to hold", "Risk contribution"),
+    ("is a candle formation a signal", "What the evidence says about candlesticks"),
+    ("can a test show a result is real", "Data snooping and multiple testing"),
 ])
 def test_the_reference_answers_the_questions_the_app_offers(question, title):
     from backend.knowledge_base.lessons import knowledge_base
     assert knowledge_base().search(question)[0][0].title == title
 
 
+@pytest.mark.parametrize("question,title", [
+    ("is there a fund locked for three years", "ELSS (tax-saving funds, verify current rules)"),
+    ("price bands explained in simple words", "Price bands and circuit breakers"),
+    ("can you help me with volatility", "Volatility"),
+    ("give me the basics of moving averages", "Moving averages (SMA, EMA, WMA)"),
+    ("show me how momentum works", "Momentum and rate of change"),
+    ("take me through what volatility is", "Volatility"),
+    ("what's the fund's p/e ratio", "P/E ratio (price to earnings)"),
+    ("can the model predict tomorrow's price", "Why the system does not predict exact prices"),
+    ("tax on selling stocks", "Taxes on listed equity (verify current rules)"),   # "Taxes" was cut to "taxe"
+    # wordings reviewers saw lose their lesson when another lesson's prose was reworded
+    ("tax on shares sold this year", "Taxes on listed equity (verify current rules)"),
+    ("why can't you predict prices", "Why the system does not predict exact prices"),
+    ("how do i figure out p/e ratio", "P/E ratio (price to earnings)"),
+    ("volatility in both directions", "Volatility"),
+    ("volatility and turbulent markets", "Volatility"),
+    ("is this firm overvalued on p/e", "P/E ratio (price to earnings)"),
+    ("what tax do I pay on shares I sold", "Taxes on listed equity (verify current rules)"),
+    ("what is a stop loss order", "Stop-loss"),          # a hyphenated heading word is named by its parts
+])
+def test_the_agents_one_lesson_is_the_one_the_question_names(question, title):
+    # the agent reads only the top hit (run/ask.py), so a chat word such as "help" or "simple" placed in another
+    # lesson takes that hit, and the question gets the wrong lesson or none; the app's top-3 can still look right
+    from backend.knowledge_base.lessons import knowledge_base
+    assert [lesson.title for lesson, _ in knowledge_base().search(question, k=1)] == [title]
+
+
+def test_a_lesson_whose_text_is_reworded_to_mention_another_topic_does_not_take_its_question(tmp_path):
+    from backend.knowledge_base.lessons import KB_DIR, KnowledgeBase
+    for path in KB_DIR.glob("*.md"):
+        (tmp_path / path.name).write_text(path.read_text().replace(
+            "## PEG ratio\n", "## PEG ratio\nA high p/e ratio is not a signal here.\n"))
+    hits = KnowledgeBase(tmp_path).search("what is a p/e ratio", k=1)
+    assert [lesson.title for lesson, _ in hits] == ["P/E ratio (price to earnings)"]
+
+
 @pytest.mark.parametrize("question", ["is it a good day", "anything new", "what is going on out there?",
-                                      "who are you", "tell me a joke"])
+                                      "who are you", "tell me a joke", "what causes a price decline",
+                                      "why did the price swing"])
 def test_the_reference_stays_silent_rather_than_serving_a_chance_word_match(question):
     from backend.knowledge_base.lessons import knowledge_base
     assert knowledge_base().search(question) == []

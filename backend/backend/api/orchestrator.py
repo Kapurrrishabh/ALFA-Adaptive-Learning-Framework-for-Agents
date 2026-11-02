@@ -14,9 +14,10 @@ import logging
 import math
 import re
 import time
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -52,6 +53,11 @@ SYMBOL_RE = re.compile(r"^\^?[A-Z0-9&\-]{1,20}(\.(NS|BO))?$")
 DOMAINS = ("technical", "candlestick", "pattern", "fundamental", "news_sentiment", "risk",
            "regime", "forecast", "historical")
 MAX_PAID_TO_CLOSE = 1.25    # high/close and close/low stay below this on 99.9% of Nifty 500 stock-days, 2016–26
+ASKS_WHY = re.compile(r"\b(why|how come|what('?s| is)? (made|mak(es|ing))|reasons?|caus(e[sd]?|ing)|driv(e|es|en|ing)|"
+                      r"behind)\b", re.I)
+# provisional: a week of headlines up to the last close counts as the latest; older means the archive stopped refreshing
+MARKET_NEWS_DAYS = 7
+MARKET_REPORTS = 5
 
 
 def _split_note(symbol: str, lots: List[Tuple[str, float, float]], history: pd.DataFrame) -> Optional[str]:
@@ -289,7 +295,8 @@ class Orchestrator:
     # --- entry point --------------------------------------------------------------
     def handle(self, message: str, portfolio: str, session_id: str) -> Reply:
         s = self.session(portfolio, session_id)
-        intent = classify(message, sorted(self.known), s.current is not None, self.research_phrases)
+        intent = classify(message, sorted(self.known), knowledge_base().short_forms, s.current is not None,
+                          self.research_phrases)
         if intent.horizon:
             s.horizon = intent.horizon
         if intent.risk_profile:
@@ -317,7 +324,7 @@ class Orchestrator:
         try:
             writer = self.hub.writer()
             with self.model_call(s.portfolio):
-                name = intent_lm.choose(message, ROUTABLE, writer)
+                name = intent_lm.choose(message, ROUTABLE, writer, declined="help")
         except (LLMUnavailable, DataUnavailable) as exc:
             log.info("no language model to route %r: %s", message, exc)
             return intent
@@ -696,7 +703,31 @@ class Orchestrator:
                      f"fall. With a volatility target, {cut}. But it also lowered returns. In sideways markets it "
                      "whipsaws: the price crosses the average back and forth, so the rule sells and buys too often. "
                      "It is a risk control, not a forecast.")
+        if ASKS_WHY.search(i.raw):
+            lines += ["", *self._market_reports(bench.index[-1].date())]
         return Reply("\n".join(lines), "market_regime", {"payload": m}, ["market_state"])
+
+    def _market_reports(self, day) -> List[str]:
+        """The newest headlines about the whole market, quoted. The trend rule says which way it went, not why."""
+        from backend.database.live import news
+        from backend.models.agent.phrase import HEADLINES_NOT_WHY
+        if not self.use_rss_news:
+            return ["What the latest market reports say: news is not read in demo mode."]
+        since, newest, taken = (day - timedelta(days=MARKET_NEWS_DAYS)).isoformat(), {}, Counter()
+        for row in news.read():
+            if row["day"] < since:
+                break
+            if news.MARKET_WIDE.search(row["title"]) and row["title"].lower() not in newest:
+                newest[row["title"].lower()] = (row["day"], -taken[row["source"]], row)
+                taken[row["source"]] += 1
+        if not newest:
+            return [f"What the latest market reports say: the news archive has no market headline from the "
+                    f"{MARKET_NEWS_DAYS} days up to {day}."]
+        # The archive keeps the day, not the hour, so a day is in feed order: its first five were all Economic Times
+        mixed = sorted(newest.values(), key=lambda kept: kept[:2], reverse=True)[:MARKET_REPORTS]
+        return (["What the latest market reports say:"]
+                + [f"- {row['day']}, {row['source']}: “{row['title']}”" for _, _, row in mixed]
+                + [HEADLINES_NOT_WHY])
 
     def _h_stops(self, s: Session, i: Intent) -> Reply:
         from backend.advisory.signals.advisor import STOP_PCT

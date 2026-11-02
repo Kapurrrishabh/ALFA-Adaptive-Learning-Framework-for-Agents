@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from backend.advisory import report as R
 from backend.user.portfolio.alerts import evaluate
 from backend.api.accounts import owner_of
-from backend.api.app import PUBLIC_PATHS, create_app
+from backend.api.app import HSTS, PUBLIC_PATHS, SECURITY_HEADERS, SET_UP_FIRST, create_app
 from backend.config import DEFAULT_PORTFOLIO, FORECAST_DAYS
 from backend.api.orchestrator import Orchestrator
 from backend.advisory.calculators.screener import screen
@@ -22,12 +22,14 @@ from backend.database.sources import synthetic
 from .conftest import EMAIL, END, NOW, PASSWORD, PUBLIC_URL, sign_in
 from .test_funds import NAV_TEXT, growing, mfapi_json
 from .test_nlu_llm import _Picker
+from .test_portfolio_backtest import HOLDING, PASSWORD as PDF_PASSWORD, PDF, casparser, nse_directory, zerodha_holdings  # noqa: F401
 
 ORACLE = Path(__file__).resolve().parents[3] / "deploy" / "oracle"
+SERVE_NEEDS = ["STOCKINTEL_AUTH_SECRET", "STOCKINTEL_PUBLIC_URL"]
 OTHER = "ravi@example.com"
 UNAUTHORIZED = (401, {"detail": "Unauthorized"})    # fastapi-users' own refusal, not a 401 of ours
 SETUP = {"risk_profile": "moderate", "horizon": "medium"}
-NOT_SET_UP = "Set up your portfolio first: choose your risk level, time horizon and cash."
+FUND_BUY = {"scheme_code": 118989, "side": "BUY", "units": 10, "nav": 200.0, "trade_date": "2025-01-02"}
 
 
 @pytest.fixture
@@ -345,7 +347,7 @@ def test_alert_explains_why_it_fired(service):
     assert alert is not None and any("classification changed" in r for r in alert.reasons)
 
 
-@pytest.mark.parametrize("missing", ["STOCKINTEL_AUTH_SECRET", "STOCKINTEL_PUBLIC_URL"])
+@pytest.mark.parametrize("missing", SERVE_NEEDS)
 def test_serve_will_not_start_without_its_sign_in_settings(monkeypatch, tmp_path, missing):
     import argparse
     import uvicorn
@@ -394,6 +396,14 @@ def anonymous_answers(app, headers):
 def test_every_private_route_refuses_anonymous_callers(orch, accounts, headers):
     answers = anonymous_answers(create_app(orch, accounts), headers)
     assert len(answers) > 50 and {k: v for k, v in answers.items() if v != UNAUTHORIZED} == {}
+
+
+def test_every_route_is_one_the_anonymous_walk_checks(orch, accounts):
+    """The walk above reads only APIRoutes, so a plain route or a websocket added later would escape it unnoticed."""
+    from fastapi.routing import APIRoute
+    from starlette.routing import Mount
+    assert [r.path for r in routes_of(create_app(orch, accounts))
+            if not isinstance(r.original_route, APIRoute) and not (isinstance(r.original_route, Mount) and r.path == "/static")] == []
 
 
 def test_every_public_path_is_a_route(orch, accounts):
@@ -461,10 +471,14 @@ def test_the_per_email_limit_counts_an_address_however_it_is_typed(orch, account
     monkeypatch.setattr(api_mod, "EMAIL_TRIES", 2)
     client = TestClient(create_app(orch, accounts), base_url=PUBLIC_URL)
     accounts.create_user(EMAIL, PASSWORD, verified=True)
-    typed = (EMAIL, EMAIL.upper(), EMAIL.title(), f" {EMAIL}", f"{EMAIL} ", f"Asha <{EMAIL}>", f"Ravi <{EMAIL}>")
-    tries = [client.post(path, data={"username": email, "password": PASSWORD}) if path.endswith("login")
-             else client.post(path, json={"email": email, "password": PASSWORD}) for email in typed]
-    assert [(r.status_code, "this email address" in r.text) for r in tries[2:]] == [(429, True)] * 5
+    login = path.endswith("login")
+    shouted = {"Content-Type": "Application/X-WWW-Form-Urlencoded" if login else "Application/JSON"}
+    typed = [(email, {}) for email in (EMAIL, EMAIL.upper(), EMAIL.title(), f" {EMAIL}", f"{EMAIL} ",
+                                       f"Asha <{EMAIL}>", f"Ravi <{EMAIL}>")] + [(EMAIL, shouted)]
+    tries = [client.post(path, data={"username": email, "password": PASSWORD}, headers=headers) if login
+             else client.post(path, json={"email": email, "password": PASSWORD}, headers=headers)
+             for email, headers in typed]
+    assert [(r.status_code, "this email address" in r.text) for r in tries[2:]] == [(429, True)] * 6
 
 
 def test_signing_out_with_a_json_header_and_no_body_works(orch, accounts):
@@ -489,6 +503,42 @@ def test_the_privacy_page_and_googles_return_page_open_signed_out(orch, accounts
 @pytest.mark.parametrize("path", [*PUBLIC_PATHS, "/static/app.js", "/static/app.css"])
 def test_every_public_path_and_the_app_files_open_signed_out(orch, accounts, path):
     assert TestClient(create_app(orch, accounts), base_url=PUBLIC_URL).get(path).status_code == 200
+
+
+@pytest.mark.parametrize("signed_in, path, status", [(False, "/", 200), (False, "/health", 200), (True, "/ui/usage", 200),
+                                                     (False, "/portfolio", 401), (False, "/static/app.js", 200)])
+def test_every_kind_of_answer_carries_the_security_headers(orch, accounts, signed_in, path, status):
+    client = signed_in_client(orch, accounts) if signed_in else TestClient(create_app(orch, accounts), base_url=PUBLIC_URL)
+    r = client.get(path)
+    assert (r.status_code, {k: r.headers.get(k) for k in SECURITY_HEADERS}) == (status, SECURITY_HEADERS)
+
+
+@pytest.mark.parametrize("public_url, hsts", [(PUBLIC_URL, HSTS), ("http://127.0.0.1:8931", None)], ids=["https", "http"])
+def test_browsers_are_told_to_keep_to_https_only_when_the_address_is_https(orch, db_path, public_url, hsts):
+    from backend.api.accounts import Accounts
+    from .conftest import SECRET
+    client = TestClient(create_app(orch, Accounts(db_path, public_url, SECRET, None, None)), base_url=public_url)
+    assert client.get("/health").headers.get("strict-transport-security") == hsts
+
+
+@pytest.mark.parametrize("signed_in, path", [(True, "/ui/usage"), (False, "/portfolio")], ids=["answer", "refusal"])
+def test_json_answers_are_never_stored_by_a_cache(orch, accounts, signed_in, path):
+    client = signed_in_client(orch, accounts) if signed_in else TestClient(create_app(orch, accounts), base_url=PUBLIC_URL)
+    assert client.get(path).headers.get("cache-control") == "no-store"
+
+
+@pytest.mark.parametrize("method, path", [("GET", "/health"), ("GET", "/ui/usage"), ("OPTIONS", "/ui/usage")])
+def test_no_answer_lets_another_site_read_it(orch, accounts, method, path):
+    r = signed_in_client(orch, accounts).request(method, path, headers={"Origin": "https://evil.example",
+                                                                        "Access-Control-Request-Method": "GET"})
+    assert "access-control-allow-origin" not in r.headers
+
+
+def test_the_install_screen_takes_its_colours_from_the_light_theme(orch, accounts):
+    from backend.paths import FRONTEND
+    light = (FRONTEND / "app.css").read_text().split(':root:not([data-theme="dark"]) {')[1].split("}")[0]
+    m = TestClient(create_app(orch, accounts), base_url=PUBLIC_URL).get("/manifest.webmanifest").json()
+    assert (f"--bg: {m['theme_color']};" in light, f"--bg-2: {m['background_color']};" in light) == (True, True)
 
 
 @pytest.mark.parametrize("on", [True, False])
@@ -572,7 +622,8 @@ def count_rows(store, db_path):
     """Rows per table that a user owns, in the portfolio store and the accounts file; usage leaves out the all-users row."""
     import sqlite3
     from contextlib import closing
-    owned = ("portfolios", "transactions", "portfolio_snapshots", "reports", "signal_plans", "alert_acks")
+    owned = ("portfolios", "transactions", "fund_transactions", "portfolio_snapshots", "reports", "signal_plans",
+             "alert_acks")
     counts = {t: store.conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in owned}
     counts["usage"] = store.conn.execute("SELECT count(*) FROM usage WHERE who != '*'").fetchone()[0]
     with closing(sqlite3.connect(db_path)) as conn:
@@ -581,7 +632,7 @@ def count_rows(store, db_path):
 
 
 @pytest.fixture
-def asha_deleted(orch, accounts, db_path, asha_and_ravi, monkeypatch):
+def asha_deleted(orch, accounts, db_path, asha_and_ravi, monkeypatch, funds_served):
     """Both users made one row of each kind, then asha deleted her account; returns the counts before and after."""
     from backend.models.agent.client import SelfAgentClient
     monkeypatch.setattr(SelfAgentClient, "ask", lambda self, question, subject="", *, session: {})
@@ -589,6 +640,7 @@ def asha_deleted(orch, accounts, db_path, asha_and_ravi, monkeypatch):
     for client, email in zip(asha_and_ravi, (EMAIL, OTHER)):
         for method, path, body in (("post", "/reports/TEST", None), ("post", f"/alerts/{alert}/ack", None),
                                    ("post", "/ui/agent/ask", {"message": "Why?"}),
+                                   ("post", "/portfolio/funds/transactions", FUND_BUY),
                                    ("post", "/chat", {"message": "How is my portfolio performing?"})):
             assert getattr(client, method)(path, json=body).status_code == 200, path
         orch.store.save_plan(owner(accounts, email), {"as_of": END, "strategy": "momentum", "actions": []})
@@ -629,6 +681,25 @@ def test_a_save_from_another_tab_while_the_account_is_deleted_is_removed_too(orc
     monkeypatch.setattr(UserManager, "delete", delete_then_save)
     asha_and_ravi[0].delete("/users/me")
     assert orch.store.portfolio(gone) is None
+
+
+def test_other_requests_are_served_while_an_account_is_erased(orch, accounts, monkeypatch):
+    import threading
+    started, served, waits, real_forget = threading.Event(), threading.Event(), [], orch.forget
+
+    def slow_forget(portfolio):
+        started.set()
+        waits.append(served.wait(20))       # times out if the erase holds the event loop that serves /health
+        real_forget(portfolio)
+    monkeypatch.setattr(orch, "forget", slow_forget)
+    with signed_in_client(orch, accounts) as client:       # one event loop for both requests
+        deleting = threading.Thread(target=client.delete, args=("/users/me",))
+        deleting.start()
+        started.wait(20)
+        client.get("/health")
+        served.set()
+        deleting.join()
+    assert waits == [True, True]
 
 
 def test_the_state_backup_holds_no_sign_in_while_the_live_database_keeps_it(orch, accounts, db_path, tmp_path):
@@ -698,6 +769,47 @@ def test_the_oracle_host_opens_only_https_to_the_internet():
     assert re.findall(r"^for port in (.*); do$", (ORACLE / "setup.sh").read_text(), re.M) == ["443"]
 
 
+def oracle_services(file="compose.yaml"):
+    return yaml.safe_load((ORACLE / file).read_text())["services"]
+
+
+def test_the_app_trusts_a_forwarded_caller_address_only_from_caddy():
+    services = oracle_services()
+    assert services["app"]["environment"]["FORWARDED_ALLOW_IPS"] == services["caddy"]["networks"]["edge"]["ipv4_address"]
+
+
+def test_caddy_cannot_reach_the_agent():
+    services = oracle_services()
+    assert set(services["caddy"]["networks"]) & set(services["agent"]["networks"]) == set()
+
+
+def test_only_the_app_gets_the_sign_in_secrets():
+    assert [name for name, s in oracle_services().items() if "auth.env" in s.get("env_file", [])] == ["app"]
+
+
+def test_setup_no_longer_makes_or_prints_the_shared_key():
+    setup = (ORACLE / "setup.sh").read_text()
+    assert ("#key=" in setup, "STOCKINTEL_API_KEY" in setup) == (False, False)
+
+
+def test_caddy_caps_the_request_body_size():
+    assert re.search(r"request_body \{\s*max_size \d+MB\s*\}", (ORACLE / "Caddyfile").read_text())
+
+
+def test_the_gate_check_boot_neither_restores_nor_saves_the_real_state():
+    assert oracle_services("gatecheck.yaml")["app"]["environment"]["STOCKINTEL_STATE_REPO"] == ""
+
+
+def test_the_gate_check_boot_opens_a_database_other_than_the_real_one():
+    real = re.search(r"STOCKINTEL_DB=(\S+)", (ORACLE.parents[1] / "Dockerfile").read_text())[1]
+    assert oracle_services("gatecheck.yaml")["app"]["environment"]["STOCKINTEL_DB"] not in (real, "")
+
+
+def test_render_asks_for_every_setting_serve_will_not_start_without():
+    render = yaml.safe_load((ORACLE.parents[1] / "render.yaml").read_text())
+    assert set(SERVE_NEEDS) - {v["key"] for v in render["services"][0]["envVars"]} == set()
+
+
 def test_api_analysis_and_domain_endpoints(orch, accounts):
     client = signed_in_client(orch, accounts)
     r = client.get("/stocks/TEST/analysis")
@@ -731,6 +843,15 @@ def test_api_rate_limit(orch, monkeypatch, accounts):
     client = signed_in_client(orch, accounts)
     codes = [client.get("/search?q=TE").status_code for _ in range(5)]
     assert codes[:3] == [200, 200, 200] and 429 in codes[3:]
+
+
+def test_one_users_requests_do_not_use_up_another_users_limit(orch, monkeypatch, accounts):
+    import backend.api.app as api_mod
+    monkeypatch.setattr(api_mod, "RATE_PER_MIN", 3)
+    app = create_app(orch, accounts)
+    first, second = signed_in_client(orch, accounts, app=app), signed_in_client(orch, accounts, "other@example.com", app=app)
+    assert 429 in [first.get("/search?q=TE").status_code for _ in range(5)]
+    assert second.get("/search?q=TE").status_code == 200
 
 
 def test_api_chat_round_trip(orch, accounts):
@@ -962,7 +1083,7 @@ def test_cash_without_every_setup_answer_is_refused(orch, accounts, missing):
     ids=["add", "builder"])
 def test_adding_stocks_before_setup_says_to_set_up_first(app_client, path, body):
     r = app_client.post(path, json=body)
-    assert (r.status_code, r.json()["detail"]) == (400, NOT_SET_UP)
+    assert (r.status_code, r.json()["detail"]) == (400, SET_UP_FIRST)
 
 
 def test_the_setup_options_are_read_from_the_risk_profiles_horizons_and_builder_limits(app_client):
@@ -1244,6 +1365,80 @@ def test_builder_leaves_out_excluded_sectors_and_rejects_bad_input(app_client):
 def test_a_basket_of_more_stocks_than_the_builder_picks_is_refused(app_client):
     from backend.config import BUILDER_STOCKS
     assert app_client.get(f"/ui/builder?capital=100000&n={BUILDER_STOCKS[1] + 1}").status_code == 422
+
+
+RELIANCE_HELD = {**HOLDING, "Symbol": "RELIANCE", "ISIN": "INE002A01018", "Quantity Available": 4}
+SET_UP = {**SETUP, "cash": 1000}
+IMPORTED = {"symbol": "RELIANCE", "side": "BUY", "quantity": 4, "price": 1300, "trade_date": "2026-06-30"}
+
+
+def preview(client, data, password=""):
+    return client.post("/portfolio/import/preview", files={"file": ("statement", data)}, data={"password": password})
+
+
+def test_an_import_preview_counts_found_checked_and_unknown_rows(orch, accounts, nse_directory):
+    unlisted_isin = {**RELIANCE_HELD, "ISIN": "INE999Z01019"}
+    unknown = {**RELIANCE_HELD, "Symbol": "GONE", "ISIN": "INE999Z01019"}
+    r = preview(signed_in_client(orch, accounts), zerodha_holdings(RELIANCE_HELD, unlisted_isin, unknown)).json()
+    assert (r["source"], r["as_of"], r["counts"]) == ("Zerodha holdings", "2026-06-30",
+                                                      {"matched": 1, "check": 1, "not_found": 1})
+
+
+def test_an_import_preview_gives_the_shares_already_held_of_each_found_stock(orch, accounts, nse_directory):
+    client = signed_in_client(orch, accounts)
+    client.post("/portfolio", json={**SET_UP, "transactions": [{**IMPORTED, "quantity": 7}]})
+    assert preview(client, zerodha_holdings(RELIANCE_HELD)).json()["held"] == {"RELIANCE": 7}
+
+
+def test_an_anonymous_import_preview_gets_401(orch, accounts, nse_directory):
+    r = preview(TestClient(create_app(orch, accounts), base_url=PUBLIC_URL), zerodha_holdings(RELIANCE_HELD))
+    assert (r.status_code, r.json()) == UNAUTHORIZED
+
+
+def test_an_import_file_over_the_upload_limit_gets_413(orch, accounts, monkeypatch):
+    monkeypatch.setattr("backend.api.app.MAX_UPLOAD", 100)
+    assert preview(signed_in_client(orch, accounts), b"x" * 101).status_code == 413
+
+
+def test_a_pdf_import_without_the_cas_reader_gets_501(orch, accounts, casparser):
+    casparser(None)
+    assert preview(signed_in_client(orch, accounts), PDF, PDF_PASSWORD).status_code == 501
+
+
+def test_an_import_preview_leaves_no_file_in_the_backed_up_cache(orch, accounts, nse_directory):
+    from backend.database.sources import panel
+    before = sorted(panel.CACHE_DIR.rglob("*"))
+    preview(signed_in_client(orch, accounts), zerodha_holdings(RELIANCE_HELD))
+    assert sorted(panel.CACHE_DIR.rglob("*")) == before
+
+
+def test_a_pdf_password_never_reaches_the_logs(orch, accounts, casparser, caplog):
+    import logging
+    caplog.set_level(logging.DEBUG)
+    casparser("raise IncorrectPasswordError('Incorrect PDF password!')")
+    assert preview(signed_in_client(orch, accounts), PDF, PDF_PASSWORD).status_code == 400
+    assert PDF_PASSWORD not in caplog.text
+
+
+@pytest.mark.parametrize("mode, symbols", [("add", ["TEST", "RELIANCE"]), ("replace", ["RELIANCE"])])
+def test_an_import_confirm_adds_to_or_replaces_the_transactions(orch, accounts, mode, symbols):
+    client = signed_in_client(orch, accounts)
+    client.post("/portfolio", json={**SET_UP, "transactions": [
+        {"symbol": "TEST", "side": "BUY", "quantity": 5, "price": 100, "trade_date": "2025-06-02"}]})
+    assert client.post("/portfolio/import/confirm", json={"mode": mode, "stocks": [IMPORTED]}).status_code == 200
+    assert [t["symbol"] for t in orch.store.portfolio(owner(accounts))["transactions"]] == symbols
+
+
+def test_an_import_that_sells_more_than_is_held_gets_400_and_writes_nothing(orch, accounts):
+    client = signed_in_client(orch, accounts)
+    client.post("/portfolio/cash", json=SET_UP)
+    r = client.post("/portfolio/import/confirm", json={"mode": "add", "stocks": [{**IMPORTED, "side": "SELL"}]})
+    assert r.status_code == 400 and orch.store.portfolio(owner(accounts))["transactions"] == []
+
+
+def test_an_import_confirm_before_setting_up_gets_400_and_writes_nothing(orch, accounts):
+    r = signed_in_client(orch, accounts).post("/portfolio/import/confirm", json={"mode": "add", "stocks": [IMPORTED]})
+    assert (r.status_code, r.json()["detail"]) == (400, SET_UP_FIRST) and orch.store.portfolio(owner(accounts)) is None
 
 
 def test_ai_forecast_says_why_when_models_are_switched_off(app_client, monkeypatch):
@@ -1678,6 +1873,62 @@ def test_the_app_reads_company_news_from_the_newswire_not_google(monkeypatch, tm
     assert [i.headline for i in items] == ["Tata Steel gets aid"] and items[0].url == "https://n.test/1"
 
 
+def _wire(orch, monkeypatch, tmp_path, *titled, rss=True):
+    """A newswire archive of (day, source, title) rows, newest first as news.refresh writes it."""
+    import json as _json
+    from backend.database.live import news
+    monkeypatch.setattr(orch, "use_rss_news", rss)
+    archive = tmp_path / "wire.jsonl"
+    archive.write_text("".join(_json.dumps({"link": f"https://n.test/{n}", "day": day, "source": source, "title": title,
+                                            "summary": ""}) + "\n" for n, (day, source, title) in enumerate(titled)))
+    monkeypatch.setattr(news.read, "__defaults__", (archive,))
+
+
+@pytest.mark.parametrize("question", ["why is the market falling?", "how come the market is falling?",
+                                      "what made the nifty fall today?"])
+def test_a_why_question_on_the_market_gets_the_trend_and_the_newest_market_headlines(orch, monkeypatch, tmp_path,
+                                                                                    question):
+    """"Why is the market falling?" got the trend and its figures, and no news at all."""
+    _wire(orch, monkeypatch, tmp_path, ("2026-09-25", "Mint", "Sensex falls 900 points as FIIs sell"),
+          ("2026-09-24", "Mint", "Rupee hits a record low"), ("2026-09-24", "Economic Times", "Rupee hits a record low"),
+          ("2026-09-24", "Mint", "Titan launches a new watch"), ("2026-09-10", "Mint", "Nifty ends flat"))
+    reply = orch.handle(question, DEFAULT_PORTFOLIO, "why")
+    assert reply.intent == "market_regime" and "10-month average" in reply.text and "24-month return" in reply.text
+    assert reply.text.endswith("\n\nWhat the latest market reports say:\n"
+                               "- 2026-09-25, Mint: “Sensex falls 900 points as FIIs sell”\n"
+                               "- 2026-09-24, Mint: “Rupee hits a record low”\n"
+                               "These are headlines, and they do not prove why the market moved.")
+
+
+@pytest.mark.parametrize("titled", [(), (("2026-09-17", "Mint", "Nifty ends flat"),)])
+def test_a_why_question_on_the_market_says_when_the_archive_has_no_market_news_that_week(orch, monkeypatch, tmp_path,
+                                                                                         titled):
+    _wire(orch, monkeypatch, tmp_path, *titled)
+    reply = orch.handle("what is driving the market down?", DEFAULT_PORTFOLIO, "stale")
+    assert reply.text.endswith("What the latest market reports say: the news archive has no market headline from the "
+                               "7 days up to 2026-09-25.")
+
+
+def test_one_feed_does_not_fill_the_market_reports_when_others_reported_that_day(orch, monkeypatch, tmp_path):
+    """The archive keeps no hour, so a day is in feed order: all five of 2 Nov 2026's were Economic Times."""
+    _wire(orch, monkeypatch, tmp_path, *[("2026-09-25", "Economic Times", f"Sensex story {n}") for n in range(5)],
+          ("2026-09-25", "Mint", "Why is the market rallying today? Sensex soars 900 pts"))
+    assert "- 2026-09-25, Mint: “Why is the market rallying today? Sensex soars 900 pts”" in orch.handle(
+        "why is the market falling?", DEFAULT_PORTFOLIO, "mixed").text
+
+
+def test_demo_mode_quotes_no_market_headlines(orch, monkeypatch, tmp_path):
+    """Every other newswire read is behind `use_rss_news`; here real headlines sat under an older demo trend."""
+    _wire(orch, monkeypatch, tmp_path, ("2026-09-25", "Mint", "Sensex falls 900 points as FIIs sell"), rss=False)
+    reply = orch.handle("why is the market falling?", DEFAULT_PORTFOLIO, "demo")
+    assert reply.text.endswith("What the latest market reports say: news is not read in demo mode.")
+
+
+def test_a_market_question_that_does_not_ask_why_gets_no_headlines(orch, monkeypatch, tmp_path):
+    _wire(orch, monkeypatch, tmp_path, ("2026-09-25", "Mint", "Sensex falls 900 points as FIIs sell"))
+    assert "market reports" not in orch.handle("is the market in a downtrend?", DEFAULT_PORTFOLIO, "what").text
+
+
 def test_the_news_view_lists_linked_headlines_not_evidence_lines(orch):
     from backend.advisory import report as R
     a = orch.analysis(orch.session(DEFAULT_PORTFOLIO, "news"), "TEST")
@@ -1989,10 +2240,46 @@ def test_an_unrecognised_question_is_routed_by_the_language_model(orch, monkeypa
     assert "market_regime:" in writer.prompts[0]
 
 
-def test_a_question_the_language_model_cannot_place_says_so_instead_of_guessing(orch, monkeypatch):
+@pytest.mark.parametrize("question", ["what is the weather in Mumbai?", "what is the capital of France?",
+                                      "what is the best restaurant in Pune?", "what is the population of India?"])
+def test_a_question_the_language_model_cannot_place_gets_the_help_list_instead_of_a_guess(orch, monkeypatch, question):
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
-    reply = orch.handle("what is the weather in Mumbai?", DEFAULT_PORTFOLIO, "route2")
-    assert reply.data["no_answer"] and "don't have a lesson" in reply.text
+    reply = orch.handle(question, DEFAULT_PORTFOLIO, "route2")
+    assert reply.intent == "help" and reply.data["no_answer"]
+
+
+@pytest.mark.parametrize("question", [
+    "is gold a good buy at this price?", "is silver a good buy this year?", "is real estate a good buy in this market?",
+    "is bitcoin a good buy, or is it a bubble?", "is there a good buy this week?", "is the stock market a good buy?",
+    "is that index fund a good buy?", "is a house a good buy at this rate?", "is Nifty a good buy at this level?",
+    "Someone told me about gold, is that a good buy?", "Gold looks cheap, would it be a good buy?",
+    "My uncle keeps talking about silver. Is that a good buy?", "and silver, is that a buy?",
+    "What about gold, would it be a decent buy?", "Gold has rallied 20%. Is it still a good buy?",
+    "is the market overbought?", "is gold overbought?", "Gold rose 10% this month, is it overbought?",
+    "Silver went up a lot, is it overbought?", "Bitcoin keeps going up, is it overbought?",
+    "Gold is up 30% this year. Is it overbought?", "what does a buy rating mean?", "explain a buy-and-hold strategy",
+    "how does a buy stop order work?", "is a buy-back good for shareholders?", "should I invest in ELSS?", "is PEER a good buy?",
+    "PEER dropped 8% today. Is it a good buy?", "should I hold on to PEER?", "is PEER overbought?",
+])
+def test_a_question_about_another_subject_is_not_answered_for_the_stock_in_the_session(orch, monkeypatch, question):
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "other")
+    text = orch.handle(question, DEFAULT_PORTFOLIO, "other").text
+    assert "TEST" not in text and "Test Industries" not in text
+
+
+@pytest.mark.parametrize("question", ["is it a good buy?", "is this a buy?"])
+def test_a_buy_question_about_the_stock_in_the_session_gets_its_verdict(orch, question):
+    orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "follow-up")
+    reply = orch.handle(question, DEFAULT_PORTFOLIO, "follow-up")
+    assert reply.intent == "should_buy" and reply.text.startswith("TEST:")
+
+
+@pytest.mark.parametrize("label", ["knowledge", "a dividend is a share of profit"])   # a reply that is no label is ignored
+def test_a_finance_word_without_a_lesson_still_says_we_have_no_entry(orch, monkeypatch, label):
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker(label))
+    reply = orch.handle("what is a dividend?", DEFAULT_PORTFOLIO, "route4")
+    assert reply.intent == "knowledge" and "don't have a lesson" in reply.text
 
 
 def test_chat_works_without_a_language_model(orch, monkeypatch):
@@ -2082,3 +2369,103 @@ def test_an_unknown_fund_code_is_a_404_that_says_how_to_find_one(app_client, fun
     r = app_client.get("/ui/funds/999999")
     assert r.status_code == 404 and "999999" in r.json()["detail"] and "/ui/funds/search" in r.json()["detail"]
 
+
+
+def test_fund_page_lists_every_plan_of_its_fund(app_client, funds_served):
+    r = app_client.get("/ui/funds/105759").json()
+    assert [p["code"] for p in r["plans"]] == [118989, 118990, 105758, 105759]
+
+
+def test_fund_page_carries_the_fund_lessons(app_client, funds_served):
+    r = app_client.get("/ui/funds/118989").json()
+    assert "Direct and regular plans" in [lesson["title"] for lesson in r["lessons"]]
+
+
+def test_a_fund_code_that_is_not_a_number_is_refused_before_any_download(app_client, funds_served, monkeypatch):
+    from backend.database.sources import amfi
+    asked = []
+    monkeypatch.setattr(amfi, "_download", asked.append)
+    assert (app_client.get("/ui/funds/abc").status_code, asked) == (422, [])
+
+
+def test_learn_titles_the_fund_lessons(app_client):
+    assert "Mutual funds and ETFs" in [t["topic"] for t in app_client.get("/ui/learn").json()]
+
+
+def test_a_fund_added_to_the_portfolio_is_valued_at_amfis_nav(app_client, funds_served):
+    assert app_client.post("/portfolio/funds/transactions", json=FUND_BUY).status_code == 200
+    r = app_client.get("/portfolio/funds").json()
+    assert (r["invested"], r["value"], r["holdings"][0]["fund"]) == (2000.0, 2105.12, "HDFC Mid Cap Fund")
+    assert "AMFI" in r["source"]
+
+
+def test_selling_more_fund_units_than_held_gets_400_and_saves_nothing(app_client, funds_served):
+    r = app_client.post("/portfolio/funds/transactions", json={**FUND_BUY, "side": "SELL"})
+    assert (r.status_code, app_client.get("/portfolio/funds").json()["transactions"]) == (400, [])
+
+
+def test_a_fund_code_amfi_does_not_list_gets_400(app_client, funds_served):
+    r = app_client.post("/portfolio/funds/transactions", json={**FUND_BUY, "scheme_code": 999999})
+    assert r.status_code == 400 and "999999" in r.json()["detail"]
+
+
+def test_deleting_a_fund_buy_that_a_later_sale_needs_gets_400(app_client, funds_served):
+    app_client.post("/portfolio/funds/transactions", json=FUND_BUY)
+    app_client.post("/portfolio/funds/transactions", json={**FUND_BUY, "side": "SELL", "trade_date": "2025-03-03"})
+    buy = app_client.get("/portfolio/funds").json()["transactions"][0]
+    assert app_client.delete(f"/portfolio/funds/transactions/{buy['id']}").status_code == 400
+    assert len(app_client.get("/portfolio/funds").json()["transactions"]) == 2
+
+
+def test_a_deleted_fund_transaction_is_gone(app_client, funds_served):
+    app_client.post("/portfolio/funds/transactions", json=FUND_BUY)
+    tx = app_client.get("/portfolio/funds").json()["transactions"][0]
+    assert app_client.delete(f"/portfolio/funds/transactions/{tx['id']}").status_code == 200
+    assert app_client.delete(f"/portfolio/funds/transactions/{tx['id']}").status_code == 404
+
+
+def test_a_portfolio_with_no_funds_is_served_while_amfi_is_down(app_client, funds_served):
+    from backend.database.sources import amfi
+    del funds_served[amfi.NAV_URL]
+    assert app_client.get("/portfolio/funds").json()["holdings"] == []
+
+
+def hold_funds(orch, accounts, transactions):
+    """Written straight to the store: the route would ask AMFI, and refuses a code AMFI does not list now."""
+    orch.save_portfolio(owner(accounts), 0.0, "moderate", "medium", [])
+    orch.store.save_fund_transactions(owner(accounts), transactions)
+
+
+def test_held_funds_are_listed_with_the_reason_while_amfi_is_down(app_client, orch, accounts, funds_served):
+    from backend.database.sources import amfi
+    del funds_served[amfi.NAV_URL]
+    hold_funds(orch, accounts, [FUND_BUY])
+    r = app_client.get("/portfolio/funds")
+    assert (r.status_code, len(r.json()["transactions"]), "could not download" in r.json()["valuation_error"]) == (200, 1, True)
+
+
+def test_a_held_fund_amfi_no_longer_lists_is_named_in_the_error_and_can_be_deleted(app_client, orch, accounts, funds_served):
+    hold_funds(orch, accounts, [{**FUND_BUY, "scheme_code": 999999}])
+    r = app_client.get("/portfolio/funds").json()
+    assert "999999" in r["valuation_error"]
+    assert app_client.delete(f"/portfolio/funds/transactions/{r['transactions'][0]['id']}").status_code == 200
+
+
+def test_a_fund_transaction_carries_its_schemes_name(app_client, funds_served):
+    app_client.post("/portfolio/funds/transactions", json=FUND_BUY)
+    tx = app_client.get("/portfolio/funds").json()["transactions"][0]
+    assert (tx["scheme"]["fund"], tx["scheme"]["plan"]) == ("HDFC Mid Cap Fund", "Direct Plan")
+
+
+def test_the_stock_report_is_unchanged_by_funds(app_client, funds_served):
+    app_client.post("/portfolio/transactions", json={"symbol": "TEST", "side": "BUY", "quantity": 3, "price": 100,
+                                                     "trade_date": "2025-01-02"})
+    before = app_client.get("/portfolio/analysis").json()
+    app_client.post("/portfolio/funds/transactions", json=FUND_BUY)
+    assert app_client.get("/portfolio/analysis").json() == before
+
+
+def test_one_users_funds_are_not_anothers(asha_and_ravi, funds_served):
+    asha, ravi = asha_and_ravi
+    asha.post("/portfolio/funds/transactions", json=FUND_BUY)
+    assert ravi.get("/portfolio/funds").json()["transactions"] == []

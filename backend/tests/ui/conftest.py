@@ -1,5 +1,5 @@
 """A real app server on 127.0.0.1 for the browser tests: synthetic prices, no outside calls, one user who
-signs in through the login form, a small track record and one holding."""
+signs in through the login form, Google and email sign-up with their outside parts faked, a small track record and one holding."""
 import json
 import socket
 import threading
@@ -9,12 +9,15 @@ from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import pytest
 
-from tests.app.conftest import EMAIL, PASSWORD, SECRET
+from tests.app.conftest import EMAIL, PASSWORD, SECRET, FakeGoogle, Outbox
+from tests.app.test_portfolio_backtest import NSE_FILES
+from tests.app.test_funds import NAV_TEXT, growing, mfapi_json
 
-KEY = "k" * 24      # the web app asks for a key until its sign-in screens ship; the server ignores it
 NEW_EMAIL = "new@example.com"       # a second user, who has not set up a portfolio
+RUN_REQUESTS = 700   # provisional: signed-in requests the pages sent in one full browser run (683 on 2026-11-01, 676 on 2026-11-02, 665 with 360 px added); recount when the suite grows
 STOCKS = pd.DataFrame({"symbol": ["TEST", "PEER"], "name": ["Test Industries Ltd.", "Peer Power Ltd."],
                        "sector": ["Industrials", "Energy"], "nifty200": [True, True]})
+FUND = 118989       # HDFC Mid Cap Fund, Direct Growth: the one scheme in NAV_TEXT with a NAV history here
 
 
 def track_record(dates):
@@ -50,15 +53,21 @@ def sign_in(context, base_url, email=EMAIL):
 
 
 @pytest.fixture(scope="module")
-def base_url(tmp_path_factory):
+def outbox():
+    """The emails the app server sends, newest last."""
+    return Outbox()
+
+
+@pytest.fixture(scope="module")
+def base_url(tmp_path_factory, outbox):
     import uvicorn
     import backend.advisory.calculators.performance as perf
-    import backend.api.app as app_module
+    import backend.api.app as api_mod
     from backend.api.accounts import Accounts, owner_of
     from backend.api.app import create_app
     from backend.api.orchestrator import Orchestrator
     from backend.config import resolve_symbol
-    from backend.database.sources import insider
+    from backend.database.sources import amfi, insider, panel
     from backend.database.sources.panel import panel_from_frames
     from backend.database.sources.provider import DataUnavailable
     from backend.database.sources.synthetic import SyntheticProvider
@@ -67,6 +76,14 @@ def base_url(tmp_path_factory):
 
     def no_insider():
         raise DataUnavailable("no insider file in the browser tests")
+
+    fund_pages = {amfi.NAV_URL: NAV_TEXT,
+                  amfi.HISTORY_URL.format(code=FUND): mfapi_json(FUND, growing(6) * (210.512 / growing(6).iloc[-1]))}
+
+    def download(url):
+        if url not in fund_pages:
+            raise DataUnavailable(f"could not download {url}: the browser tests have no copy")
+        return fund_pages[url]
 
     class Provider(SyntheticProvider):
         def intraday(self, symbol, period="5d", interval="15m"):
@@ -88,15 +105,23 @@ def base_url(tmp_path_factory):
         mp.setattr(alfa_fan, "WEIGHTS", missing / "alfa.npz")
         mp.setattr(gru_line, "WEIGHTS", missing / "path_gru.npz")
         mp.setattr(insider, "load", no_insider)
-        # every browser tab signs in as the same user, and all of them from 127.0.0.1; one user's 120 requests a
-        # minute ran dry once Home asked for the user's summary, and the pages that drew a 429 timed out
-        mp.setattr(app_module, "SIGN_INS_PER_MIN", 10_000)
-        mp.setattr(app_module, "EMAIL_TRIES", 10_000)
-        mp.setattr(app_module, "RATE_PER_MIN", 10_000)
+        lists = tmp_path_factory.mktemp("nse-lists")     # NSE's lists, for the import preview, as if downloaded today
+        for name, url in panel.NSE_LISTS.items():
+            if url.rsplit("/", 1)[1] in NSE_FILES:
+                (lists / f"{name}.csv").write_text(NSE_FILES[url.rsplit("/", 1)[1]])
+        mp.setattr(panel, "CACHE_DIR", lists)
+        funds_dir = tmp_path_factory.mktemp("funds")
+        mp.setattr(amfi, "NAV_FILE", funds_dir / "NAVAll.txt")
+        mp.setattr(amfi, "HISTORY_DIR", funds_dir / "mfapi")
+        mp.setattr(amfi, "_download", download)
+        mp.setattr(api_mod, "RATE_PER_MIN", 20 * RUN_REQUESTS)   # every tab signs in as one user, so all share its one bucket: 10x a run's requests
+        # every browser tab signs in as the same user, and all of them from 127.0.0.1
+        mp.setattr(api_mod, "SIGN_INS_PER_MIN", 10_000)
+        mp.setattr(api_mod, "EMAIL_TRIES", 10_000)
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         url = f"http://127.0.0.1:{sock.getsockname()[1]}"
-        accounts = Accounts(str(tmp_path_factory.mktemp("accounts") / "stockintel.db"), url, SECRET, None, None)
+        accounts = Accounts(str(tmp_path_factory.mktemp("accounts") / "stockintel.db"), url, SECRET, FakeGoogle(), outbox)
         # in another thread: Playwright's sync API runs an event loop here, and create_user starts its own
         with ThreadPoolExecutor(1) as pool:
             user = pool.submit(accounts.create_user, EMAIL, PASSWORD, verified=True).result()

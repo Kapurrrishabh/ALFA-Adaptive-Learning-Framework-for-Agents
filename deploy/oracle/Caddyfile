@@ -1,4 +1,10 @@
 # HTTPS for the app, with a certificate Caddy gets and renews itself; the agent is never exposed.
+# The security headers come from the app, so every host serves the same ones.
 {$DOMAIN} {
+	# PROVISIONAL: an outer limit for broker and CAS imports
+	request_body {
+		max_size 10MB
+	}
+	header -Server
 	reverse_proxy app:8000
 }

@@ -10,13 +10,16 @@ the local database.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
+from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -26,6 +29,7 @@ from backend.advisory import report as R
 from backend.advisory.calculators.backtest import strategies as S
 from backend.advisory.fusion.fusion import HORIZON_TEXT
 from backend.config import BUILDER_MIN_CAPITAL, BUILDER_STOCKS, FORECAST_DAYS, RISK_MODE, RISK_PROFILES, resolve_symbol
+from backend.database.sources import panel
 from backend.database.sources.provider import DataUnavailable
 from backend.database.sources.quality import DataQualityError
 from backend.api.accounts import Accounts, owner_of
@@ -35,6 +39,7 @@ from backend.knowledge_base.lessons import knowledge_base
 from backend.paths import FRONTEND
 from backend.api.nlu import ALIASES
 from backend.api.orchestrator import DOMAINS, Orchestrator, SYMBOL_RE
+from backend.user.portfolio import cas, funds, importers
 from backend.user.portfolio.portfolio import what_if
 from backend.advisory.calculators.screener import screen
 
@@ -45,7 +50,15 @@ SIGN_INS_PER_MIN = 10       # PROVISIONAL, per IP; behind a proxy the real IP ne
 # probing which addresses have accounts (forgot-password answers a known one more slowly; sign-up tells anyway)
 EMAIL_TRIES, EMAIL_WINDOW_S = 10, 900
 MAX_KEYS = 10_000           # PROVISIONAL: past this many callers, buckets that have refilled are dropped
+MAX_UPLOAD = 10_000_000     # PROVISIONAL: room for a long CAS PDF; check against real statements
+SET_UP_FIRST = "Set up your portfolio first: choose your risk level, time horizon and cash."
 PUBLIC_PATHS = ("/", "/health", "/manifest.webmanifest", "/sw.js", "/login/google", "/privacy")
+# Strict, because the web app runs no inline script or style and loads nothing from another site
+SECURITY_HEADERS = {"X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin", "X-Frame-Options": "DENY",
+                    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
+                    "img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; "
+                    "base-uri 'none'; form-action 'self'"}
+HSTS = "max-age=31536000"
 DOMAIN_ALIASES = {"fundamentals": "fundamental", "news": "news_sentiment", "patterns": "pattern",
                   "candlesticks": "candlestick", "analogues": "historical"}
 
@@ -79,6 +92,14 @@ def email_key(email: str) -> str:
         return email.lower()
 
 
+def theme_tokens(selector: str) -> Dict[str, str]:
+    """The tokens a theme block in app.css declares, so colours set outside the stylesheet follow it."""
+    blocks = re.findall(re.escape(selector) + r"\s*\{([^}]*)\}", (FRONTEND / "app.css").read_text())
+    if not blocks:
+        raise RuntimeError(f"app.css has no {selector} block; the install colours are read from it.")
+    return dict(re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", "".join(blocks)))
+
+
 class ChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     session_id: str = Field(default="default", pattern=r"^[A-Za-z0-9_\-]{1,64}$")
@@ -94,6 +115,15 @@ class TransactionIn(BaseModel):
     sector: Optional[str] = Field(default=None, max_length=64)
 
 
+class FundTransactionIn(BaseModel):
+    scheme_code: int = Field(gt=0)
+    side: Literal["BUY", "SELL"]
+    units: float = Field(gt=0)
+    nav: float = Field(gt=0)
+    trade_date: date
+    fees: float = Field(default=0.0, ge=0)
+
+
 class PortfolioIn(BaseModel):
     cash: float = Field(ge=0)
     risk_profile: Literal["conservative", "moderate", "aggressive"]
@@ -105,6 +135,11 @@ class CashIn(BaseModel):
     cash: float = Field(ge=0, lt=1e10)
     risk_profile: Literal["conservative", "moderate", "aggressive"]
     horizon: Literal["short", "medium", "long"]
+
+
+class ImportIn(BaseModel):
+    mode: Literal["add", "replace"]
+    stocks: List[TransactionIn] = Field(min_length=1)
 
 
 class BuilderHolding(BaseModel):
@@ -132,6 +167,18 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     # No /openapi.json, /docs or /redoc: they skip sign-in and would map every route to anyone
     app = FastAPI(title="StockIntel", version="0.1.0", openapi_url=None,
                   description="Evidence-first stock research API. Decision-support only.")
+    headers = {**SECURITY_HEADERS, **({"Strict-Transport-Security": HSTS} if accounts.secure else {})}
+    light = theme_tokens(':root:not([data-theme="dark"])')
+    # One colour pair for the install screen: phones start in light mode, and theme.js recolours the bar on load
+    install_colours = {"theme_color": light["--bg"], "background_color": light["--bg-2"]}
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers.update(headers)
+        if response.headers.get("content-type", "").startswith("application/json"):
+            response.headers["Cache-Control"] = "no-store"      # JSON answers carry the user's own data
+        return response
 
     def same_origin(request: Request) -> None:
         # The browser sends our cookie with requests another site starts; these headers say who started it
@@ -152,7 +199,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
 
     async def limit_email(request: Request) -> None:
         email = (await request.form()).get("username")      # the login form; an empty form for other bodies
-        if "json" in request.headers.get("content-type", "") and (raw := await request.body()):
+        if "json" in request.headers.get("content-type", "").lower() and (raw := await request.body()):
             try:
                 body = json.loads(raw)
             except ValueError:
@@ -176,6 +223,10 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     async def _value(_: Request, exc: ValueError):
         return JSONResponse(status_code=400, content={"error": "bad_request", "detail": str(exc)})
 
+    @app.exception_handler(importers.ImportUnsupported)
+    async def _unsupported(_: Request, exc: importers.ImportUnsupported):
+        return JSONResponse(status_code=501, content={"error": "unsupported", "detail": str(exc)})
+
     @app.exception_handler(QuotaExceeded)
     async def _quota(_: Request, exc: QuotaExceeded):
         return JSONResponse(status_code=429, content={"error": "quota", "detail": str(exc), "limit": exc.limit,
@@ -197,7 +248,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
         """No row means the user has not answered the setup questions, and there is no default to guess them."""
         p = orch.store.portfolio(owner)
         if p is None:
-            raise HTTPException(400, "Set up your portfolio first: choose your risk level, time horizon and cash.")
+            raise HTTPException(400, SET_UP_FIRST)
         return p
 
     @app.get("/health")
@@ -237,9 +288,9 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
             orch.store.delete_portfolio(owner)
             orch.store.delete_usage(owner)
             orch.forget(owner)
-        erase()
+        await run_in_threadpool(erase)
         await manager.delete(user)
-        erase()
+        await run_in_threadpool(erase)
 
     @app.get("/ui/search", dependencies=[Depends(auth)])
     def ui_search(q: str = Query(min_length=1, max_length=40)):
@@ -313,7 +364,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     @app.get("/manifest.webmanifest")
     def manifest():
         return JSONResponse({"name": "StockIntel", "short_name": "StockIntel", "start_url": "/#/home", "display": "standalone",
-                             "background_color": "#06080b", "theme_color": "#06080b",
+                             **install_colours,
                              "icons": [{"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]},
                             media_type="application/manifest+json")
 
@@ -400,6 +451,45 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
             n = orch.save_portfolio(owner, p["cash"], p["risk_profile"], p["horizon"], txs)
         return {"status": "deleted", "transactions": n}
 
+    @app.get("/portfolio/funds")
+    def portfolio_funds(owner: str = Depends(auth)):
+        from backend.database.sources import amfi
+        from dataclasses import asdict
+        txs, schemes = orch.store.fund_transactions(owner), {}
+        try:
+            # with no funds the page must not wait on, or fail with, AMFI's daily download
+            schemes = {s.code: s for s in amfi.schemes()} if txs else {}
+            valued = {**funds.holdings(txs, schemes), "valuation_error": None}
+        except DataUnavailable as exc:      # the transactions still list, so a fund AMFI dropped can be deleted
+            valued = {"valuation_error": str(exc)}
+        named = [{**t, "scheme": asdict(schemes[t["scheme_code"]]) if t["scheme_code"] in schemes else None} for t in txs]
+        return ok({**valued, "transactions": named, "source": amfi.NAV_SOURCE})
+
+    @app.post("/portfolio/funds/transactions")
+    def add_fund_transaction(tx: FundTransactionIn, owner: str = Depends(auth)):
+        from backend.database.sources import amfi
+        if tx.scheme_code not in {s.code for s in amfi.schemes()}:
+            raise HTTPException(400, f"AMFI lists no scheme {tx.scheme_code} with a NAV in the last {amfi.LIVE_DAYS} "
+                                     "days. Find the fund with the search box and add it from its page.")
+        with orch.portfolio_lock(owner):
+            txs = orch.store.fund_transactions(owner) + [{**tx.model_dump(), "trade_date": tx.trade_date.isoformat()}]
+            funds.positions(txs)
+            if orch.store.portfolio(owner) is None:
+                orch.save_portfolio(owner, 0.0, "moderate", "medium", [])
+            orch.store.save_fund_transactions(owner, txs)
+        return {"status": "saved", "fund_transactions": len(txs)}
+
+    @app.delete("/portfolio/funds/transactions/{tx_id}")
+    def delete_fund_transaction(tx_id: int, owner: str = Depends(auth)):
+        with orch.portfolio_lock(owner):
+            txs = orch.store.fund_transactions(owner)
+            kept = [t for t in txs if t["id"] != tx_id]
+            if len(kept) == len(txs):
+                raise HTTPException(404, f"no fund transaction #{tx_id}")
+            funds.positions(kept)
+            orch.store.save_fund_transactions(owner, kept)
+        return {"status": "deleted", "fund_transactions": len(kept)}
+
     @app.post("/portfolio/cash")
     def set_cash(body: CashIn, owner: str = Depends(auth)):
         """The setup call: with no row yet, it makes one from the user's own answers."""
@@ -407,6 +497,37 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
             p = orch.store.portfolio(owner)
             orch.save_portfolio(owner, body.cash, body.risk_profile, body.horizon, p["transactions"] if p else [])
         return {"status": "saved"}
+
+    @app.post("/portfolio/import/preview")
+    def import_preview(file: UploadFile, password: str = Form(""), owner: str = Depends(auth)):
+        # read here, never saved: CACHE_DIR is backed up to Hugging Face, and these files name what a person owns
+        data = file.file.read(MAX_UPLOAD + 1)
+        if len(data) > MAX_UPLOAD:
+            raise HTTPException(413, f"This file is over {MAX_UPLOAD // 1_000_000} MB. {importers.SHORTER_RANGE}")
+        statement = cas.statement(cas.read(data, password)) if data.startswith(b"%PDF") else importers.parse(data)
+        names = panel.company_names()
+        matches = importers.match(statement.rows, panel.isin_directory(), names)
+        positions, _, _ = orch.holdings(owner)
+        funds = [f"This file's {len(statement.funds)} mutual fund rows are left out: a portfolio here holds only "
+                 "shares, ETFs and REITs for now."] if statement.funds else []
+
+        def listed(listing):
+            return {**listing._asdict(), "name": names.get(listing.symbol)}
+        return ok({"source": statement.source, "as_of": statement.as_of, "counts": importers.counts(matches),
+                   "warnings": statement.warnings + funds,
+                   "held": {m.listing.symbol: positions[m.listing.symbol].quantity for m in matches
+                            if m.listing and m.listing.symbol in positions},
+                   "rows": [{**asdict(m.row), "state": m.state, "listing": m.listing and listed(m.listing),
+                             "choices": [listed(c) for c in m.choices]} for m in matches]})
+
+    @app.post("/portfolio/import/confirm")
+    def import_confirm(body: ImportIn, owner: str = Depends(auth)):
+        with orch.portfolio_lock(owner):
+            p = require_set_up_portfolio(owner)
+            kept = p["transactions"] if body.mode == "add" else []
+            n = orch.save_portfolio(owner, p["cash"], p["risk_profile"], p["horizon"], kept + [
+                {**t.model_dump(), "trade_date": t.trade_date.isoformat()} for t in body.stocks])
+        return {"status": "saved", "transactions": n}
 
     @app.get("/search", dependencies=[Depends(auth)])
     def search(q: str = Query(min_length=1, max_length=40)):

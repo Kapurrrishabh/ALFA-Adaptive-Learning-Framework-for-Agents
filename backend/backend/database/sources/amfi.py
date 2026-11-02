@@ -188,10 +188,18 @@ def search(schemes: List[Scheme], query: str, limit: int = 10) -> List[Dict[str,
             ranked.append(((-whole, len(name_words(NOTE.sub("", fund))), fund), amc, fund, sorted(plans, key=lambda s: _plan_order(s, asked))))
     ranked.sort(key=lambda r: r[0])
     return [{"fund": fund, "amc": amc, "category": plans[0].category, "scheme_type": plans[0].scheme_type,
-             "plans": [{"code": s.code, "plan": s.plan, "option": s.option, "nav": s.nav, "nav_date": s.nav_date,
-                        "is_ambiguous": sum((o.plan, o.option) == (s.plan, s.option) for o in plans) > 1}
-                       for s in plans]}
-            for _, amc, fund, plans in ranked[:limit]]
+             "plans": _plan_rows(plans)} for _, amc, fund, plans in ranked[:limit]]
+
+
+def _plan_rows(plans: List[Scheme]) -> List[Dict[str, object]]:
+    return [{"code": s.code, "plan": s.plan, "option": s.option, "nav": s.nav, "nav_date": s.nav_date,
+             "is_ambiguous": sum((o.plan, o.option) == (s.plan, s.option) for o in plans) > 1} for s in plans]
+
+
+def plans(schemes: List[Scheme], scheme: Scheme) -> List[Dict[str, object]]:
+    """Every plan of `scheme`'s fund, listed as `search` lists them: Direct and Growth first."""
+    same = [s for s in schemes if (s.amc, s.fund) == (scheme.amc, scheme.fund)]
+    return _plan_rows(sorted(same, key=lambda s: _plan_order(s, [])))
 
 
 def parse_history(text: str, code: int) -> pd.Series:
