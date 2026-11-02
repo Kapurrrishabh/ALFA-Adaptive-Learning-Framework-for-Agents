@@ -22,6 +22,9 @@ PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signal
 UNNAMED_FETCH_ERROR = "Failed to load resource"
 LONG_NAME = "Parag Parikh Flexi Cap Fund Direct Plan Growth"
 EMOJI = re.compile("[\u2600-\u27bf\U0001f300-\U0001faff]")
+CUT_LABELS = """() => [...document.querySelectorAll("#view svg[viewBox] text")].filter((t) => t.getClientRects().length).flatMap((t) => {
+  const v = t.ownerSVGElement.viewBox.baseVal, b = t.getBBox(), slack = 0.5;
+  return b.x < v.x - slack || b.y < v.y - slack || b.x + b.width > v.x + v.width + slack || b.y + b.height > v.y + v.height + slack ? [t.textContent] : []; })"""
 
 
 class Tab:
@@ -79,7 +82,7 @@ def browser():
 @pytest.fixture(scope="module")
 def visits(browser, base_url):
     """What each page showed at each width: its h1 texts, the errors it logged, whether it scrolled sideways,
-    the text of its empty states and banners, and the names of its charts."""
+    the text of its empty states and banners, the names of its charts, and the chart labels cut off at a chart's edge."""
     out = {}
     for width in WIDTHS:
         tab = Tab(browser, base_url, width)
@@ -90,7 +93,8 @@ def visits(browser, base_url):
             out[(width, name)] = {"h1": tab.page.locator("h1").all_inner_texts(), "errors": tab.errors[seen:],
                                   "sideways": tab.page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"),
                                   "states": tab.page.locator("#view .empty, #view .banner").all_inner_texts(),
-                                  "charts": tab.page.locator("#view svg[role=img]").evaluate_all("els => els.map((el) => el.getAttribute('aria-label'))")}
+                                  "charts": tab.page.locator("#view svg[role=img]").evaluate_all("els => els.map((el) => el.getAttribute('aria-label'))"),
+                                  "cut": tab.page.evaluate(CUT_LABELS)}
         tab.context.close()
     return out
 
@@ -128,6 +132,19 @@ def test_an_address_with_no_page_says_so(visits, name):
 def test_every_chart_is_named_from_its_data(visits):
     unnamed = {name: [c for c in visits[(1366, name)]["charts"] if not c or re.search(r"undefined|NaN|\[object", c)] for name in PAGES}
     assert {name: charts for name, charts in unnamed.items() if charts} == {}
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+def test_no_chart_label_is_cut_off_at_the_chart_edge(visits, width):
+    assert {name: visits[(width, name)]["cut"] for name in PAGES if visits[(width, name)]["cut"]} == {}
+
+
+@pytest.mark.parametrize("chart_tab", ["Technical", "Intraday", "Price & projection"])
+def test_no_stock_chart_label_is_cut_off_on_a_phone(browser, base_url, chart_tab):
+    tab = Tab(browser, base_url, 390)
+    tab.go("#/stock/TEST")
+    show_chart_tab(tab, chart_tab)
+    assert tab.page.evaluate(CUT_LABELS) == []
 
 
 def test_each_pattern_chart_names_its_proven_edges(visits):
@@ -442,17 +459,29 @@ def test_theme_toggle_sends_no_request(browser, base_url):
     assert tab.requests[sent:] == []
 
 
-@pytest.mark.parametrize("scheme", ["light", "dark"])
-def test_the_system_theme_is_in_place_before_the_app_script_runs(browser, base_url, scheme):
-    tab = Tab(browser, base_url, 1366, color_scheme=scheme, service_workers="block")
-
-    def note_the_theme_first(route):
+def before_the_app_script(tab, expression):
+    """What a JavaScript expression gives just before app.js runs, on a reload."""
+    def note_it_first(route):
         script = route.fetch()
-        route.fulfill(response=script, body="window.themeAtStart = document.documentElement.dataset.theme;\n" + script.text())
-    tab.page.route("**/static/app.js", note_the_theme_first)
+        route.fulfill(response=script, body=f"window.atStart = {expression};\n" + script.text())
+    tab.page.route("**/static/app.js", note_it_first)
     tab.page.reload()
     tab.settle()
-    assert tab.page.evaluate("window.themeAtStart") == scheme
+    return tab.page.evaluate("window.atStart")
+
+
+@pytest.mark.parametrize("scheme, chosen", [("light", None), ("dark", None), ("light", "dark"), ("dark", "light")])
+def test_the_chosen_or_else_the_system_theme_is_in_place_before_the_app_script_runs(browser, base_url, scheme, chosen):
+    tab = Tab(browser, base_url, 1366, color_scheme=scheme, service_workers="block")
+    if chosen:
+        tab.page.click("#theme")
+    assert before_the_app_script(tab, "document.documentElement.dataset.theme") == (chosen or scheme)
+
+
+def test_the_theme_button_has_its_final_size_before_its_icon_arrives(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    size = "(({ width, height }) => [width, height])(document.querySelector('#theme').getBoundingClientRect())"
+    assert before_the_app_script(tab, size) == tab.page.evaluate(size)
 
 
 THEME_COLOURS = """() => { const names = new Set();

@@ -142,7 +142,7 @@ function ring(frac, label, color = css("--brand"), size = 84) {
   const svg = s("svg", { viewBox: `0 0 ${size} ${size}`, width: size, height: size, role: "img", "aria-label": label, class: "ring" });
   svg.append(s("circle", { cx: c, cy: c, r, fill: "none", stroke: css("--bg-3"), "stroke-width": 7 }),
     s("circle", { cx: c, cy: c, r, fill: "none", stroke: color, "stroke-width": 7, "stroke-linecap": f ? "round" : "butt", "stroke-dasharray": `${len * f} ${len}`, transform: `rotate(-90 ${c} ${c})` }));
-  const t = s("text", { x: c, y: c + 6, "text-anchor": "middle", "font-size": 17, "font-weight": 700, fill: css("--ink") }); t.textContent = label; svg.append(t);
+  const t = s("text", { x: c, y: c + 6, "text-anchor": "middle", "font-size": css("--fs-lg"), "font-weight": 700, fill: css("--ink") }); t.textContent = label; svg.append(t);
   return svg;
 }
 function areaChart(container, dates, values, { height = 280, showAxis = true } = {}) {
@@ -163,11 +163,11 @@ function areaChart(container, dates, values, { height = 280, showAxis = true } =
     for (let k = 0; k <= ticks; k++) {
       const v = lo + (hi - lo) * (k / ticks), yy = y(v);
       svg.append(s("line", { x1: m.l, x2: W - m.r, y1: yy, y2: yy, stroke: css("--line"), "stroke-width": 1, "stroke-dasharray": "2 4" }));
-      const t = s("text", { x: W - m.r + 6, y: yy + 4, fill: css("--muted"), "font-size": 11 }); t.textContent = num(v, v > 1000 ? 0 : 2); svg.append(t);
+      const t = s("text", { x: W - m.r + 6, y: yy + 4, fill: css("--muted"), "font-size": css("--fs-xs") }); t.textContent = num(v, v > 1000 ? 0 : 2); svg.append(t);
     }
     const every = Math.max(1, Math.floor(values.length / 5));
     for (let i = 0; i < values.length; i += every) {
-      const t = s("text", { x: x(i), y: H - 6, fill: css("--muted"), "font-size": 11, "text-anchor": "middle" });
+      const t = s("text", { x: x(i), y: H - 6, fill: css("--muted"), "font-size": css("--fs-xs"), "text-anchor": "middle" });
       t.textContent = new Date(dates[i]).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: values.length > 300 ? "2-digit" : undefined });
       svg.append(t);
     }
@@ -227,15 +227,15 @@ function candleChart(container, t, layers, selected, onPick) {
   const X = (i) => m.l + step * (i + 0.5), Y = (v) => m.t + ph - ((v - lo) / (hi - lo)) * ph;
   const DI = (d) => dateIdx.has(d) ? dateIdx.get(d) : d < t.dates[0] ? 0 : n - 1, XD = (d) => X(DI(d));   // clamp dates outside the window
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Candlestick chart of ${t.symbol} with detected patterns` });
-  const txt = (x, y, str, attrs = {}) => { const e = s("text", { x, y, "font-size": 11, fill: css("--muted"), ...attrs }); e.textContent = str; svg.append(e); return e; };
+  const txt = (x, y, str, attrs = {}) => { const e = s("text", { x, y, "font-size": css("--fs-xs"), fill: css("--muted"), ...attrs }); e.textContent = str; svg.append(e); return e; };
   for (let k = 1; k <= 3; k++) { const v = lo + (hi - lo) * k / 4; svg.append(s("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: css("--line"), "stroke-dasharray": "2 4" })); txt(W - m.r + 6, Y(v) + 4, num(v, v > 1000 ? 0 : 2)); }
   const every = Math.max(1, Math.floor(total / 5));
-  for (let i = 0; i < total; i += every) { const d = i < n ? t.dates[i] : t.cone[i - n].date; txt(X(i), H - 6, new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" }), { "text-anchor": "middle" }); }
+  for (let i = Math.floor(every / 2); i < total; i += every) { const d = i < n ? t.dates[i] : t.cone[i - n].date; txt(X(i), H - 6, new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" }), { "text-anchor": "middle" }); }
   // forward range cone
   if (layers.stop && t.stop) {
-    const sx = X(Math.max(0, n - Math.round(n * 0.35)));
+    const sx = X(Math.max(0, n - Math.round(n * 0.35))), stopLabel = `Stop-loss ${inr(t.stop, 0)} (−${t.stop_pct}% from the last close)`;
     svg.append(s("line", { x1: sx, x2: X(total - 1), y1: Y(t.stop), y2: Y(t.stop), stroke: css("--down"), "stroke-width": 1.5 }));
-    txt(sx + 2, Y(t.stop) + 13, `Stop-loss ${inr(t.stop, 0)} (−${t.stop_pct}% from the last close)`, { fill: css("--down"), "font-size": 10.5, "font-weight": 600 });
+    txt(Math.min(sx + 2, W - 4 - textW(stopLabel, 600)), Y(t.stop) + 13, stopLabel, { fill: css("--down"), "font-weight": 600 });
   }
   if (layers.cone) {
     const pts = (key) => t.cone.map((c, k) => `${X(n + k)},${Y(c[key])}`);
@@ -247,13 +247,13 @@ function candleChart(container, t, layers, selected, onPick) {
     if (!fans.length) { txt(X(total - 1) - 4, Y(last.hi80) - 4, `80%: ${inr(last.hi80, 0)}`, { "text-anchor": "end" });
       txt(X(total - 1) - 4, Y(last.lo80) + 13, `80%: ${inr(last.lo80, 0)}`, { "text-anchor": "end" }); }
     svg.append(s("line", { x1: X(n - 0.5), x2: X(n - 0.5), y1: m.t, y2: m.t + ph, stroke: css("--line"), "stroke-width": 1 }));
-    txt(X(n) + 2, m.t + 10, "next " + t.horizon + " days", { "font-size": 10 });
+    txt(X(n) + 2, m.t + 10, "next " + t.horizon + " days");
   }
   if (layers.sr) {
     for (const [lvl, lab] of [...t.support.map((v) => [v, "Support"]), ...t.resistance.map((v) => [v, "Resistance"])]) {
       if (lvl < lo || lvl > hi) continue;
       svg.append(s("line", { x1: m.l, x2: X(total - 1), y1: Y(lvl), y2: Y(lvl), stroke: lab === "Support" ? css("--up") : css("--down"), "stroke-width": 1, "stroke-dasharray": "6 4", opacity: 0.7 }));
-      txt(m.l + 4, Y(lvl) - 3, `${lab} ${inr(lvl, 0)}`, { fill: css("--ink-2"), "font-size": 10.5 });
+      txt(m.l + 4, Y(lvl) - 3, `${lab} ${inr(lvl, 0)}`, { fill: css("--ink-2") });
     }
   }
   // candles (or a line in "price" mode)
@@ -324,17 +324,17 @@ function candleChart(container, t, layers, selected, onPick) {
     for (const q of geo.touches || []) g.append(s("circle", { cx: XD(q[0]), cy: Y(q[1]), r: 3.5, fill: pc, stroke: css("--card"), "stroke-width": 1.5 }));
     for (const ln of geo.lines || []) {
       g.append(s("line", { x1: XD(ln.from[0]), y1: Y(ln.from[1]), x2: XD(ln.to[0]), y2: Y(ln.to[1]), stroke: pc, "stroke-width": 1.8, "stroke-dasharray": ln.style === "dashed" ? "5 4" : null }));
-      const lt = s("text", { x: XD(ln.to[0]) - 4, y: Y(ln.to[1]) - 5, "font-size": 10.5, fill: pc, "text-anchor": "end", "font-weight": 600 }); lt.textContent = ln.label; g.append(lt);
+      const lt = s("text", { x: XD(ln.to[0]) - 4, y: Y(ln.to[1]) - 5, "font-size": css("--fs-xs"), fill: pc, "text-anchor": "end", "font-weight": 600 }); lt.textContent = ln.label; g.append(lt);
     }
     for (const q of geo.points || []) {
       g.append(s("circle", { cx: XD(q[0]), cy: Y(q[1]), r: 4.5, fill: pc, stroke: css("--card"), "stroke-width": 2 }));
-      if (q[2]) { const lt = s("text", { x: XD(q[0]), y: Y(q[1]) + (p.direction < 0 && /Top|Head|Shoulder|Pole top/.test(q[2]) ? -9 : 16), "font-size": 10.5, fill: css("--ink"), "text-anchor": "middle", "font-weight": 600 }); lt.textContent = q[2]; g.append(lt); }
+      if (q[2]) { const lt = s("text", { x: XD(q[0]), y: Y(q[1]) + (p.direction < 0 && /Top|Head|Shoulder|Pole top/.test(q[2]) ? -9 : 16), "font-size": css("--fs-xs"), fill: css("--ink"), "text-anchor": "middle", "font-weight": 600 }); lt.textContent = q[2]; g.append(lt); }
     }
     const endX = layers.cone ? X(total - 1) : X(n - 1);
     if (p.breakout_level) { g.append(s("line", { x1: x1, x2: endX, y1: Y(p.breakout_level), y2: Y(p.breakout_level), stroke: pc, "stroke-dasharray": "3 3", "stroke-width": 1.4 }));
-      const bt = s("text", { x: endX - 4, y: Y(p.breakout_level) + 13, "font-size": 10.5, fill: pc, "text-anchor": "end" }); bt.textContent = `Breakout ${inr(p.breakout_level, 0)}`; g.append(bt); }
+      const bt = s("text", { x: endX - 4, y: Y(p.breakout_level) + 13, "font-size": css("--fs-xs"), fill: pc, "text-anchor": "end" }); bt.textContent = `Breakout ${inr(p.breakout_level, 0)}`; g.append(bt); }
     if (p.target) { g.append(s("line", { x1: x1, x2: endX, y1: Y(p.target), y2: Y(p.target), stroke: pc, "stroke-dasharray": "1 4", "stroke-width": 2 }));
-      const tt = s("text", { x: endX - 4, y: Y(p.target) - 4, "font-size": 10.5, fill: pc, "text-anchor": "end", "font-weight": 700 }); tt.textContent = `Textbook target ${inr(p.target, 0)} (unproven)`; g.append(tt); }
+      const tt = s("text", { x: endX - 4, y: Y(p.target) - 4, "font-size": css("--fs-xs"), fill: pc, "text-anchor": "end", "font-weight": 700 }); tt.textContent = `Textbook target ${inr(p.target, 0)} (unproven)`; g.append(tt); }
     if (layers.cone) for (const pr of t.projections) if (dateIdx.has(pr.from[0]) && XD(pr.from[0]) >= x0 && XD(pr.from[0]) <= x1 + 1)
       g.append(s("line", { x1: XD(pr.from[0]), y1: Y(pr.from[1]), x2: XD(pr.to[0]), y2: Y(pr.to[1]), stroke: pc, "stroke-dasharray": "6 5", "stroke-width": 1.4, opacity: 0.8 }));
     const name = p.pattern.replace(/_/g, " ");
@@ -386,7 +386,7 @@ function intradayPanel(ctx, sym) {
     const pad = (hi - lo) * 0.05; lo -= pad; hi += pad;
     const X = (i) => m.l + step * (i + 0.5), Y = (v) => m.t + ph - ((v - lo) / (hi - lo)) * ph;
     const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Intraday chart of ${sym}` });
-    const txt = (x, y, str, a = {}) => { const e = s("text", { x, y, "font-size": 11, fill: css("--muted"), ...a }); e.textContent = str; svg.append(e); };
+    const txt = (x, y, str, a = {}) => { const e = s("text", { x, y, "font-size": css("--fs-xs"), fill: css("--muted"), ...a }); e.textContent = str; svg.append(e); };
     for (let k = 0; k <= 5; k++) { const v = lo + (hi - lo) * k / 5; svg.append(s("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: css("--line") })); txt(W - m.r + 6, Y(v) + 4, num(v, v > 1000 ? 0 : 2)); }
     let lastDay = null;
     d.times.forEach((t, i) => { const day = t.slice(0, 10); if (day !== lastDay) { if (lastDay) svg.append(s("line", { x1: X(i) - step / 2, x2: X(i) - step / 2, y1: m.t, y2: H - m.b, stroke: css("--line") }));
@@ -394,7 +394,7 @@ function intradayPanel(ctx, sym) {
       else if (rng === "1D" && i % 12 === 0) txt(X(i), H - 6, t.slice(11), { "text-anchor": "middle" }); });
     for (const [lab, v, col, dash] of lv) { if (v < lo || v > hi) continue;
       svg.append(s("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: css(col), "stroke-dasharray": dash, "stroke-width": 1.3 }));
-      txt(m.l + 4, Y(v) - 3, `${lab} ${inr(v, 0)}`, { fill: css("--ink-2"), "font-size": 10.5 }); }
+      txt(m.l + 4, Y(v) - 3, `${lab} ${inr(v, 0)}`, { fill: css("--ink-2") }); }
     const bw = Math.max(1, Math.min(8, step * 0.62)), vmax = Math.max(...d.volume) || 1, vy = H - m.b - volH;
     for (let i = 0; i < n; i++) { const up = d.close[i] >= d.open[i], col = up ? css("--up") : css("--down");
       svg.append(s("line", { x1: X(i), x2: X(i), y1: Y(d.high[i]), y2: Y(d.low[i]), stroke: col }));
@@ -424,13 +424,13 @@ function intradayPanel(ctx, sym) {
 
 function miniPanel(container, dates, series, label, { bands = null, bars = false, fmt = (v) => num(v, 1), zero = false, fill = null, height = 120 } = {}) {
   container.replaceChildren();
-  const W = container.clientWidth || 300, H = height, m = { l: 4, r: 40, t: 6, b: 16 }, pw = W - m.l - m.r, ph = H - m.t - m.b, n = dates.length;
+  const last = series[0].values[series[0].values.length - 1], W = container.clientWidth || 300, H = height, m = { l: 4, r: 8 + textW(fmt(last), 700), t: 6, b: 16 }, pw = W - m.l - m.r, ph = H - m.t - m.b, n = dates.length;
   const vals = series.flatMap((x) => x.values.filter((v) => v != null)).concat(bands ? bands.map((b) => b[0]) : []).concat(zero ? [0] : []);
   let lo = Math.min(...vals), hi = Math.max(...vals); if (hi === lo) hi = lo + 1;
   const X = (i) => m.l + (i / Math.max(1, n - 1)) * pw, Y = (v) => m.t + ph - ((v - lo) / (hi - lo)) * ph;
-  const last = series[0].values[series[0].values.length - 1], svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${label}: latest ${fmt(last)}` });
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${label}: latest ${fmt(last)}` });
   for (const [v, lab, col] of bands || []) { svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: Y(v), y2: Y(v), stroke: css(col || "--line"), "stroke-dasharray": "4 3" }));
-    const t = s("text", { x: m.l + pw + 4, y: Y(v) + 4, "font-size": 10, fill: css("--muted") }); t.textContent = lab; svg.append(t); }
+    const t = s("text", { x: m.l + pw + 4, y: Y(v) + 4, "font-size": css("--fs-xs"), fill: css("--muted") }); t.textContent = lab; svg.append(t); }
   if (zero) svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: Y(0), y2: Y(0), stroke: css("--ink-2"), "stroke-width": 0.8 }));
   for (const sr of series) {
     if (bars) { const bw = Math.max(1, pw / n * 0.7); sr.values.forEach((v, i) => { if (v == null) return; svg.append(s("rect", { x: X(i) - bw / 2, y: Math.min(Y(v), Y(0)), width: bw, height: Math.max(0.5, Math.abs(Y(v) - Y(0))), fill: v >= 0 ? css("--up") : css("--down"), opacity: 0.8 })); }); continue; }
@@ -438,8 +438,8 @@ function miniPanel(container, dates, series, label, { bands = null, bars = false
     if (fill) svg.append(s("path", { d: `${d} L${X(n - 1)},${Y(0)} L${X(0)},${Y(0)} Z`, fill: css(fill), "fill-opacity": 0.15 }));
     svg.append(s("path", { d, fill: "none", stroke: css(sr.color), "stroke-width": 1.8 }));
   }
-  const t = s("text", { x: m.l + pw + 4, y: Y(last) + 4, "font-size": 11, "font-weight": 700, fill: css("--ink") }); t.textContent = fmt(last); svg.append(t);
-  for (const i of [0, n - 1]) { const e = s("text", { x: X(i), y: H - 3, "font-size": 10, fill: css("--muted"), "text-anchor": i ? "end" : "start" }); e.textContent = new Date(dates[i]).toLocaleDateString("en-IN", { day: "numeric", month: "short" }); svg.append(e); }
+  const t = s("text", { x: m.l + pw + 4, y: Y(last) + 4, "font-size": css("--fs-xs"), "font-weight": 700, fill: css("--ink") }); t.textContent = fmt(last); svg.append(t);
+  for (const i of [0, n - 1]) { const e = s("text", { x: X(i), y: H - 3, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": i ? "end" : "start" }); e.textContent = new Date(dates[i]).toLocaleDateString("en-IN", { day: "numeric", month: "short" }); svg.append(e); }
   container.append(svg);
 }
 
@@ -552,7 +552,7 @@ function technicalPanel(ctx, sym, opts = {}) {
 // ---------- generic charts (performance + portfolio) ----------
 const DASHED = "6 4";
 const SERIES = [["--series-1", "none"], ["--series-2", DASHED], ["--series-3", "1.5 3"], ["--series-4", "8 3 1.5 3"]];
-const textW = (str, size = 12) => { const c = textW.c || (textW.c = document.createElement("canvas").getContext("2d")); c.font = `${size}px ${getComputedStyle(document.body).fontFamily}`; return c.measureText(str).width; };
+const textW = (str, weight = 400) => { const c = textW.c || (textW.c = document.createElement("canvas").getContext("2d")); c.font = `${weight} ${css("--fs-xs")} ${getComputedStyle(document.body).fontFamily}`; return c.measureText(str).width; };
 function legend(items) {
   return h("div", { class: "legend" }, ...items.map(([name, col, dash]) => {
     if (!dash) return h("span", {}, h("span", { class: "sw", style: `background:var(${col})` }), name);
@@ -564,7 +564,7 @@ function legend(items) {
 
 function lineChart(container, dates, series, label, { height = 300, fmt = (v) => num(v), logScale = false } = {}) {
   container.replaceChildren();
-  const endW = Math.max(...series.map((sr) => textW(`${sr.short || sr.name} ${fmt(sr.values[sr.values.length - 1])}`, 11)));
+  const endW = Math.max(...series.map((sr) => textW(`${sr.short || sr.name} ${fmt(sr.values[sr.values.length - 1])}`)));
   const W = container.clientWidth || 700, H = height, m = { l: 8, r: 70 + endW, t: 10, b: 24 }, pw = W - m.l - m.r, ph = H - m.t - m.b;
   const all = series.flatMap((x) => x.values.filter((v) => v != null));
   const tf = (v) => logScale ? Math.log(v) : v;
@@ -572,9 +572,9 @@ function lineChart(container, dates, series, label, { height = 300, fmt = (v) =>
   const x = (i) => m.l + (i / Math.max(1, dates.length - 1)) * pw, y = (v) => m.t + ph - ((tf(v) - lo) / (hi - lo)) * ph;
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${label}. Latest: ${series.map((sr) => `${sr.name} ${fmt(sr.values[sr.values.length - 1])}`).join(", ")}` });
   for (let k = 0; k <= 4; k++) { const tv = lo + (hi - lo) * k / 4, v = logScale ? Math.exp(tv) : tv, yy = m.t + ph - (k / 4) * ph;
-    svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: yy, y2: yy, stroke: css("--line"), "stroke-dasharray": "2 4" })); const t = s("text", { x: m.l + pw + 6, y: yy + 4, "font-size": 11, fill: css("--muted") }); t.textContent = fmt(v); svg.append(t); }
+    svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: yy, y2: yy, stroke: css("--line"), "stroke-dasharray": "2 4" })); const t = s("text", { x: m.l + pw + 6, y: yy + 4, "font-size": css("--fs-xs"), fill: css("--muted") }); t.textContent = fmt(v); svg.append(t); }
   const every = Math.max(1, Math.ceil(dates.length / Math.max(2, Math.min(6, Math.floor(pw / 80)))));
-  for (let i = 0; i < dates.length; i += every) { const t = s("text", { x: x(i), y: H - 6, "font-size": 11, fill: css("--muted"), "text-anchor": i === 0 ? "start" : "middle" }); t.textContent = new Date(dates[i]).toLocaleDateString("en-IN", { month: "short", year: "2-digit" }); svg.append(t); }
+  for (let i = 0; i < dates.length; i += every) { const t = s("text", { x: x(i), y: H - 6, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": i === 0 ? "start" : "middle" }); t.textContent = new Date(dates[i]).toLocaleDateString("en-IN", { month: "short", year: "2-digit" }); svg.append(t); }
   const ends = [];
   series.forEach((sr) => {
     let d = "", pen = false; sr.values.forEach((v, i) => { if (v == null) { pen = false; return; } d += (pen ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1); pen = true; });
@@ -583,7 +583,7 @@ function lineChart(container, dates, series, label, { height = 300, fmt = (v) =>
   });
   ends.sort((a, b) => a.y - b.y); for (let k = 1; k < ends.length; k++) if (ends[k].y - ends[k - 1].y < 13) ends[k].y = ends[k - 1].y + 13;
   for (const e of ends) { svg.append(s("line", { x1: m.l + pw + 52, x2: m.l + pw + 60, y1: e.y, y2: e.y, stroke: e.color, "stroke-width": 2 }));
-    const t = s("text", { x: m.l + pw + 63, y: e.y + 4, "font-size": 11, fill: css("--ink-2") }); t.textContent = e.label; svg.append(t); }
+    const t = s("text", { x: m.l + pw + 63, y: e.y + 4, "font-size": css("--fs-xs"), fill: css("--ink-2") }); t.textContent = e.label; svg.append(t); }
   const cross = s("line", { y1: m.t, y2: m.t + ph, stroke: css("--muted"), "stroke-dasharray": "3 3", visibility: "hidden" });
   const hit = s("rect", { x: m.l, y: m.t, width: pw, height: ph, fill: "transparent" }); svg.append(cross, hit);
   const tip = h("div", { class: "tip" });
@@ -598,21 +598,22 @@ function lineChart(container, dates, series, label, { height = 300, fmt = (v) =>
 function forestPlot(container, rows, { threshold = null } = {}) {
   container.replaceChildren();
   const ok = rows.filter((r) => r.excess_pct != null && r.ci_lo != null), sig = (r) => threshold != null && r.z != null && Math.abs(r.z) >= threshold;
-  const name = (r) => sig(r) ? `${r.pattern} (edge)` : r.pattern;
-  const W = container.clientWidth || 700, rowH = 22, m = { l: Math.min(W * 0.45, 16 + Math.max(...ok.map((r) => textW(name(r))))), r: 70, t: 22, b: 26 }, H = m.t + m.b + ok.length * rowH, pw = W - m.l - m.r;
+  const name = (r) => sig(r) ? `${r.pattern} (edge)` : r.pattern, events = (r) => `${r.events} events`;
+  const W = container.clientWidth || 700, rowH = 22, m = { l: Math.min(W * 0.45, 16 + Math.max(...ok.map((r) => textW(name(r))))), r: 12 + Math.max(...ok.map((r) => textW(events(r)))), t: 22, b: 26 }, H = m.t + m.b + ok.length * rowH, pw = W - m.l - m.r;
   const lim = Math.max(1, ...ok.map((r) => Math.max(Math.abs(r.ci_lo), Math.abs(r.ci_hi)))) * 1.05;
   const x = (v) => m.l + ((v + lim) / (2 * lim)) * pw;
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Excess return after each pattern with 95% interval. Proven edge: ${ok.filter(sig).map((r) => r.pattern).join(", ") || "none"}` });
-  for (const v of [-lim, -lim / 2, 0, lim / 2, lim]) { svg.append(s("line", { x1: x(v), x2: x(v), y1: m.t - 6, y2: H - m.b, stroke: v === 0 ? css("--ink-2") : css("--line"), "stroke-width": v === 0 ? 1.5 : 1 }));
-    const t = s("text", { x: x(v), y: H - 8, "font-size": 11, fill: css("--muted"), "text-anchor": "middle" }); t.textContent = pct(v, 1); svg.append(t); }
-  const hdr = s("text", { x: x(0), y: 12, "font-size": 11, fill: css("--muted"), "text-anchor": "middle" }); hdr.textContent = "← worse than normal   0 = no effect   better than normal →"; svg.append(hdr);
+  for (const v of 5 * textW(pct(-lim, 1)) < pw ? [-lim, -lim / 2, 0, lim / 2, lim] : [-lim, 0, lim]) { svg.append(s("line", { x1: x(v), x2: x(v), y1: m.t - 6, y2: H - m.b, stroke: v === 0 ? css("--ink-2") : css("--line"), "stroke-width": v === 0 ? 1.5 : 1 }));
+    const t = s("text", { x: x(v), y: H - 8, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": "middle" }); t.textContent = pct(v, 1); svg.append(t); }
+  const head = "← worse than normal   0 = no effect   better than normal →", hw = textW(head) / 2;
+  const hdr = s("text", { x: Math.min(Math.max(x(0), hw), W - hw), y: 12, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": "middle" }); hdr.textContent = head; svg.append(hdr);
   const tip = h("div", { class: "tip" });
   ok.forEach((r, k) => {
     const yy = m.t + k * rowH + rowH / 2, col = sig(r) ? (r.excess_pct > 0 ? css("--up") : css("--down")) : css("--muted");
-    const lab = s("text", { x: m.l - 10, y: yy + 4, "font-size": 12, fill: css("--ink"), "text-anchor": "end" }); lab.textContent = name(r); svg.append(lab);
+    const lab = s("text", { x: m.l - 10, y: yy + 4, "font-size": css("--fs-xs"), fill: css("--ink"), "text-anchor": "end" }); lab.textContent = name(r); svg.append(lab);
     svg.append(s("line", { x1: x(r.ci_lo), x2: x(r.ci_hi), y1: yy, y2: yy, stroke: col, "stroke-width": 2 }));
     svg.append(s("circle", { cx: x(r.excess_pct), cy: yy, r: 4.5, fill: col, stroke: css("--card"), "stroke-width": 2 }));
-    const n = s("text", { x: m.l + pw + 8, y: yy + 4, "font-size": 11, fill: css("--muted") }); n.textContent = `${r.events} events`; svg.append(n);
+    const n = s("text", { x: m.l + pw + 8, y: yy + 4, "font-size": css("--fs-xs"), fill: css("--muted") }); n.textContent = events(r); svg.append(n);
     const hit = s("rect", { x: 0, y: yy - rowH / 2, width: W, height: rowH, fill: "transparent" });
     hit.addEventListener("mousemove", (ev) => { const b = svg.getBoundingClientRect(); tip.replaceChildren(h("b", {}, r.pattern), h("br"), `${r.events} events in ${r.stocks} stocks, next ${r.horizon} days`, h("br"),
       `average excess ${pct(r.excess_pct)} (95% range ${pct(r.ci_lo)} to ${pct(r.ci_hi)})`, h("br"), `z = ${num(r.z)} — ${r.verdict}`);
@@ -637,15 +638,15 @@ function barChart(container, items, label, { fmt = (v) => pct(v, 1), ref = null,
   items.forEach((it, k) => {
     const yy = m.t + k * rowH, bh = stacked ? 16 : Math.min(22, rowH - 10), by = stacked ? yy + 22 : yy + 5;
     const x0 = x(Math.min(0, it.value)), x1 = x(Math.max(0, it.value));
-    const lab = s("text", stacked ? { x: m.l, y: yy + 15, "font-size": 12, fill: css("--ink") } : { x: m.l - 10, y: by + bh / 2 + 4, "font-size": 12, fill: css("--ink"), "text-anchor": "end" });
+    const lab = s("text", stacked ? { x: m.l, y: yy + 15, "font-size": css("--fs-xs"), fill: css("--ink") } : { x: m.l - 10, y: by + bh / 2 + 4, "font-size": css("--fs-xs"), fill: css("--ink"), "text-anchor": "end" });
     lab.textContent = it.label; svg.append(lab);
     svg.append(s("rect", { x: x0, y: by, width: Math.max(2, x1 - x0), height: bh, rx: 4, fill: it.color || css("--series-1"), "fill-opacity": it.faded ? 0.45 : 1 }));
-    const v = s("text", { x: x1 + 6, y: by + bh / 2 + 4, "font-size": 12, fill: css("--ink-2"), "font-weight": 600 }); v.textContent = fmt(it.value); svg.append(v);
+    const v = s("text", { x: x1 + 6, y: by + bh / 2 + 4, "font-size": css("--fs-xs"), fill: css("--ink-2"), "font-weight": 600 }); v.textContent = fmt(it.value); svg.append(v);
   });
   if (stacked) items.forEach((_, k) => { const by = m.t + k * rowH + 22; svg.append(s("line", { x1: x(0), x2: x(0), y1: by - 3, y2: by + 19, stroke: css("--ink-2") })); });
   else svg.append(s("line", { x1: x(0), x2: x(0), y1: m.t, y2: H - m.b, stroke: css("--ink-2") }));
   if (ref != null) { svg.append(s("line", { x1: x(ref), x2: x(ref), y1: m.t, y2: H - m.b + 4, stroke: css("--down"), "stroke-dasharray": "4 3", "stroke-width": 1.5 }));
-    const t = s("text", { x: x(ref), y: H + 12, "font-size": 11, fill: css("--down"), "text-anchor": "middle" }); t.textContent = `${refLabel} ${fmt(ref)}`; svg.append(t); }
+    const t = s("text", { x: x(ref), y: H + 12, "font-size": css("--fs-xs"), fill: css("--down"), "text-anchor": "middle" }); t.textContent = `${refLabel} ${fmt(ref)}`; svg.append(t); }
   container.append(svg);
 }
 
@@ -656,11 +657,11 @@ function calibrationPlot(container, pointsByH, label) {
   const said = (pts) => pts.map((q) => `said ${num(q.predicted * 100, 0)}%, went up ${num(q.actual * 100, 0)}%`).join("; ");
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", style: `max-width:${W}px`, "aria-label": `${label}. ${Object.entries(pointsByH).map(([hz, pts]) => `${hz}-day: ${said(pts)}`).join(". ")}` });
   for (const v of [0.3, 0.4, 0.5, 0.6, 0.7]) { svg.append(s("line", { x1: x(v), x2: x(v), y1: m.t, y2: m.t + p, stroke: css("--line") }), s("line", { x1: m.l, x2: m.l + p, y1: y(v), y2: y(v), stroke: css("--line") }));
-    const a = s("text", { x: x(v), y: m.t + p + 14, "font-size": 10.5, fill: css("--muted"), "text-anchor": "middle" }); a.textContent = `${v * 100}%`; svg.append(a);
-    const b = s("text", { x: m.l - 6, y: y(v) + 4, "font-size": 10.5, fill: css("--muted"), "text-anchor": "end" }); b.textContent = `${v * 100}%`; svg.append(b); }
+    const a = s("text", { x: x(v), y: m.t + p + 14, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": "middle" }); a.textContent = `${v * 100}%`; svg.append(a);
+    const b = s("text", { x: m.l - 6, y: y(v) + 4, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": "end" }); b.textContent = `${v * 100}%`; svg.append(b); }
   svg.append(s("line", { x1: x(lo), y1: y(lo), x2: x(hi), y2: y(hi), stroke: css("--ink-2"), "stroke-dasharray": "5 4" }));
-  const pf = s("text", { x: x(0.72), y: y(0.72) - 5, "font-size": 10.5, fill: css("--ink-2"), "text-anchor": "end", transform: `rotate(-45 ${x(0.72)} ${y(0.72)})` }); pf.textContent = "perfect"; svg.append(pf);
-  const lx = s("text", { x: m.l + p / 2, y: H - 4, "font-size": 11, fill: css("--muted"), "text-anchor": "middle" }); lx.textContent = "model said: chance of going up"; svg.append(lx);
+  const pf = s("text", { x: x(0.72), y: y(0.72) - 5, "font-size": css("--fs-xs"), fill: css("--ink-2"), "text-anchor": "end", transform: `rotate(-45 ${x(0.72)} ${y(0.72)})` }); pf.textContent = "perfect"; svg.append(pf);
+  const lx = s("text", { x: m.l + p / 2, y: H - 4, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": "middle" }); lx.textContent = "model said: chance of going up"; svg.append(lx);
   Object.entries(pointsByH).forEach(([hz, pts], k) => { const col = css(SERIES[k][0]); let d = "";
     pts.forEach((q, i) => { d += (i ? "L" : "M") + x(q.predicted) + " " + y(q.actual); });
     svg.append(s("path", { d, fill: "none", stroke: col, "stroke-width": 1.5, "stroke-dasharray": SERIES[k][1], opacity: 0.6 }));
@@ -678,7 +679,7 @@ function donut(container, parts, label) {
     const large = a1 - a0 > Math.PI ? 1 : 0, P = (a) => `${c + r * Math.cos(a)} ${c + r * Math.sin(a)}`;
     svg.append(s("path", { d: `M${P(a0)} A${r} ${r} 0 ${large} 1 ${P(a1)}`, fill: "none", stroke: css(palette[k % palette.length]), "stroke-width": sw }));
     p.color = css(palette[k % palette.length]); a0 = a1 + 0.02; });
-  const t = s("text", { x: c, y: c + 5, "text-anchor": "middle", "font-size": 14, "font-weight": 700, fill: css("--ink") }); t.textContent = `${parts.length} sectors`; svg.append(t);
+  const t = s("text", { x: c, y: c + 5, "text-anchor": "middle", "font-size": css("--fs-sm"), "font-weight": 700, fill: css("--ink") }); t.textContent = `${parts.length} sectors`; svg.append(t);
   container.append(h("div", { class: "row", style: "gap:22px;align-items:center" }, svg, h("div", { class: "grid", style: "gap:6px" },
     ...parts.map((p) => h("div", { style: "font-size:var(--fs-sm)" }, h("span", { class: "sw", style: `display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:8px;background:${p.color}` }), `${p.label} `, h("b", { class: "num" }, `${num(p.value, 1)}%`))))));
 }
@@ -851,7 +852,7 @@ async function pageExplore(view, ctx) {
   let d; try { d = await api("/ui/explore", { signal: ctx.signal }); } catch (e) { view.replaceChildren(ErrorState(e, route)); return; }
   idx.replaceChildren(...d.indices.map((ix) => h("div", { class: "card index-card" },
     h("div", { class: "spread" }, h("span", { class: "name" }, ix.name), h("span", { class: "muted", style: "font-size:var(--fs-xs)" }, `${ix.spark.length} sessions`)), h("div", { class: "spread" }, h("div", {}, h("div", { class: "val num" }, num(ix.value)),
-      h("div", { class: `num ${cls(ix.change)}` }, `${ix.change > 0 ? "+" : ""}${num(ix.change)} (${pct(ix.change_pct)})`)), spark(ctx, ix.spark)))));
+      h("div", { class: `num ${cls(ix.change)}`, style: "font-size:var(--fs-sm)" }, `${ix.change > 0 ? "+" : ""}${num(ix.change)} (${pct(ix.change_pct)})`)), spark(ctx, ix.spark)))));
   const m = d.market, good = m.trend === "up";
   const banner = h("div", { class: `banner ${good ? "good" : "bad"}`, style: "margin-top:18px" },
     h("div", { class: `big ${good ? "up" : "down"}` }, icon(good ? "chart" : "falling")),
