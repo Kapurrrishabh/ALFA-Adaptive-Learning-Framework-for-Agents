@@ -247,7 +247,8 @@ deliberately not a table: they would duplicate transactions.
 
 ## 13. API design
 
-All JSON; `X-API-Key` required except `/health` and `/`. Strict JSON (NaN → null).
+All JSON; a signed-in session cookie is required except on `PUBLIC_PATHS` (`/`, `/health`, the manifest,
+the service worker, `/login/google`, `/privacy`) and the sign-in routes under `/auth/`. Strict JSON (NaN → null).
 
 | Method & path | Returns |
 |---|---|
@@ -385,10 +386,16 @@ named human. Pattern priors follow the same pattern (`validate-patterns --save`)
 
 ## 19. Security architecture
 
-- Secrets only from the environment (`STOCKINTEL_API_KEY`, `ANTHROPIC_API_KEY`, AWS profile);
-  never in prompts, logs or the database.
-- API key ≥ 16 chars required at startup; constant-time comparison; per-key token bucket
-  (120/min, PROVISIONAL); pydantic schemas on every body; ticker regex on every path.
+- Secrets only from the environment (`STOCKINTEL_AUTH_SECRET`, the Google and SMTP settings,
+  `ANTHROPIC_API_KEY`, AWS profile); never in prompts, logs or the database.
+- Sign-in with fastapi-users: Google (OpenID Connect) or email and password (Argon2id). The session
+  is a cookie naming a database row, so signing out or resetting the password really ends it. Every
+  private route needs a verified user, refuses requests another site started (`Sec-Fetch-Site`,
+  `Origin`) and has a per-user token bucket (120/min); the sign-in routes have per-IP and per-email
+  limits (all PROVISIONAL). The server refuses to start without `STOCKINTEL_AUTH_SECRET` and
+  `STOCKINTEL_PUBLIC_URL`. Pydantic schemas on every body; ticker regex on every path.
+- Deleting an account removes its portfolio and everything kept with it, its usage counts and its
+  sign-ins. The state backup keeps no sign-in sessions.
 - The server binds to 127.0.0.1 by default. Portfolio data stays in the local SQLite file.
 - The LLM receives computed evidence only; tools are read-only; tool output is size-capped.
 

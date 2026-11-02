@@ -425,32 +425,57 @@ def cmd_app(args) -> int:
     import threading
     import webbrowser
     import uvicorn
+    from backend.api.accounts import LOOPBACK, Accounts
     from backend.api.app import create_app
-    # the key is kept between runs so a phone that logged in once stays logged in
-    key_file = Path.home() / ".stockintel" / "app_key"
-    key = os.environ.get("STOCKINTEL_API_KEY") or (key_file.read_text().strip() if key_file.exists() else "")
-    if not key:
-        key = secrets.token_hex(24)
-        key_file.parent.mkdir(parents=True, exist_ok=True)
-        key_file.write_text(key)
-        key_file.chmod(0o600)
-    app = create_app(_orchestrator(args, args.llm, charges_model_calls=True), api_key=key, preload=True)
-    url = f"http://{args.host}:{args.port}/#key={key}"
-    print(f"StockIntel is running at {url}\n(the key in the link logs you in; keep it private)")
-    if args.lan:
-        print(f"On your phone (same Wi-Fi): http://{_lan_ip()}:{args.port}/#key={key}\n"
-              "Use this on your home network only: the traffic is not encrypted.")
+    if args.host not in LOOPBACK:
+        raise SystemExit(f"--host {args.host} would serve the app without HTTPS, where sign-in cookies are not safe. "
+                         "To reach it from other devices, run `stockintel serve` behind HTTPS (see deploy/oracle).")
+    url = f"http://{args.host}:{args.port}"
+    # Sign-ins are database rows, so a new secret each run keeps everyone signed in
+    accounts = Accounts(args.db, url, secrets.token_hex(32), None, None)
+    if not accounts.has_users():
+        print("No account yet. Make the one you will sign in with.")
+        _add_user(accounts, input("Email: ").strip())
+    app = create_app(_orchestrator(args, args.llm, charges_model_calls=True), accounts, preload=True)
+    print(f"StockIntel is running at {url}\n(sign in with your email and password)")
     if not args.no_browser:
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
-    uvicorn.run(app, host="0.0.0.0" if args.lan else args.host, port=args.port, log_level="warning")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 
 
-def _lan_ip() -> str:
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.connect(("10.255.255.255", 1))        # UDP connect sends nothing; it only picks the Wi-Fi interface
-        return s.getsockname()[0]
+def _add_user(accounts, email: str) -> None:
+    import getpass
+    from fastapi_users.exceptions import InvalidPasswordException, UserAlreadyExists
+    from backend.api.accounts import PASSWORD_MAX, PASSWORD_MIN
+    try:
+        accounts.create_user(email, getpass.getpass(f"Password for {email} ({PASSWORD_MIN} to {PASSWORD_MAX} "
+                                                    "characters; a short sentence works): "), verified=True)
+    except InvalidPasswordException as exc:
+        raise SystemExit(exc.reason) from None
+    except UserAlreadyExists:
+        raise SystemExit(f"{email} already has an account.") from None
+
+
+def cmd_accounts(args) -> int:
+    from backend.api.accounts import Accounts, owner_of
+    from backend.database.storage import Store
+    accounts = Accounts.from_env(args.db)
+    if args.action == "add":
+        _add_user(accounts, args.email)
+        print(f"Added {args.email}; it can sign in now.")
+        return 0
+    user = accounts.user(args.email)
+    if user is None or not user.is_verified:
+        raise SystemExit(f"{args.email} has no account with a confirmed email. Confirm it, or add one with "
+                         f"`stockintel accounts add --email {args.email}`.")
+    old, new = (DEFAULT_PORTFOLIO, owner_of(user)) if args.action == "claim" else (owner_of(user), DEFAULT_PORTFOLIO)
+    try:
+        Store(args.db).rename_portfolio(old, new)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    print(f"Portfolio {old!r} is now {new!r}, with its transactions, reports, plans and alert acknowledgements.")
+    return 0
 
 
 def cmd_build_performance(args) -> int:
@@ -508,6 +533,7 @@ def cmd_evaluate_models(args) -> int:
 def cmd_serve(args) -> int:
     import uvicorn
     from backend.database import hfstate
+    from backend.api.accounts import Accounts
     from backend.api.app import create_app
     from backend.models.external import remote_models
     from backend.models.serving import alfa_fan, gru_line, weights
@@ -518,7 +544,7 @@ def cmd_serve(args) -> int:
         logging.getLogger("stockintel.state").setLevel(logging.INFO)
         hfstate.pull(Path(args.db))
         saver = hfstate.Autosave(Path(args.db), hfstate.PUSH_MINUTES).start()
-    app = create_app(_orchestrator(args, args.llm, charges_model_calls=True))
+    app = create_app(_orchestrator(args, args.llm, charges_model_calls=True), Accounts.from_env(args.db))
     try:
         uvicorn.run(app, host=args.host, port=args.port)
     finally:
@@ -644,15 +670,20 @@ def build_parser() -> argparse.ArgumentParser:
     em = sub.add_parser("evaluate-models", help="walk-forward test of Chronos and Kronos (needs torch; minutes)")
     em.set_defaults(fn=cmd_evaluate_models)
 
-    ap = sub.add_parser("app", help="open the web app (creates a login key automatically)")
-    ap.add_argument("--host", default="127.0.0.1")
+    ap = sub.add_parser("app", help="open the web app on this computer (asks for an account the first time)")
+    ap.add_argument("--host", default="127.0.0.1", help="127.0.0.1 or localhost only")
     ap.add_argument("--port", type=int, default=8931)
     ap.add_argument("--no-browser", action="store_true")
-    ap.add_argument("--lan", action="store_true", help="also listen on your Wi-Fi so your phone can open it")
     ap.add_argument("--llm", **llm)
     ap.set_defaults(fn=cmd_app)
 
-    sv = sub.add_parser("serve", help="REST API + dashboard (needs STOCKINTEL_API_KEY)")
+    ac = sub.add_parser("accounts", help="add an account, or move the old shared portfolio to one (needs serve's settings)")
+    ac.add_argument("action", choices=["add", "claim", "release"],
+                    help=f"claim: give portfolio '{DEFAULT_PORTFOLIO}' to the account; release: give it back")
+    ac.add_argument("--email", required=True)
+    ac.set_defaults(fn=cmd_accounts)
+
+    sv = sub.add_parser("serve", help="REST API + dashboard (needs STOCKINTEL_AUTH_SECRET and STOCKINTEL_PUBLIC_URL)")
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8000)
     sv.add_argument("--llm", **llm)

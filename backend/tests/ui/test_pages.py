@@ -7,7 +7,7 @@ import pytest
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="Playwright is not installed: pip install -e '.[dev]'")
 
-from .conftest import KEY  # noqa: E402
+from .conftest import KEY, sign_in  # noqa: E402
 
 pytestmark = pytest.mark.ui
 WIDTHS = [390, 800, 1366]   # provisional: a phone, the nav breakpoint itself, a laptop
@@ -36,6 +36,7 @@ class Tab:
         self.page.on("pageerror", lambda e: self.errors.append(str(e)))
         self.page.on("console", lambda m: self.errors.append(m.text) if m.type == "error" and not m.text.startswith(UNNAMED_FETCH_ERROR) else None)
         self.page.on("response", lambda r: self.errors.append(f"{r.status} {r.url}") if r.status >= 500 or (r.status >= 400 and "/static/" in r.url) else None)
+        sign_in(self.context, base_url)
         self.page.goto(f"{base_url}/#key={KEY}")
         self.settle()
 

@@ -16,5 +16,5 @@ RUN case ",${EXTRAS}," in *,ml,*) pip install --no-cache-dir --index-url https:/
     && case ",${EXTRAS}," in *,ml,*) python -c "from backend.models.external import kronos_model; kronos_model.fetch_code()";; esac
 VOLUME ["/data"]
 EXPOSE 8000
-# STOCKINTEL_API_KEY must be set at run time; the server refuses to start without it.
+# STOCKINTEL_AUTH_SECRET and STOCKINTEL_PUBLIC_URL must be set at run time; the server refuses to start without them.
 CMD ["sh", "-c", "stockintel serve --host 0.0.0.0 --port ${PORT:-8000}"]
