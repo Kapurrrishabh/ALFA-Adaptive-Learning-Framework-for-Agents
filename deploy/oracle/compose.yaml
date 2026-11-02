@@ -13,7 +13,7 @@ x-alfa: &alfa
 services:
   app:
     <<: *alfa
-    build: {context: ../.., args: {EXTRAS: "ml,cloud,collect"}}
+    build: {context: ../.., args: {EXTRAS: "ml,cloud,collect,cas"}}
     env_file: [.env, auth.env]
     environment:
       SELFAGENT_URL: "http://agent:8010"

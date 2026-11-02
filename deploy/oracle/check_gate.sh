@@ -27,6 +27,11 @@ expect 401 "$UNAUTHORIZED" -X DELETE "$base/users/me"
 expect 401 "$UNAUTHORIZED" -X POST -H "Content-Type: application/json" -d '{"message": "hi"}' "$base/chat"
 expect 403 "" -H "Origin: https://evil.example" -d "username=gate-check@example.com&password=not-a-password" \
   "$base/auth/cookie/login"
+headers=$(curl -sSI --max-time 20 "$base/health") || fail "no answer to $base/health"
+for header in "content-security-policy: default-src" "strict-transport-security:"; do
+  grep -qi "^$header" <<<"$headers" || fail "the proxy does not pass on the app's $header header"
+  echo "ok  header  $header"
+done
 expect 404 "" "$base/openapi.json"
 expect 404 "" "$base/docs"
 for port in 80 8000 8010; do
