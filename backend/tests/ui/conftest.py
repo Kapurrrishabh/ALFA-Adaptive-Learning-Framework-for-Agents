@@ -12,6 +12,7 @@ import pytest
 from tests.app.conftest import EMAIL, PASSWORD, SECRET
 
 KEY = "k" * 24      # the web app asks for a key until its sign-in screens ship; the server ignores it
+RUN_REQUESTS = 700   # provisional: keyed requests the pages sent in one full browser run (683 on 2026-11-01, 676 on 2026-11-02); recount when the suite grows
 STOCKS = pd.DataFrame({"symbol": ["TEST", "PEER"], "name": ["Test Industries Ltd.", "Peer Power Ltd."],
                        "sector": ["Industrials", "Energy"], "nifty200": [True, True]})
 
@@ -97,6 +98,7 @@ def base_url(tmp_path_factory):
         # in another thread: Playwright's sync API runs an event loop here, and create_user starts its own
         with ThreadPoolExecutor(1) as pool:
             user = pool.submit(accounts.create_user, EMAIL, PASSWORD, verified=True).result()
+        mp.setattr(app_module, "RATE_PER_MIN", 20 * RUN_REQUESTS)   # every test shares one user's bucket: 10x a run's total, the pages' RUN_REQUESTS and as many again from the test of it
         orch = Orchestrator(provider, Store(":memory:"), use_rss_news=False, charges_model_calls=True)
         orch.save_portfolio(owner_of(user), 0.0, "moderate", "medium", [{"symbol": "TEST", "side": "BUY", "quantity": 10,
                                                          "price": float(prices["close"].iloc[-120]), "trade_date": str(prices.index[-120].date())}])

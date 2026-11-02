@@ -71,11 +71,20 @@ def filings_from(tokenizer):
     return Live([Filings(PoliteSession(timeout=LIVE_TIMEOUT, attempts=LIVE_ATTEMPTS))], tokenizer)
 
 
-def lessons_from():
-    """The curated lessons as question -> [(title, text)], with their hard line wraps undone."""
+def lessons_from(rerank=None):
+    """The curated lessons as (question, how many) -> [(title, text)], best first, with their hard line wraps undone.
+    BM25 finds them and `rerank`, when given, orders them: the encoder's closeness taught "what is concentration risk"
+    the lesson on risk contribution, and BM25's order taught ELSS for the tax on a short-term profit."""
     from backend.knowledge_base.lessons import knowledge_base
     held = knowledge_base()
-    return lambda question: [(lesson.title, " ".join(lesson.text.split())) for lesson, _ in held.search(question, k=1)]
+
+    def lessons(question, k):
+        found = [(lesson.title, " ".join(lesson.text.split())) for lesson, _ in held.search(question, k=k)]
+        if rerank is None:
+            return found
+        scores = rerank(question, [f"{title}. {text}" for title, text in found])
+        return [found[at] for at in sorted(range(len(found)), key=lambda at: -scores[at])]
+    return lessons
 
 
 def news_from(tokenizer):
@@ -88,6 +97,21 @@ def judge_from():
     """Closeness in meaning by the pretrained encoder, which `Reference` decides a lesson against the news by."""
     from backend.models.external import sentence
     return sentence.closeness
+
+
+def rerank_from():
+    """The cross-encoder's relevance, which orders the lessons BM25 finds; loaded here for the reason `entails_from` is."""
+    from backend.models.external import sentence
+    sentence.reranker()
+    return sentence.relevance
+
+
+def entails_from():
+    """Entailment by the NLI cross-encoder, which `Reference` checks each sentence the writer wrote against. Loaded
+    here, at start, so no user waits on its 568 MB download and a failed download stops the start, not a turn."""
+    from backend.models.external import sentence
+    sentence.nli()
+    return sentence.entailment
 
 
 def writer_from(phrase):
@@ -145,8 +169,8 @@ def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=Fal
                      paraphrase=paraphrase, live=live_from(tokenizer) if live else None, writer=writer,
                      news=news_from(tokenizer) if live else None,
                      filings=filings_from(tokenizer) if live else None,
-                     rank=ranker_from(chunks) if dense else None, lessons=lessons_from(),
-                     judge=judge_from() if live else None)
+                     rank=ranker_from(chunks) if dense else None, lessons=lessons_from(rerank_from() if live else None),
+                     judge=judge_from() if live else None, entails=entails_from() if writer and live else None)
 
 
 # Which encoder routes, and the gate fitted for it: models/training/route.py fitted ALFA's at 97% precision,
