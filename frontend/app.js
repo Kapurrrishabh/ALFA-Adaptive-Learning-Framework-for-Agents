@@ -11,12 +11,14 @@ function h(tag, attrs, ...kids) {
     if (v == null || v === false) continue;
     if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
     else if (k === "class") el.className = v;
+    // through the CSSOM, which a strict style-src CSP allows, unlike a style attribute
+    else if (k === "style") el.style.cssText = v;
     else el.setAttribute(k, v === true ? "" : v);
   }
   for (const c of kids.flat()) if (c != null && c !== false) el.append(c instanceof Node ? c : document.createTextNode(String(c)));
   return el;
 }
-function s(tag, attrs) { const el = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v); return el; }
+function s(tag, attrs) { const el = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs || {})) if (k === "style") el.style.cssText = v; else el.setAttribute(k, v); return el; }
 const inr = (v, d = 2) => v == null || isNaN(v) ? "—" : (v < 0 ? "-₹" : "₹") + Math.abs(Number(v)).toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d });
 const num = (v, d = 2) => v == null || isNaN(v) ? "—" : Number(v).toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d });
 const pct = (v, d = 2) => v == null || isNaN(v) ? "—" : (v > 0 ? "+" : "") + Number(v).toFixed(d) + "%";
@@ -24,13 +26,13 @@ const cls = (v) => v > 0 ? "up" : v < 0 ? "down" : "";
 const compactInr = (v) => v == null ? "—" : "₹" + Intl.NumberFormat("en-IN", { notation: "compact", maximumFractionDigits: 2 }).format(v);
 const initials = (sym) => (sym || "?").replace(/[^A-Z0-9]/gi, "").slice(0, 2).toUpperCase();
 const skel = (hgt = 16, w = "100%") => h("div", { class: "skeleton", style: `height:${hgt}px;width:${w}` });
-// The small markdown the answers use (### title, - bullets, **bold**, [label](https://…)), built as
-// nodes like everything else, so an answer can never inject markup; links go only to http(s).
+// The small markdown the answers and the guide use (# section, ### title, - bullets, **bold**, [label](https://…)), built as
+// nodes like everything else, so an answer can never inject markup; links go only to http(s) or to the app's own #/ pages.
 function inline(text) {
   const out = [];
-  for (const part of String(text).split(/(\*\*[^*]+\*\*|\[[^\]]+\]\(https?:\/\/[^)\s]+\))/)) {
-    const bold = part.match(/^\*\*([^*]+)\*\*$/), link = part.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
-    out.push(bold ? h("strong", {}, bold[1]) : link ? h("a", { href: link[2], target: "_blank", rel: "noopener noreferrer" }, link[1]) : part);
+  for (const part of String(text).split(/(\*\*[^*]+\*\*|\[[^\]]+\]\((?:https?:\/\/|#\/)[^)\s]+\))/)) {
+    const bold = part.match(/^\*\*([^*]+)\*\*$/), link = part.match(/^\[([^\]]+)\]\(((?:https?:\/\/|#\/)[^)\s]+)\)$/);
+    out.push(bold ? h("strong", {}, bold[1]) : link ? h("a", link[2].startsWith("#/") ? { href: link[2] } : { href: link[2], target: "_blank", rel: "noopener noreferrer" }, link[1]) : part);
   }
   return out;
 }
@@ -42,6 +44,7 @@ function md(text) {
     if (t.startsWith("- ")) { flush(); if (!list) { list = h("ul"); box.append(list); } list.append(h("li", {}, ...inline(t.slice(2)))); continue; }
     list = null;
     if (!t) { flush(); continue; }
+    if (t.startsWith("# ")) { flush(); box.append(h("h2", {}, ...inline(t.slice(2)))); continue; }
     if (t.startsWith("### ")) { flush(); box.append(h("h4", {}, ...inline(t.slice(4)))); continue; }
     para.push(t);
   }
@@ -88,11 +91,9 @@ function askKey() {
 }
 
 // ---------- theme ----------
-const savedTheme = localStorage.getItem("si-theme");
-if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 $("#theme").addEventListener("click", () => {
   const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  document.documentElement.dataset.theme = next; localStorage.setItem("si-theme", next); for (const fn of visit.redraws) fn();
+  applyTheme(next); localStorage.setItem("si-theme", next); for (const fn of visit.redraws) fn();
 });
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
@@ -128,25 +129,20 @@ const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v
 })();
 
 // ---------- charts ----------
-// user-space bounds: a bounding-box filter drops perfectly flat lines (zero-height box)
-function glow(svg, W, H, sd = 3) {
-  const id = uid("glow"), f = s("filter", { id, filterUnits: "userSpaceOnUse", x: 0, y: 0, width: W, height: H });
-  const merge = s("feMerge"); merge.append(s("feMergeNode", { in: "b" }), s("feMergeNode", { in: "SourceGraphic" }));
-  f.append(s("feGaussianBlur", { stdDeviation: sd, result: "b" }), merge); svg.append(f); return `url(#${id})`;
-}
 const ICONS = { home: "M3 11l9-8 9 8M5 10v10h14V10", compass: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM15.5 8.5l-2 5-5 2 2-5z",
   layers: "M12 3l9 5-9 5-9-5zM3 13l9 5 9-5M3 17.5l9 5 9-5", sparkle: "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z",
   pie: "M12 3v9h9a9 9 0 1 1-9-9zM15 3.5A9 9 0 0 1 20.5 9H15z", candles: "M7 3v18M17 3v18M5 7h4v9H5zM15 5h4v7h-4z",
   chat: "M4 5h16v11H9l-5 4z", chart: "M4 20V4M4 20h16M7 15l4-5 3 3 6-7", book: "M12 6.5C10 5 7 4.5 4 5v14c3-.5 6 0 8 1.5 2-1.5 5-2 8-1.5V5c-3-.5-6 0-8 1.5zM12 6.5v14",
-  falling: "M4 20V4M4 20h16M7 6l4 5 3-3 6 7", alert: "M12 3.5L2.5 20h19zM12 10v4M12 17h.01" };
+  falling: "M4 20V4M4 20h16M7 6l4 5 3-3 6 7", alert: "M12 3.5L2.5 20h19zM12 10v4M12 17h.01",
+  search: "M10.5 4a6.5 6.5 0 1 0 0 13a6.5 6.5 0 1 0 0-13zM20 20l-4.8-4.8", theme: "M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" };
 function icon(name) { const svg = s("svg", { viewBox: "0 0 24 24", width: 22, height: 22, fill: "none", stroke: "currentColor", "stroke-width": 1.7, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" });
   svg.append(s("path", { d: ICONS[name] })); return svg; }
 function ring(frac, label, color = css("--brand"), size = 84) {
   const c = size / 2, r = c - 8, len = 2 * Math.PI * r, f = Math.max(0, Math.min(1, frac));
   const svg = s("svg", { viewBox: `0 0 ${size} ${size}`, width: size, height: size, role: "img", "aria-label": label, class: "ring" });
   svg.append(s("circle", { cx: c, cy: c, r, fill: "none", stroke: css("--bg-3"), "stroke-width": 7 }),
-    s("circle", { cx: c, cy: c, r, fill: "none", stroke: color, "stroke-width": 7, "stroke-linecap": f ? "round" : "butt", "stroke-dasharray": `${len * f} ${len}`, transform: `rotate(-90 ${c} ${c})`, style: `filter:drop-shadow(0 0 5px ${color})` }));
-  const t = s("text", { x: c, y: c + 6, "text-anchor": "middle", "font-size": 17, "font-weight": 700, fill: css("--ink") }); t.textContent = label; svg.append(t);
+    s("circle", { cx: c, cy: c, r, fill: "none", stroke: color, "stroke-width": 7, "stroke-linecap": f ? "round" : "butt", "stroke-dasharray": `${len * f} ${len}`, transform: `rotate(-90 ${c} ${c})` }));
+  const t = s("text", { x: c, y: c + 6, "text-anchor": "middle", "font-size": css("--fs-lg"), "font-weight": 700, fill: css("--ink") }); t.textContent = label; svg.append(t);
   return svg;
 }
 function areaChart(container, dates, values, { height = 280, showAxis = true } = {}) {
@@ -167,18 +163,18 @@ function areaChart(container, dates, values, { height = 280, showAxis = true } =
     for (let k = 0; k <= ticks; k++) {
       const v = lo + (hi - lo) * (k / ticks), yy = y(v);
       svg.append(s("line", { x1: m.l, x2: W - m.r, y1: yy, y2: yy, stroke: css("--line"), "stroke-width": 1, "stroke-dasharray": "2 4" }));
-      const t = s("text", { x: W - m.r + 6, y: yy + 4, fill: css("--muted"), "font-size": 11 }); t.textContent = num(v, v > 1000 ? 0 : 2); svg.append(t);
+      const t = s("text", { x: W - m.r + 6, y: yy + 4, fill: css("--muted"), "font-size": css("--fs-xs") }); t.textContent = num(v, v > 1000 ? 0 : 2); svg.append(t);
     }
     const every = Math.max(1, Math.floor(values.length / 5));
     for (let i = 0; i < values.length; i += every) {
-      const t = s("text", { x: x(i), y: H - 6, fill: css("--muted"), "font-size": 11, "text-anchor": "middle" });
+      const t = s("text", { x: x(i), y: H - 6, fill: css("--muted"), "font-size": css("--fs-xs"), "text-anchor": "middle" });
       t.textContent = new Date(dates[i]).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: values.length > 300 ? "2-digit" : undefined });
       svg.append(t);
     }
   }
   const pts = values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
   svg.append(s("path", { d: `M${m.l},${m.t + ph} L${pts.join(" L")} L${x(values.length - 1)},${m.t + ph} Z`, fill: `url(#${gid})` }));
-  svg.append(s("path", { d: `M${pts.join(" L")}`, fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round", filter: showAxis ? glow(svg, W, H) : "none" }));
+  svg.append(s("path", { d: `M${pts.join(" L")}`, fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
   if (showAxis) {
     const li = values.length - 1;
     svg.append(s("circle", { cx: x(li), cy: y(values[li]), r: 9, fill: color, "fill-opacity": 0.18 }), s("circle", { cx: x(li), cy: y(values[li]), r: 4, fill: color, stroke: css("--card"), "stroke-width": 2 }));
@@ -231,15 +227,15 @@ function candleChart(container, t, layers, selected, onPick) {
   const X = (i) => m.l + step * (i + 0.5), Y = (v) => m.t + ph - ((v - lo) / (hi - lo)) * ph;
   const DI = (d) => dateIdx.has(d) ? dateIdx.get(d) : d < t.dates[0] ? 0 : n - 1, XD = (d) => X(DI(d));   // clamp dates outside the window
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Candlestick chart of ${t.symbol} with detected patterns` });
-  const txt = (x, y, str, attrs = {}) => { const e = s("text", { x, y, "font-size": 11, fill: css("--muted"), ...attrs }); e.textContent = str; svg.append(e); return e; };
+  const txt = (x, y, str, attrs = {}) => { const e = s("text", { x, y, "font-size": css("--fs-xs"), fill: css("--muted"), ...attrs }); e.textContent = str; svg.append(e); return e; };
   for (let k = 1; k <= 3; k++) { const v = lo + (hi - lo) * k / 4; svg.append(s("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: css("--line"), "stroke-dasharray": "2 4" })); txt(W - m.r + 6, Y(v) + 4, num(v, v > 1000 ? 0 : 2)); }
   const every = Math.max(1, Math.floor(total / 5));
-  for (let i = 0; i < total; i += every) { const d = i < n ? t.dates[i] : t.cone[i - n].date; txt(X(i), H - 6, new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" }), { "text-anchor": "middle" }); }
+  for (let i = Math.floor(every / 2); i < total; i += every) { const d = i < n ? t.dates[i] : t.cone[i - n].date; txt(X(i), H - 6, new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" }), { "text-anchor": "middle" }); }
   // forward range cone
   if (layers.stop && t.stop) {
-    const sx = X(Math.max(0, n - Math.round(n * 0.35)));
+    const sx = X(Math.max(0, n - Math.round(n * 0.35))), stopLabel = `Stop-loss ${inr(t.stop, 0)} (−${t.stop_pct}% from the last close)`;
     svg.append(s("line", { x1: sx, x2: X(total - 1), y1: Y(t.stop), y2: Y(t.stop), stroke: css("--down"), "stroke-width": 1.5 }));
-    txt(sx + 2, Y(t.stop) + 13, `Stop-loss ${inr(t.stop, 0)} (−${t.stop_pct}% from the last close)`, { fill: css("--down"), "font-size": 10.5, "font-weight": 600 });
+    txt(Math.min(sx + 2, W - 4 - textW(stopLabel, 600)), Y(t.stop) + 13, stopLabel, { fill: css("--down"), "font-weight": 600 });
   }
   if (layers.cone) {
     const pts = (key) => t.cone.map((c, k) => `${X(n + k)},${Y(c[key])}`);
@@ -251,13 +247,13 @@ function candleChart(container, t, layers, selected, onPick) {
     if (!fans.length) { txt(X(total - 1) - 4, Y(last.hi80) - 4, `80%: ${inr(last.hi80, 0)}`, { "text-anchor": "end" });
       txt(X(total - 1) - 4, Y(last.lo80) + 13, `80%: ${inr(last.lo80, 0)}`, { "text-anchor": "end" }); }
     svg.append(s("line", { x1: X(n - 0.5), x2: X(n - 0.5), y1: m.t, y2: m.t + ph, stroke: css("--line"), "stroke-width": 1 }));
-    txt(X(n) + 2, m.t + 10, "next " + t.horizon + " days", { "font-size": 10 });
+    txt(X(n) + 2, m.t + 10, "next " + t.horizon + " days");
   }
   if (layers.sr) {
     for (const [lvl, lab] of [...t.support.map((v) => [v, "Support"]), ...t.resistance.map((v) => [v, "Resistance"])]) {
       if (lvl < lo || lvl > hi) continue;
       svg.append(s("line", { x1: m.l, x2: X(total - 1), y1: Y(lvl), y2: Y(lvl), stroke: lab === "Support" ? css("--up") : css("--down"), "stroke-width": 1, "stroke-dasharray": "6 4", opacity: 0.7 }));
-      txt(m.l + 4, Y(lvl) - 3, `${lab} ${inr(lvl, 0)}`, { fill: css("--ink-2"), "font-size": 10.5 });
+      txt(m.l + 4, Y(lvl) - 3, `${lab} ${inr(lvl, 0)}`, { fill: css("--ink-2") });
     }
   }
   // candles (or a line in "price" mode)
@@ -279,7 +275,7 @@ function candleChart(container, t, layers, selected, onPick) {
     const o = DI(fan.as_of), xs = fan.dates.map((d, k) => X(o + 1 + k)), start = `${X(o)},${Y(t.close[o])}`;
     const band = (a, b) => `M${start} L${xs.map((x, k) => `${x},${Y(fan[a][k])}`).join(" L")} L${xs.map((x, k) => `${x},${Y(fan[b][k])}`).reverse().join(" L")} Z`;
     svg.append(s("path", { d: band("q90", "q10"), fill: ai, "fill-opacity": 0.1 }), s("path", { d: band("q75", "q25"), fill: ai, "fill-opacity": 0.18 }));
-    svg.append(s("path", { d: `M${start} L${xs.map((x, k) => `${x},${Y(fan.q50[k])}`).join(" L")}`, fill: "none", stroke: ai, "stroke-width": 2, "stroke-dasharray": "5 4", filter: glow(svg, W, H, 2.5) }));
+    svg.append(s("path", { d: `M${start} L${xs.map((x, k) => `${x},${Y(fan.q50[k])}`).join(" L")}`, fill: "none", stroke: ai, "stroke-width": 2, "stroke-dasharray": "5 4" }));
     fan.q50.forEach((v, k) => { const dot = s("circle", { cx: xs[k], cy: Y(v), r: Math.min(3.2, step * 0.4), fill: ai, stroke: css("--card"), "stroke-width": 1.5, cursor: "help" });
       dot.addEventListener("mousemove", (ev) => showTip(ev, [h("b", {}, `${name} median · ${fan.dates[k]}`), `${inr(v)} (50% range ${inr(fan.q25[k], 0)}–${inr(fan.q75[k], 0)})`, `80% range ${inr(fan.q10[k], 0)}–${inr(fan.q90[k], 0)}`]));
       dot.addEventListener("mouseleave", () => hideTip()); svg.append(dot); });
@@ -328,17 +324,17 @@ function candleChart(container, t, layers, selected, onPick) {
     for (const q of geo.touches || []) g.append(s("circle", { cx: XD(q[0]), cy: Y(q[1]), r: 3.5, fill: pc, stroke: css("--card"), "stroke-width": 1.5 }));
     for (const ln of geo.lines || []) {
       g.append(s("line", { x1: XD(ln.from[0]), y1: Y(ln.from[1]), x2: XD(ln.to[0]), y2: Y(ln.to[1]), stroke: pc, "stroke-width": 1.8, "stroke-dasharray": ln.style === "dashed" ? "5 4" : null }));
-      const lt = s("text", { x: XD(ln.to[0]) - 4, y: Y(ln.to[1]) - 5, "font-size": 10.5, fill: pc, "text-anchor": "end", "font-weight": 600 }); lt.textContent = ln.label; g.append(lt);
+      const lt = s("text", { x: XD(ln.to[0]) - 4, y: Y(ln.to[1]) - 5, "font-size": css("--fs-xs"), fill: pc, "text-anchor": "end", "font-weight": 600 }); lt.textContent = ln.label; g.append(lt);
     }
     for (const q of geo.points || []) {
       g.append(s("circle", { cx: XD(q[0]), cy: Y(q[1]), r: 4.5, fill: pc, stroke: css("--card"), "stroke-width": 2 }));
-      if (q[2]) { const lt = s("text", { x: XD(q[0]), y: Y(q[1]) + (p.direction < 0 && /Top|Head|Shoulder|Pole top/.test(q[2]) ? -9 : 16), "font-size": 10.5, fill: css("--ink"), "text-anchor": "middle", "font-weight": 600 }); lt.textContent = q[2]; g.append(lt); }
+      if (q[2]) { const lt = s("text", { x: XD(q[0]), y: Y(q[1]) + (p.direction < 0 && /Top|Head|Shoulder|Pole top/.test(q[2]) ? -9 : 16), "font-size": css("--fs-xs"), fill: css("--ink"), "text-anchor": "middle", "font-weight": 600 }); lt.textContent = q[2]; g.append(lt); }
     }
     const endX = layers.cone ? X(total - 1) : X(n - 1);
     if (p.breakout_level) { g.append(s("line", { x1: x1, x2: endX, y1: Y(p.breakout_level), y2: Y(p.breakout_level), stroke: pc, "stroke-dasharray": "3 3", "stroke-width": 1.4 }));
-      const bt = s("text", { x: endX - 4, y: Y(p.breakout_level) + 13, "font-size": 10.5, fill: pc, "text-anchor": "end" }); bt.textContent = `Breakout ${inr(p.breakout_level, 0)}`; g.append(bt); }
+      const bt = s("text", { x: endX - 4, y: Y(p.breakout_level) + 13, "font-size": css("--fs-xs"), fill: pc, "text-anchor": "end" }); bt.textContent = `Breakout ${inr(p.breakout_level, 0)}`; g.append(bt); }
     if (p.target) { g.append(s("line", { x1: x1, x2: endX, y1: Y(p.target), y2: Y(p.target), stroke: pc, "stroke-dasharray": "1 4", "stroke-width": 2 }));
-      const tt = s("text", { x: endX - 4, y: Y(p.target) - 4, "font-size": 10.5, fill: pc, "text-anchor": "end", "font-weight": 700 }); tt.textContent = `Textbook target ${inr(p.target, 0)} (unproven)`; g.append(tt); }
+      const tt = s("text", { x: endX - 4, y: Y(p.target) - 4, "font-size": css("--fs-xs"), fill: pc, "text-anchor": "end", "font-weight": 700 }); tt.textContent = `Textbook target ${inr(p.target, 0)} (unproven)`; g.append(tt); }
     if (layers.cone) for (const pr of t.projections) if (dateIdx.has(pr.from[0]) && XD(pr.from[0]) >= x0 && XD(pr.from[0]) <= x1 + 1)
       g.append(s("line", { x1: XD(pr.from[0]), y1: Y(pr.from[1]), x2: XD(pr.to[0]), y2: Y(pr.to[1]), stroke: pc, "stroke-dasharray": "6 5", "stroke-width": 1.4, opacity: 0.8 }));
     const name = p.pattern.replace(/_/g, " ");
@@ -390,7 +386,7 @@ function intradayPanel(ctx, sym) {
     const pad = (hi - lo) * 0.05; lo -= pad; hi += pad;
     const X = (i) => m.l + step * (i + 0.5), Y = (v) => m.t + ph - ((v - lo) / (hi - lo)) * ph;
     const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Intraday chart of ${sym}` });
-    const txt = (x, y, str, a = {}) => { const e = s("text", { x, y, "font-size": 11, fill: css("--muted"), ...a }); e.textContent = str; svg.append(e); };
+    const txt = (x, y, str, a = {}) => { const e = s("text", { x, y, "font-size": css("--fs-xs"), fill: css("--muted"), ...a }); e.textContent = str; svg.append(e); };
     for (let k = 0; k <= 5; k++) { const v = lo + (hi - lo) * k / 5; svg.append(s("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: css("--line") })); txt(W - m.r + 6, Y(v) + 4, num(v, v > 1000 ? 0 : 2)); }
     let lastDay = null;
     d.times.forEach((t, i) => { const day = t.slice(0, 10); if (day !== lastDay) { if (lastDay) svg.append(s("line", { x1: X(i) - step / 2, x2: X(i) - step / 2, y1: m.t, y2: H - m.b, stroke: css("--line") }));
@@ -398,7 +394,7 @@ function intradayPanel(ctx, sym) {
       else if (rng === "1D" && i % 12 === 0) txt(X(i), H - 6, t.slice(11), { "text-anchor": "middle" }); });
     for (const [lab, v, col, dash] of lv) { if (v < lo || v > hi) continue;
       svg.append(s("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: css(col), "stroke-dasharray": dash, "stroke-width": 1.3 }));
-      txt(m.l + 4, Y(v) - 3, `${lab} ${inr(v, 0)}`, { fill: css("--ink-2"), "font-size": 10.5 }); }
+      txt(m.l + 4, Y(v) - 3, `${lab} ${inr(v, 0)}`, { fill: css("--ink-2") }); }
     const bw = Math.max(1, Math.min(8, step * 0.62)), vmax = Math.max(...d.volume) || 1, vy = H - m.b - volH;
     for (let i = 0; i < n; i++) { const up = d.close[i] >= d.open[i], col = up ? css("--up") : css("--down");
       svg.append(s("line", { x1: X(i), x2: X(i), y1: Y(d.high[i]), y2: Y(d.low[i]), stroke: col }));
@@ -428,13 +424,13 @@ function intradayPanel(ctx, sym) {
 
 function miniPanel(container, dates, series, label, { bands = null, bars = false, fmt = (v) => num(v, 1), zero = false, fill = null, height = 120 } = {}) {
   container.replaceChildren();
-  const W = container.clientWidth || 300, H = height, m = { l: 4, r: 40, t: 6, b: 16 }, pw = W - m.l - m.r, ph = H - m.t - m.b, n = dates.length;
+  const last = series[0].values[series[0].values.length - 1], W = container.clientWidth || 300, H = height, m = { l: 4, r: 8 + textW(fmt(last), 700), t: 6, b: 16 }, pw = W - m.l - m.r, ph = H - m.t - m.b, n = dates.length;
   const vals = series.flatMap((x) => x.values.filter((v) => v != null)).concat(bands ? bands.map((b) => b[0]) : []).concat(zero ? [0] : []);
   let lo = Math.min(...vals), hi = Math.max(...vals); if (hi === lo) hi = lo + 1;
   const X = (i) => m.l + (i / Math.max(1, n - 1)) * pw, Y = (v) => m.t + ph - ((v - lo) / (hi - lo)) * ph;
-  const last = series[0].values[series[0].values.length - 1], svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${label}: latest ${fmt(last)}` });
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${label}: latest ${fmt(last)}` });
   for (const [v, lab, col] of bands || []) { svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: Y(v), y2: Y(v), stroke: css(col || "--line"), "stroke-dasharray": "4 3" }));
-    const t = s("text", { x: m.l + pw + 4, y: Y(v) + 4, "font-size": 10, fill: css("--muted") }); t.textContent = lab; svg.append(t); }
+    const t = s("text", { x: m.l + pw + 4, y: Y(v) + 4, "font-size": css("--fs-xs"), fill: css("--muted") }); t.textContent = lab; svg.append(t); }
   if (zero) svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: Y(0), y2: Y(0), stroke: css("--ink-2"), "stroke-width": 0.8 }));
   for (const sr of series) {
     if (bars) { const bw = Math.max(1, pw / n * 0.7); sr.values.forEach((v, i) => { if (v == null) return; svg.append(s("rect", { x: X(i) - bw / 2, y: Math.min(Y(v), Y(0)), width: bw, height: Math.max(0.5, Math.abs(Y(v) - Y(0))), fill: v >= 0 ? css("--up") : css("--down"), opacity: 0.8 })); }); continue; }
@@ -442,8 +438,8 @@ function miniPanel(container, dates, series, label, { bands = null, bars = false
     if (fill) svg.append(s("path", { d: `${d} L${X(n - 1)},${Y(0)} L${X(0)},${Y(0)} Z`, fill: css(fill), "fill-opacity": 0.15 }));
     svg.append(s("path", { d, fill: "none", stroke: css(sr.color), "stroke-width": 1.8 }));
   }
-  const t = s("text", { x: m.l + pw + 4, y: Y(last) + 4, "font-size": 11, "font-weight": 700, fill: css("--ink") }); t.textContent = fmt(last); svg.append(t);
-  for (const i of [0, n - 1]) { const e = s("text", { x: X(i), y: H - 3, "font-size": 10, fill: css("--muted"), "text-anchor": i ? "end" : "start" }); e.textContent = new Date(dates[i]).toLocaleDateString("en-IN", { day: "numeric", month: "short" }); svg.append(e); }
+  const t = s("text", { x: m.l + pw + 4, y: Y(last) + 4, "font-size": css("--fs-xs"), "font-weight": 700, fill: css("--ink") }); t.textContent = fmt(last); svg.append(t);
+  for (const i of [0, n - 1]) { const e = s("text", { x: X(i), y: H - 3, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": i ? "end" : "start" }); e.textContent = new Date(dates[i]).toLocaleDateString("en-IN", { day: "numeric", month: "short" }); svg.append(e); }
   container.append(svg);
 }
 
@@ -479,7 +475,7 @@ function analyticsSection(ctx, sym) {
     const rows = [["80% high", c.hi80, "--cone"], ["50% high", c.hi50, "--cone"], ["Today", last, "--ink"], ["50% low", c.lo50, "--cone"], ["80% low", c.lo80, "--cone"], [`Stop-loss (−${t.stop_pct}% from last close)`, t.stop, "--down"]];
     const lo = Math.min(...rows.map((r) => r[1])), hi = Math.max(...rows.map((r) => r[1]));
     ladderCard.replaceChildren(h("div", { class: "panel-title" }, `Next ${t.horizon} trading days — plausible range`),
-      ...rows.map(([lab, v, col]) => h("div", { class: "spread", style: "margin:6px 0;font-size:13px" }, h("span", { style: "width:120px" }, lab),
+      ...rows.map(([lab, v, col]) => h("div", { class: "spread", style: "margin:6px 0;font-size:var(--fs-sm)" }, h("span", { style: "width:120px" }, lab),
         h("div", { style: "flex:1;margin:0 10px;position:relative;height:8px;background:var(--bg-3);border-radius:4px" }, h("i", { style: `position:absolute;left:${(v - lo) / (hi - lo || 1) * 100}%;top:-3px;width:14px;height:14px;border-radius:50%;background:var(${col});transform:translateX(-50%)` })),
         h("b", { class: "num" }, inr(v, 0)))), h("div", { class: "chart-note" }, `From current volatility. ${t.held_note} Up after ${t.horizon} days ${Math.round(t.base_rate_up * 100)}% of the time.`));
   }).catch(showCardError(ladderCard));
@@ -523,15 +519,15 @@ function technicalPanel(ctx, sym, opts = {}) {
   const draw = () => { if (!data) return; candleChart(plot, { ...data, fan: layers.ai && ai.chronos, alfa: layers.alfa && ai.alfa, gru: layers.gru && ai.gru, ghost: layers.kronos && ai.kronos }, layers, selected, (k) => { selected = selected === k ? null : k; draw(); drawCards(); }); };
   const drawCards = () => {
     if (!data) return;
-    cards.replaceChildren(...(data.patterns.length > 1 ? [h("div", { class: "muted", style: "grid-column:1/-1;font-size:12px" },
+    cards.replaceChildren(...(data.patterns.length > 1 ? [h("div", { class: "muted", style: "grid-column:1/-1;font-size:var(--fs-xs)" },
       selected == null ? "Showing all patterns — choose a card to focus on one." : "Showing the highlighted pattern — choose another card to switch, or the same card to show all.")] : []),
       ...(data.patterns.length ? data.patterns.map((p, k) => h("button", { class: "pattern-card", "aria-pressed": String(selected === k),
         onclick: () => { selected = selected === k ? null : k; draw(); drawCards(); cards.querySelectorAll(".pattern-card")[k].focus(); } },
       h("span", { class: "spread" }, h("span", { class: "nm" }, p.pattern.replace(/_/g, " ")), h("span", { class: `edge-badge ${p.record.has_edge ? "yes" : "no"}` }, p.record.has_edge ? "Proven edge" : "No proven edge")),
-      h("span", { class: "muted", style: "font-size:12px" }, `${p.start_date} → ${p.end_date} · ${p.confirmation_status} · textbook ${p.direction > 0 ? "bullish" : p.direction < 0 ? "bearish" : "neutral"}`),
-      h("span", { style: "font-size:12.5px;margin-top:6px" }, p.supporting_features.join(" · ")),
-      h("span", { style: "font-size:12.5px;margin-top:6px" }, p.breakout_level ? `Breakout level ${inr(p.breakout_level)}` : null, p.target ? ` · textbook target ${inr(p.target)}` : null),
-      h("span", { class: "muted", style: "font-size:12px;margin-top:6px" }, p.record.summary)))
+      h("span", { class: "muted", style: "font-size:var(--fs-xs)" }, `${p.start_date} → ${p.end_date} · ${p.confirmation_status} · textbook ${p.direction > 0 ? "bullish" : p.direction < 0 ? "bearish" : "neutral"}`),
+      h("span", { style: "font-size:var(--fs-sm);margin-top:6px" }, p.supporting_features.join(" · ")),
+      h("span", { style: "font-size:var(--fs-sm);margin-top:6px" }, p.breakout_level ? `Breakout level ${inr(p.breakout_level)}` : null, p.target ? ` · textbook target ${inr(p.target)}` : null),
+      h("span", { class: "muted", style: "font-size:var(--fs-xs);margin-top:6px" }, p.record.summary)))
       : [h("p", { class: "muted" }, "No chart pattern is forming in this window.")]));
     const counts = {}; for (const mk of data.markers) if (mk.direction !== 0) counts[mk.label] = (counts[mk.label] || 0) + 1;
     note.replaceChildren(data.cone_note, h("br"),
@@ -543,7 +539,7 @@ function technicalPanel(ctx, sym, opts = {}) {
     // one pattern at a time reads clearly; start with the most confident, cards switch it
     selected = data.patterns.length ? data.patterns.reduce((best, p, k) => p.confidence > data.patterns[best].confidence ? k : best, 0) : null;
     draw(); drawCards(); } catch (e) { plot.replaceChildren(ErrorState(e, load)); } };
-  wrap.append(h("div", { class: "spread" }, h("div", { class: "row", style: "font-size:12px;color:var(--muted)" },
+  wrap.append(h("div", { class: "spread" }, h("div", { class: "row", style: "font-size:var(--fs-xs);color:var(--muted)" },
     h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1)" }), " 50-day"), h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-2)" }), " 200-day"),
     h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--pattern)" }), " pattern"),
     h("span", {}, h("span", { class: "legend-dots" }), " our model's median"), h("span", {}, h("span", { class: "legend-line", style: "border-color:var(--series-1);border-top-style:dashed" }), " GRU median"),
@@ -556,7 +552,7 @@ function technicalPanel(ctx, sym, opts = {}) {
 // ---------- generic charts (performance + portfolio) ----------
 const DASHED = "6 4";
 const SERIES = [["--series-1", "none"], ["--series-2", DASHED], ["--series-3", "1.5 3"], ["--series-4", "8 3 1.5 3"]];
-const textW = (str, size = 12) => { const c = textW.c || (textW.c = document.createElement("canvas").getContext("2d")); c.font = `${size}px Inter, system-ui, sans-serif`; return c.measureText(str).width; };
+const textW = (str, weight = 400) => { const c = textW.c || (textW.c = document.createElement("canvas").getContext("2d")); c.font = `${weight} ${css("--fs-xs")} ${getComputedStyle(document.body).fontFamily}`; return c.measureText(str).width; };
 function legend(items) {
   return h("div", { class: "legend" }, ...items.map(([name, col, dash]) => {
     if (!dash) return h("span", {}, h("span", { class: "sw", style: `background:var(${col})` }), name);
@@ -568,26 +564,26 @@ function legend(items) {
 
 function lineChart(container, dates, series, label, { height = 300, fmt = (v) => num(v), logScale = false } = {}) {
   container.replaceChildren();
-  const endW = Math.max(...series.map((sr) => textW(`${sr.short || sr.name} ${fmt(sr.values[sr.values.length - 1])}`, 11)));
-  const W = container.clientWidth || 700, H = height, m = { l: 8, r: Math.min(W * 0.45, 70 + endW), t: 10, b: 24 }, pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const endW = Math.max(...series.map((sr) => textW(`${sr.short || sr.name} ${fmt(sr.values[sr.values.length - 1])}`)));
+  const W = container.clientWidth || 700, H = height, m = { l: 8, r: 70 + endW, t: 10, b: 24 }, pw = W - m.l - m.r, ph = H - m.t - m.b;
   const all = series.flatMap((x) => x.values.filter((v) => v != null));
   const tf = (v) => logScale ? Math.log(v) : v;
   let lo = Math.min(...all.map(tf)), hi = Math.max(...all.map(tf)); const pad = (hi - lo) * 0.06 || 1; lo -= pad; hi += pad;
   const x = (i) => m.l + (i / Math.max(1, dates.length - 1)) * pw, y = (v) => m.t + ph - ((tf(v) - lo) / (hi - lo)) * ph;
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${label}. Latest: ${series.map((sr) => `${sr.name} ${fmt(sr.values[sr.values.length - 1])}`).join(", ")}` });
   for (let k = 0; k <= 4; k++) { const tv = lo + (hi - lo) * k / 4, v = logScale ? Math.exp(tv) : tv, yy = m.t + ph - (k / 4) * ph;
-    svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: yy, y2: yy, stroke: css("--line"), "stroke-dasharray": "2 4" })); const t = s("text", { x: m.l + pw + 6, y: yy + 4, "font-size": 11, fill: css("--muted") }); t.textContent = fmt(v); svg.append(t); }
+    svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: yy, y2: yy, stroke: css("--line"), "stroke-dasharray": "2 4" })); const t = s("text", { x: m.l + pw + 6, y: yy + 4, "font-size": css("--fs-xs"), fill: css("--muted") }); t.textContent = fmt(v); svg.append(t); }
   const every = Math.max(1, Math.ceil(dates.length / Math.max(2, Math.min(6, Math.floor(pw / 80)))));
-  for (let i = 0; i < dates.length; i += every) { const t = s("text", { x: x(i), y: H - 6, "font-size": 11, fill: css("--muted"), "text-anchor": i === 0 ? "start" : "middle" }); t.textContent = new Date(dates[i]).toLocaleDateString("en-IN", { month: "short", year: "2-digit" }); svg.append(t); }
+  for (let i = 0; i < dates.length; i += every) { const t = s("text", { x: x(i), y: H - 6, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": i === 0 ? "start" : "middle" }); t.textContent = new Date(dates[i]).toLocaleDateString("en-IN", { month: "short", year: "2-digit" }); svg.append(t); }
   const ends = [];
   series.forEach((sr) => {
     let d = "", pen = false; sr.values.forEach((v, i) => { if (v == null) { pen = false; return; } d += (pen ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1); pen = true; });
-    svg.append(s("path", { d, fill: "none", stroke: css(sr.color), "stroke-width": 2, "stroke-dasharray": sr.dashed ? DASHED : null, "stroke-linejoin": "round", filter: sr.dashed ? "none" : glow(svg, W, H, 2.5) }));
+    svg.append(s("path", { d, fill: "none", stroke: css(sr.color), "stroke-width": 2, "stroke-dasharray": sr.dashed ? DASHED : null, "stroke-linejoin": "round" }));
     const li = sr.values.length - 1; ends.push({ y: y(sr.values[li]), label: `${sr.short || sr.name} ${fmt(sr.values[li])}`, color: css(sr.color) });
   });
   ends.sort((a, b) => a.y - b.y); for (let k = 1; k < ends.length; k++) if (ends[k].y - ends[k - 1].y < 13) ends[k].y = ends[k - 1].y + 13;
   for (const e of ends) { svg.append(s("line", { x1: m.l + pw + 52, x2: m.l + pw + 60, y1: e.y, y2: e.y, stroke: e.color, "stroke-width": 2 }));
-    const t = s("text", { x: m.l + pw + 63, y: e.y + 4, "font-size": 11, fill: css("--ink-2") }); t.textContent = e.label; svg.append(t); }
+    const t = s("text", { x: m.l + pw + 63, y: e.y + 4, "font-size": css("--fs-xs"), fill: css("--ink-2") }); t.textContent = e.label; svg.append(t); }
   const cross = s("line", { y1: m.t, y2: m.t + ph, stroke: css("--muted"), "stroke-dasharray": "3 3", visibility: "hidden" });
   const hit = s("rect", { x: m.l, y: m.t, width: pw, height: ph, fill: "transparent" }); svg.append(cross, hit);
   const tip = h("div", { class: "tip" });
@@ -602,21 +598,22 @@ function lineChart(container, dates, series, label, { height = 300, fmt = (v) =>
 function forestPlot(container, rows, { threshold = null } = {}) {
   container.replaceChildren();
   const ok = rows.filter((r) => r.excess_pct != null && r.ci_lo != null), sig = (r) => threshold != null && r.z != null && Math.abs(r.z) >= threshold;
-  const name = (r) => sig(r) ? `${r.pattern} (edge)` : r.pattern;
-  const W = container.clientWidth || 700, rowH = 22, m = { l: Math.min(W * 0.45, 16 + Math.max(...ok.map((r) => textW(name(r))))), r: 70, t: 22, b: 26 }, H = m.t + m.b + ok.length * rowH, pw = W - m.l - m.r;
+  const name = (r) => sig(r) ? `${r.pattern} (edge)` : r.pattern, events = (r) => `${r.events} events`;
+  const W = container.clientWidth || 700, rowH = 22, m = { l: Math.min(W * 0.45, 16 + Math.max(...ok.map((r) => textW(name(r))))), r: 12 + Math.max(...ok.map((r) => textW(events(r)))), t: 22, b: 26 }, H = m.t + m.b + ok.length * rowH, pw = W - m.l - m.r;
   const lim = Math.max(1, ...ok.map((r) => Math.max(Math.abs(r.ci_lo), Math.abs(r.ci_hi)))) * 1.05;
   const x = (v) => m.l + ((v + lim) / (2 * lim)) * pw;
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Excess return after each pattern with 95% interval. Proven edge: ${ok.filter(sig).map((r) => r.pattern).join(", ") || "none"}` });
-  for (const v of [-lim, -lim / 2, 0, lim / 2, lim]) { svg.append(s("line", { x1: x(v), x2: x(v), y1: m.t - 6, y2: H - m.b, stroke: v === 0 ? css("--ink-2") : css("--line"), "stroke-width": v === 0 ? 1.5 : 1 }));
-    const t = s("text", { x: x(v), y: H - 8, "font-size": 11, fill: css("--muted"), "text-anchor": "middle" }); t.textContent = pct(v, 1); svg.append(t); }
-  const hdr = s("text", { x: x(0), y: 12, "font-size": 11, fill: css("--muted"), "text-anchor": "middle" }); hdr.textContent = "← worse than normal   0 = no effect   better than normal →"; svg.append(hdr);
+  for (const v of 5 * textW(pct(-lim, 1)) < pw ? [-lim, -lim / 2, 0, lim / 2, lim] : [-lim, 0, lim]) { svg.append(s("line", { x1: x(v), x2: x(v), y1: m.t - 6, y2: H - m.b, stroke: v === 0 ? css("--ink-2") : css("--line"), "stroke-width": v === 0 ? 1.5 : 1 }));
+    const t = s("text", { x: x(v), y: H - 8, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": "middle" }); t.textContent = pct(v, 1); svg.append(t); }
+  const head = "← worse than normal   0 = no effect   better than normal →", hw = textW(head) / 2;
+  const hdr = s("text", { x: Math.min(Math.max(x(0), hw), W - hw), y: 12, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": "middle" }); hdr.textContent = head; svg.append(hdr);
   const tip = h("div", { class: "tip" });
   ok.forEach((r, k) => {
     const yy = m.t + k * rowH + rowH / 2, col = sig(r) ? (r.excess_pct > 0 ? css("--up") : css("--down")) : css("--muted");
-    const lab = s("text", { x: m.l - 10, y: yy + 4, "font-size": 12, fill: css("--ink"), "text-anchor": "end" }); lab.textContent = name(r); svg.append(lab);
+    const lab = s("text", { x: m.l - 10, y: yy + 4, "font-size": css("--fs-xs"), fill: css("--ink"), "text-anchor": "end" }); lab.textContent = name(r); svg.append(lab);
     svg.append(s("line", { x1: x(r.ci_lo), x2: x(r.ci_hi), y1: yy, y2: yy, stroke: col, "stroke-width": 2 }));
     svg.append(s("circle", { cx: x(r.excess_pct), cy: yy, r: 4.5, fill: col, stroke: css("--card"), "stroke-width": 2 }));
-    const n = s("text", { x: m.l + pw + 8, y: yy + 4, "font-size": 11, fill: css("--muted") }); n.textContent = `${r.events} events`; svg.append(n);
+    const n = s("text", { x: m.l + pw + 8, y: yy + 4, "font-size": css("--fs-xs"), fill: css("--muted") }); n.textContent = events(r); svg.append(n);
     const hit = s("rect", { x: 0, y: yy - rowH / 2, width: W, height: rowH, fill: "transparent" });
     hit.addEventListener("mousemove", (ev) => { const b = svg.getBoundingClientRect(); tip.replaceChildren(h("b", {}, r.pattern), h("br"), `${r.events} events in ${r.stocks} stocks, next ${r.horizon} days`, h("br"),
       `average excess ${pct(r.excess_pct)} (95% range ${pct(r.ci_lo)} to ${pct(r.ci_hi)})`, h("br"), `z = ${num(r.z)} — ${r.verdict}`);
@@ -641,15 +638,15 @@ function barChart(container, items, label, { fmt = (v) => pct(v, 1), ref = null,
   items.forEach((it, k) => {
     const yy = m.t + k * rowH, bh = stacked ? 16 : Math.min(22, rowH - 10), by = stacked ? yy + 22 : yy + 5;
     const x0 = x(Math.min(0, it.value)), x1 = x(Math.max(0, it.value));
-    const lab = s("text", stacked ? { x: m.l, y: yy + 15, "font-size": 12, fill: css("--ink") } : { x: m.l - 10, y: by + bh / 2 + 4, "font-size": 12, fill: css("--ink"), "text-anchor": "end" });
+    const lab = s("text", stacked ? { x: m.l, y: yy + 15, "font-size": css("--fs-xs"), fill: css("--ink") } : { x: m.l - 10, y: by + bh / 2 + 4, "font-size": css("--fs-xs"), fill: css("--ink"), "text-anchor": "end" });
     lab.textContent = it.label; svg.append(lab);
     svg.append(s("rect", { x: x0, y: by, width: Math.max(2, x1 - x0), height: bh, rx: 4, fill: it.color || css("--series-1"), "fill-opacity": it.faded ? 0.45 : 1 }));
-    const v = s("text", { x: x1 + 6, y: by + bh / 2 + 4, "font-size": 12, fill: css("--ink-2"), "font-weight": 600 }); v.textContent = fmt(it.value); svg.append(v);
+    const v = s("text", { x: x1 + 6, y: by + bh / 2 + 4, "font-size": css("--fs-xs"), fill: css("--ink-2"), "font-weight": 600 }); v.textContent = fmt(it.value); svg.append(v);
   });
   if (stacked) items.forEach((_, k) => { const by = m.t + k * rowH + 22; svg.append(s("line", { x1: x(0), x2: x(0), y1: by - 3, y2: by + 19, stroke: css("--ink-2") })); });
   else svg.append(s("line", { x1: x(0), x2: x(0), y1: m.t, y2: H - m.b, stroke: css("--ink-2") }));
   if (ref != null) { svg.append(s("line", { x1: x(ref), x2: x(ref), y1: m.t, y2: H - m.b + 4, stroke: css("--down"), "stroke-dasharray": "4 3", "stroke-width": 1.5 }));
-    const t = s("text", { x: x(ref), y: H + 12, "font-size": 11, fill: css("--down"), "text-anchor": "middle" }); t.textContent = `${refLabel} ${fmt(ref)}`; svg.append(t); }
+    const t = s("text", { x: x(ref), y: H + 12, "font-size": css("--fs-xs"), fill: css("--down"), "text-anchor": "middle" }); t.textContent = `${refLabel} ${fmt(ref)}`; svg.append(t); }
   container.append(svg);
 }
 
@@ -660,11 +657,11 @@ function calibrationPlot(container, pointsByH, label) {
   const said = (pts) => pts.map((q) => `said ${num(q.predicted * 100, 0)}%, went up ${num(q.actual * 100, 0)}%`).join("; ");
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", style: `max-width:${W}px`, "aria-label": `${label}. ${Object.entries(pointsByH).map(([hz, pts]) => `${hz}-day: ${said(pts)}`).join(". ")}` });
   for (const v of [0.3, 0.4, 0.5, 0.6, 0.7]) { svg.append(s("line", { x1: x(v), x2: x(v), y1: m.t, y2: m.t + p, stroke: css("--line") }), s("line", { x1: m.l, x2: m.l + p, y1: y(v), y2: y(v), stroke: css("--line") }));
-    const a = s("text", { x: x(v), y: m.t + p + 14, "font-size": 10.5, fill: css("--muted"), "text-anchor": "middle" }); a.textContent = `${v * 100}%`; svg.append(a);
-    const b = s("text", { x: m.l - 6, y: y(v) + 4, "font-size": 10.5, fill: css("--muted"), "text-anchor": "end" }); b.textContent = `${v * 100}%`; svg.append(b); }
+    const a = s("text", { x: x(v), y: m.t + p + 14, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": "middle" }); a.textContent = `${v * 100}%`; svg.append(a);
+    const b = s("text", { x: m.l - 6, y: y(v) + 4, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": "end" }); b.textContent = `${v * 100}%`; svg.append(b); }
   svg.append(s("line", { x1: x(lo), y1: y(lo), x2: x(hi), y2: y(hi), stroke: css("--ink-2"), "stroke-dasharray": "5 4" }));
-  const pf = s("text", { x: x(0.72), y: y(0.72) - 5, "font-size": 10.5, fill: css("--ink-2"), "text-anchor": "end", transform: `rotate(-45 ${x(0.72)} ${y(0.72)})` }); pf.textContent = "perfect"; svg.append(pf);
-  const lx = s("text", { x: m.l + p / 2, y: H - 4, "font-size": 11, fill: css("--muted"), "text-anchor": "middle" }); lx.textContent = "model said: chance of going up"; svg.append(lx);
+  const pf = s("text", { x: x(0.72), y: y(0.72) - 5, "font-size": css("--fs-xs"), fill: css("--ink-2"), "text-anchor": "end", transform: `rotate(-45 ${x(0.72)} ${y(0.72)})` }); pf.textContent = "perfect"; svg.append(pf);
+  const lx = s("text", { x: m.l + p / 2, y: H - 4, "font-size": css("--fs-xs"), fill: css("--muted"), "text-anchor": "middle" }); lx.textContent = "model said: chance of going up"; svg.append(lx);
   Object.entries(pointsByH).forEach(([hz, pts], k) => { const col = css(SERIES[k][0]); let d = "";
     pts.forEach((q, i) => { d += (i ? "L" : "M") + x(q.predicted) + " " + y(q.actual); });
     svg.append(s("path", { d, fill: "none", stroke: col, "stroke-width": 1.5, "stroke-dasharray": SERIES[k][1], opacity: 0.6 }));
@@ -675,16 +672,16 @@ function calibrationPlot(container, pointsByH, label) {
 function donut(container, parts, label) {
   container.replaceChildren();
   const size = 180, r = 72, sw = 26, c = size / 2, total = parts.reduce((a, b) => a + b.value, 0) || 1;
-  const palette = ["--series-1", "--series-2", "--series-3", "--series-4", "--pattern", "--up", "--down", "--muted"];
+  const palette = ["--series-1", "--series-2", "--series-3", "--series-4", "--series-5", "--series-6", "--pattern", "--muted"];
   const svg = s("svg", { viewBox: `0 0 ${size} ${size}`, width: size, height: size, role: "img", "aria-label": `${label}: ${parts.map((p) => `${p.label} ${num(p.value, 1)}%`).join(", ")}` });
   let a0 = -Math.PI / 2;
   parts.forEach((p, k) => { const a1 = a0 + (p.value / total) * Math.PI * 2 - 0.02;
     const large = a1 - a0 > Math.PI ? 1 : 0, P = (a) => `${c + r * Math.cos(a)} ${c + r * Math.sin(a)}`;
     svg.append(s("path", { d: `M${P(a0)} A${r} ${r} 0 ${large} 1 ${P(a1)}`, fill: "none", stroke: css(palette[k % palette.length]), "stroke-width": sw }));
     p.color = css(palette[k % palette.length]); a0 = a1 + 0.02; });
-  const t = s("text", { x: c, y: c + 5, "text-anchor": "middle", "font-size": 14, "font-weight": 700, fill: css("--ink") }); t.textContent = `${parts.length} sectors`; svg.append(t);
+  const t = s("text", { x: c, y: c + 5, "text-anchor": "middle", "font-size": css("--fs-sm"), "font-weight": 700, fill: css("--ink") }); t.textContent = `${parts.length} sectors`; svg.append(t);
   container.append(h("div", { class: "row", style: "gap:22px;align-items:center" }, svg, h("div", { class: "grid", style: "gap:6px" },
-    ...parts.map((p) => h("div", { style: "font-size:13px" }, h("span", { class: "sw", style: `display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:8px;background:${p.color}` }), `${p.label} `, h("b", { class: "num" }, `${num(p.value, 1)}%`))))));
+    ...parts.map((p) => h("div", { style: "font-size:var(--fs-sm)" }, h("span", { class: "sw", style: `display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:8px;background:${p.color}` }), `${p.label} `, h("b", { class: "num" }, `${num(p.value, 1)}%`))))));
 }
 
 // one row per stored horizon, shortest first; the median is numpy's, as the stock chart's own note uses
@@ -770,7 +767,7 @@ const stockRow = (r, right) => h("a", { href: `#/stock/${encodeURIComponent(r.sy
   h("div", { class: "stack" }, h("div", { class: "avatar" }, initials(r.symbol)),
     h("div", { style: "min-width:0" }, h("div", { class: "t" }, r.name || r.symbol), h("div", { class: "s" }, r.symbol))),
   h("div", { class: "right" }, right));
-const priceChange = (price, chgPct) => [h("div", { class: "num" }, inr(price)), h("div", { class: `num ${cls(chgPct)}`, style: "font-size:12.5px" }, pct(chgPct))];
+const priceChange = (price, chgPct) => [h("div", { class: "num" }, inr(price)), h("div", { class: `num ${cls(chgPct)}`, style: "font-size:var(--fs-sm)" }, pct(chgPct))];
 const onOurSide = (e) => !e.status || e.status >= 500;
 function errorWords(e) {
   return e.status === 401 ? "Please sign in." : e.status === 403 ? "Confirm your email first." : onOurSide(e) ? "Something went wrong on our side." : e.message;
@@ -854,8 +851,8 @@ async function pageExplore(view, ctx) {
   view.append(idx, body);
   let d; try { d = await api("/ui/explore", { signal: ctx.signal }); } catch (e) { view.replaceChildren(ErrorState(e, route)); return; }
   idx.replaceChildren(...d.indices.map((ix) => h("div", { class: "card index-card" },
-    h("div", { class: "spread" }, h("span", { class: "name" }, ix.name), h("span", { class: "muted", style: "font-size:11px" }, `${ix.spark.length} sessions`)), h("div", { class: "spread" }, h("div", {}, h("div", { class: "val num" }, num(ix.value)),
-      h("div", { class: `num ${cls(ix.change)}` }, `${ix.change > 0 ? "+" : ""}${num(ix.change)} (${pct(ix.change_pct)})`)), spark(ctx, ix.spark)))));
+    h("div", { class: "spread" }, h("span", { class: "name" }, ix.name), h("span", { class: "muted", style: "font-size:var(--fs-xs)" }, `${ix.spark.length} sessions`)), h("div", { class: "spread" }, h("div", {}, h("div", { class: "val num" }, num(ix.value)),
+      h("div", { class: `num ${cls(ix.change)}`, style: "font-size:var(--fs-sm)" }, `${ix.change > 0 ? "+" : ""}${num(ix.change)} (${pct(ix.change_pct)})`)), spark(ctx, ix.spark)))));
   const m = d.market, good = m.trend === "up";
   const banner = h("div", { class: `banner ${good ? "good" : "bad"}`, style: "margin-top:18px" },
     h("div", { class: `big ${good ? "up" : "down"}` }, icon(good ? "chart" : "falling")),
@@ -870,9 +867,9 @@ async function pageExplore(view, ctx) {
   tabsHost.append(seg);
   const momCard = h("div", { class: "card" }, h("div", { class: "spread" }, h("h3", {}, "Top momentum picks"), h("a", { class: "btn ghost small", href: "#/signals" }, "Build my plan →")),
     h("p", { class: "sub" }, "NSE Nifty200 Momentum 30 method — the one signal with a measured edge"),
-    h("div", { class: "list" }, ...d.momentum_top.map((r) => stockRow(r, [h("div", { class: "num" }, inr(r.price)), h("div", { class: "muted", style: "font-size:12px" }, `#${r.rank} · 6M ${pct(r.r6_pct, 0)}`)]))));
+    h("div", { class: "list" }, ...d.momentum_top.map((r) => stockRow(r, [h("div", { class: "num" }, inr(r.price)), h("div", { class: "muted", style: "font-size:var(--fs-xs)" }, `#${r.rank} · 6M ${pct(r.r6_pct, 0)}`)]))));
   const insCard = h("div", { class: "card" }, h("h3", {}, "Promoters buying recently"), h("p", { class: "sub" }, `Market purchases ≥ ₹${num(d.insider_rule.min_value_cr, 0)} cr disclosed to NSE in the last ${d.insider_rule.days} days · a weak signal on its own`),
-    d.insider_buys.length ? h("div", { class: "list" }, ...d.insider_buys.map((r) => stockRow({ symbol: r.symbol, name: r.name }, [h("div", { class: "num" }, `₹${num(r.value_cr)} cr`), h("div", { class: "muted", style: "font-size:12px" }, r.filings > 1 ? `${r.filings} filings · latest ${r.date}` : r.date)])))
+    d.insider_buys.length ? h("div", { class: "list" }, ...d.insider_buys.map((r) => stockRow({ symbol: r.symbol, name: r.name }, [h("div", { class: "num" }, `₹${num(r.value_cr)} cr`), h("div", { class: "muted", style: "font-size:var(--fs-xs)" }, r.filings > 1 ? `${r.filings} filings · latest ${r.date}` : r.date)])))
       : h("p", { class: "muted" }, "No data yet — run `stockintel insider-fetch`."));
   const learnCard = h("div", { class: "card" }, h("h3", {}, "New to investing?"), h("p", { class: "muted" }, "Learn what RSI, P/E, momentum and drawdown mean — and how this app decides."),
     h("div", { class: "chips" }, ...["What is momentum investing?", "What is a P/E ratio?", "What is a stop-loss?", "What is maximum drawdown?"].map((q) => h("a", { class: "chip", href: `#/chat?q=${encodeURIComponent(q)}` }, q))));
@@ -906,15 +903,15 @@ async function pageStock(view, ctx) {
   let o; try { o = await api(`/ui/stock/${encodeURIComponent(sym)}`, { signal: ctx.signal }); } catch (e) { view.replaceChildren(ErrorState(e, route)); return; }
   const chip = (k, v, c = "") => h("div", { class: "stat-chip" }, h("div", { class: "k" }, k), h("div", { class: `v num ${c}` }, v));
   head.replaceChildren(
-    h("div", { class: "spread stock-head" }, h("div", { class: "stack" }, h("div", { class: "avatar", style: "width:48px;height:48px;font-size:15px" }, initials(o.symbol)),
+    h("div", { class: "spread stock-head" }, h("div", { class: "stack" }, h("div", { class: "avatar", style: "width:48px;height:48px;font-size:var(--fs-md)" }, initials(o.symbol)),
       h("div", {}, h("h2", {}, o.name), h("div", { class: "muted" }, [o.symbol, o.sector, o.in_nifty200 ? "Nifty 200" : null].filter(Boolean).join(" · ")))),
       h("div", { class: "row" }, h("button", { class: "btn", onclick: () => addTxModal(ctx, o.symbol, o.price) }, "+ Add to portfolio"),
         h("button", { class: "btn", onclick: async (e) => { e.target.disabled = true; e.target.textContent = "Writing…"; try { const r = await api(`/reports/${encodeURIComponent(o.symbol)}`, { method: "POST" }); location.hash = `#/report/${r.id}`; } catch (err) { toast(errorWords(err)); e.target.disabled = false; e.target.textContent = "Research report"; } } }, "Research report"))),
     h("div", { class: "row", style: "margin-top:14px;align-items:baseline" }, h("div", { class: "price num" }, inr(o.price)),
-      h("div", { class: `num ${cls(o.change)}`, style: "font-size:16px;font-weight:600" }, `${o.change > 0 ? "+" : ""}${num(o.change)} (${pct(o.change_pct)}) today`)),
+      h("div", { class: `num ${cls(o.change)}`, style: "font-size:var(--fs-md);font-weight:600" }, `${o.change > 0 ? "+" : ""}${num(o.change)} (${pct(o.change_pct)}) today`)),
     h("div", { class: "chips-row" }, chip("1M", pct(o.returns["1M"], 1), cls(o.returns["1M"])), chip("1Y", pct(o.returns["1Y"], 1), cls(o.returns["1Y"])),
       chip("52W low", inr(o.low_52w, 0)), chip("52W high", inr(o.high_52w, 0)), chip("P/E", num(o.stats["P/E (TTM)"], 1)), chip("Mkt cap", compactInr(o.stats["Market cap"]))),
-    h("div", { class: "muted", style: "font-size:12px;margin-top:8px" }, `Daily close ${o.as_of} · NSE`));
+    h("div", { class: "muted", style: "font-size:var(--fs-xs);margin-top:8px" }, `Daily close ${o.as_of} · NSE`));
   const modes = { "Technical": () => technicalPanel(ctx, sym, { bars: 63 }), "Intraday": () => intradayPanel(ctx, sym), "Price & projection": () => technicalPanel(ctx, sym, { line: true, bars: 126 }) };
   const built = {}, chart = Tabs("mode-tabs", "Chart", Object.keys(modes), (k, panel) => { built[k] = built[k] || modes[k](); panel.replaceChildren(built[k]); built[k].redraw(); });
   chartCard.replaceChildren(chart.list, chart.panel); chart.show("Technical");
@@ -924,7 +921,7 @@ async function pageStock(view, ctx) {
   tabsCard.replaceChildren(details.list, details.panel); details.show("Overview");
   api(`/ui/stock/${encodeURIComponent(sym)}/analyst`, { signal: ctx.signal }).then((a) => analystCard.replaceChildren(h("div", { class: "panel-title" }, "Analyst note"),
     h("p", { class: "analyst-text" }, a.text),
-    h("div", { class: "muted", style: "font-size:12px" }, a.written_by ? `Written by ${a.written_by} from our models' numbers; every number was checked against them.`
+    h("div", { class: "muted", style: "font-size:var(--fs-xs)" }, a.written_by ? `Written by ${a.written_by} from our models' numbers; every number was checked against them.`
       : `Computed note: ${a.draft_rejected.join("; ")}.`)))
     .catch(showCardError(analystCard));
   try { const v = await api(`/ui/stock/${encodeURIComponent(sym)}/verdict`, { signal: ctx.signal }); renderVerdict(verdictCard, v); analytics.setGauge(v); }
@@ -947,7 +944,7 @@ function renderVerdict(card, v) {
       v.plan.position_size ? [h("span", { class: "k" }, "Position size"), h("span", {}, v.plan.position_size)] : null,
       h("span", { class: "k" }, "Next review"), h("span", {}, v.plan.next_review)),
     h("div", { class: "note" }, v.evidence_note),
-    h("div", { class: "muted", style: "font-size:11.5px;margin-top:8px" }, `Data as of ${v.data_as_of} · computed ${new Date(v.analysis_timestamp).toLocaleString("en-IN")}`));
+    h("div", { class: "muted", style: "font-size:var(--fs-xs);margin-top:8px" }, `Data as of ${v.data_as_of} · computed ${new Date(v.analysis_timestamp).toLocaleString("en-IN")}`));
 }
 
 function overviewPane(o) {
@@ -957,11 +954,11 @@ function overviewPane(o) {
     "ROE": (v) => v == null ? "—" : num(v * 100) + "%", "Debt to equity": (v) => v == null ? "—" : num(v / 100), "Beta": (v) => num(v), "Book value": (v) => inr(v) };
   return h("div", {},
     h("div", { class: "row", style: "gap:22px;margin-bottom:16px" }, ...Object.entries(o.returns).map(([k, v]) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: `v num ${cls(v)}` }, pct(v, 1))))),
-    h("div", { class: "spread muted", style: "font-size:12px" }, h("span", {}, "52W low ", h("b", { class: "num" }, inr(o.low_52w))), h("span", {}, "52W high ", h("b", { class: "num" }, inr(o.high_52w)))),
+    h("div", { class: "spread muted", style: "font-size:var(--fs-xs)" }, h("span", {}, "52W low ", h("b", { class: "num" }, inr(o.low_52w))), h("span", {}, "52W high ", h("b", { class: "num" }, inr(o.high_52w)))),
     h("div", { class: "range-bar" }, h("i", { style: `left:${Math.max(0, Math.min(100, pos))}%` })),
     h("h3", { style: "margin-top:18px" }, "Fundamentals"),
     h("div", { class: "stats" }, ...Object.entries(st).map(([k, v]) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v num" }, (fmt[k] || num)(v))))),
-    h("p", { class: "muted", style: "font-size:11.5px" }, "Snapshot figures reported by the data provider. Ratios the engines compute themselves are in the Research tab."),
+    h("p", { class: "muted", style: "font-size:var(--fs-xs)" }, "Snapshot figures reported by the data provider. Ratios the engines compute themselves are in the Research tab."),
     o.about ? [h("h3", { style: "margin-top:18px" }, "About"), h("p", { style: "color:var(--ink-2)" }, o.about.length > 700 ? o.about.slice(0, 700) + "…" : o.about)] : null);
 }
 
@@ -975,7 +972,7 @@ async function researchPane(ctx, sym) {
     const tone = r.score == null ? "" : r.score > 0.1 ? "green" : r.score < -0.1 ? "red" : "amber";
     const det = h("details", {}, h("summary", {}, h("span", { class: "spread", style: "display:inline-flex;width:calc(100% - 20px)" }, h("span", {}, label), h("span", { class: `pill ${tone}` }, r.state))));
     if (r.error) det.append(h("p", {}, `Data unavailable: ${r.error}`));
-    for (const e of r.evidence.slice(0, 8)) det.append(h("p", {}, `${e.direction > 0 ? "✓" : e.direction < 0 ? "✕" : "•"} `, h("span", { class: "muted", style: "font-size:11px" }, e.is_model_output ? "MODEL " : "FACT "), e.claim));
+    for (const e of r.evidence.slice(0, 8)) det.append(h("p", {}, `${e.direction > 0 ? "✓" : e.direction < 0 ? "✕" : "•"} `, h("span", { class: "muted", style: "font-size:var(--fs-xs)" }, e.is_model_output ? "MODEL " : "FACT "), e.claim));
     wrap.append(det);
   }
   return wrap;
@@ -986,7 +983,7 @@ async function newsPane(ctx, sym) {
   const ev = (d.result.details || {}).events || [];
   if (!ev.length) return h("p", { class: "muted" }, d.result.error ? `News unavailable: ${d.result.error}` : "No recent news found.");
   return h("div", { class: "list" }, ...ev.slice(0, 15).map((e) => h(e.url ? "a" : "div", { class: "item", href: e.url || null, target: "_blank", rel: "noopener" },
-    h("div", { style: "min-width:0" }, h("div", { class: "t", style: "font-weight:600" }, e.headline), h("div", { class: "muted", style: "font-size:12px" }, `${e.source} · ${(e.timestamp || "").slice(0, 10)} · ${e.event_type.replace("_", " ")}`)),
+    h("div", { style: "min-width:0" }, h("div", { class: "t", style: "font-weight:600" }, e.headline), h("div", { class: "muted", style: "font-size:var(--fs-xs)" }, `${e.source} · ${(e.timestamp || "").slice(0, 10)} · ${e.event_type.replace("_", " ")}`)),
     h("span", { class: `pill ${e.sentiment > 0.2 ? "green" : e.sentiment < -0.2 ? "red" : ""}` }, e.sentiment > 0.2 ? "Positive" : e.sentiment < -0.2 ? "Negative" : "Neutral"))));
 }
 
@@ -1094,7 +1091,7 @@ async function pageSignals(view, ctx) {
     const groups = { SELL: "Sell", TRIM: "Trim", BUY: "Buy", ADD: "Add", HOLD: "Hold" };
     const cards = [];
     cards.push(h("div", { class: "card" }, h("div", { class: "grid cols-4" }, ...[["Portfolio value", inr(p.capital, 0)], ["Invest now", `${Math.round(p.invest_fraction * 100)}%`], ["Positions", p.positions], ["Cash left", inr(p.cash_left, 0)]]
-      .map(([k, v]) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v num", style: "font-size:18px" }, v)))),
+      .map(([k, v]) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v num", style: "font-size:var(--fs-lg)" }, v)))),
       h("div", { class: `banner ${m.trend === "up" ? "good" : "bad"}`, style: "margin-top:14px" }, h("div", {}, h("b", {}, `Market trend ${m.trend.toUpperCase()}`),
         h("div", { class: "muted" }, `Nifty ${num(m.month_end_close, 0)} vs 10-month avg ${num(m.sma_10m, 0)} · volatility ${m.ewma_vol_pct}% · crash-risk regime: ${m.momentum_crash_risk ? "yes" : "no"} · next rebalance: ${p.next_rebalance}`)))));
     for (const [k, label] of Object.entries(groups)) {
@@ -1102,10 +1099,10 @@ async function pageSignals(view, ctx) {
       cards.push(h("div", { class: "card" }, h("h3", {}, `${label} (${acts.length})`), h("table", {},
         h("tr", {}, h("th", {}, "Stock"), h("th", { class: "r" }, "Shares"), h("th", { class: "r" }, "Price"), h("th", { class: "r" }, "Amount"), h("th", { class: "r" }, "Stop-loss"), h("th", {}, "Why")),
         ...acts.map((a) => h("tr", { class: "link", onclick: () => location.hash = `#/stock/${encodeURIComponent(a.symbol)}` },
-          h("td", {}, h("a", { href: `#/stock/${encodeURIComponent(a.symbol)}` }, h("b", {}, a.symbol)), a.rank ? h("div", { class: "muted", style: "font-size:12px" }, `rank #${a.rank}`) : null),
+          h("td", {}, h("a", { href: `#/stock/${encodeURIComponent(a.symbol)}` }, h("b", {}, a.symbol)), a.rank ? h("div", { class: "muted", style: "font-size:var(--fs-xs)" }, `rank #${a.rank}`) : null),
           h("td", { class: "r num" }, a.shares || "—"), h("td", { class: "r num" }, inr(a.price)), h("td", { class: "r num" }, a.value ? inr(a.value, 0) : "—"),
           h("td", { class: "r num" }, a.stop_level ? inr(a.stop_level) : "—"),
-          h("td", { style: "font-size:12.5px;color:var(--ink-2)" }, a.reasons.join(" · "), a.tax_note ? h("div", { class: "muted" }, "Tax: " + a.tax_note) : null))))));
+          h("td", { style: "font-size:var(--fs-sm);color:var(--ink-2)" }, a.reasons.join(" · "), a.tax_note ? h("div", { class: "muted" }, "Tax: " + a.tax_note) : null))))));
     }
     if (p.warnings.length) cards.push(h("div", { class: "card" }, h("h3", {}, "Heads-up"), h("ul", { class: "checks con" }, ...p.warnings.map((w) => h("li", {}, w)))));
     cards.push(h("div", { class: "card" }, h("h3", {}, "How much to trust this"), h("ul", {}, ...p.evidence.map((e) => h("li", { style: "color:var(--ink-2);margin-bottom:6px" }, e)))));
@@ -1168,6 +1165,13 @@ async function pageLearn(view, ctx) {
     ...t.lessons.map((l) => h("details", {}, h("summary", {}, l.title), h("p", {}, l.text), h("a", { class: "btn ghost small", href: `#/chat?q=${encodeURIComponent("Explain " + l.title + " with an example")}` }, "Ask a follow-up →")))))));
 }
 
+// a plain fetch: the guide is a public markdown file, and api() reads JSON
+async function pageGuide(view, ctx) {
+  const res = await fetch("/static/guide.md", { signal: ctx.signal });
+  if (!res.ok) throw new Error(`/static/guide.md answered ${res.status} ${res.statusText}`);
+  view.append(h("div", { class: "card" }, md(await res.text())));
+}
+
 async function pageReports(view, ctx) {
   const list = await api("/reports", { signal: ctx.signal });
   view.append(h("div", { class: "card" }, h("p", { class: "muted", style: "margin-top:0" }, "18-section reports generated from the engines. Open any stock and press “Research report” to create one."),
@@ -1197,14 +1201,15 @@ async function pageReport(view, ctx) {
 
 // ---------- home + builder ----------
 function isoArt() {
-  // decorative only: a row of glass cards with a gold one in the middle, no data
+  // decorative only: a row of glass cards with a gold one in the middle, no data. Its colours are CSS variables
+  // set through style, since an SVG attribute cannot hold var(), so a theme switch recolours it with no redraw.
   const W = 540, H = 380, svg = s("svg", { viewBox: `0 0 ${W} ${H}`, "aria-hidden": "true", class: "iso-art" });
   const defs = s("defs"), grad = (id, stops) => { const g = s("linearGradient", { id, x1: 0, y1: 0, x2: 1, y2: 1 });
-    for (const [o, c, a] of stops) g.append(s("stop", { offset: o, "stop-color": c, "stop-opacity": a ?? 1 })); defs.append(g); };
-  grad("iso-glass", [[0, "#3b434e"], [0.45, "#151a21"], [1, "#07090c"]]);
-  grad("iso-gold", [[0, "#fbe7ad"], [0.4, "#d6ad4f"], [1, "#6b4c14"]]);
-  grad("iso-edge", [[0, "#ffffff", 0.55], [1, "#ffffff", 0.04]]);
-  const halo = s("radialGradient", { id: "iso-halo" }); halo.append(s("stop", { offset: 0, "stop-color": "#e8c46a", "stop-opacity": 0.5 }), s("stop", { offset: 1, "stop-color": "#e8c46a", "stop-opacity": 0 }));
+    for (const [o, c, a] of stops) g.append(s("stop", { offset: o, style: `stop-color:var(${c})`, "stop-opacity": a ?? 1 })); defs.append(g); };
+  grad("iso-glass", [[0, "--art-glass-hi"], [0.45, "--art-glass-mid"], [1, "--art-glass-lo"]]);
+  grad("iso-gold", [[0, "--art-gold-hi"], [0.4, "--art-gold-mid"], [1, "--art-gold-lo"]]);
+  grad("iso-edge", [[0, "--art-edge", 0.55], [1, "--art-edge", 0.04]]);
+  const halo = s("radialGradient", { id: "iso-halo" }); halo.append(s("stop", { offset: 0, style: "stop-color:var(--art-halo)", "stop-opacity": 0.5 }), s("stop", { offset: 1, style: "stop-color:var(--art-halo)", "stop-opacity": 0 }));
   defs.append(halo); svg.append(defs, s("ellipse", { cx: 300, cy: 300, rx: 210, ry: 60, fill: "url(#iso-halo)" }));
   const marks = {
     card: (g, w, hh, ink) => g.append(s("rect", { x: w * 0.18, y: hh * 0.3, width: w * 0.3, height: hh * 0.13, rx: 3, fill: "none", stroke: ink, "stroke-width": 2 }), s("path", { d: `M${w * 0.18} ${hh * 0.62}h${w * 0.6}M${w * 0.18} ${hh * 0.72}h${w * 0.4}`, stroke: ink, "stroke-width": 2 })),
@@ -1220,10 +1225,10 @@ function isoArt() {
   const slabs = [[455, 92, 62, 128, "glass", "bars"], [380, 102, 78, 156, "glass", "pie"], [118, 168, 78, 150, "glass", "shield"], [40, 200, 70, 128, "glass", "card"],
     [190, 128, 88, 172, "glass", "candles"], [282, 70, 104, 206, "gold", "rupee"]];
   for (const [x, y, w, hh, kind, mark] of slabs) {
-    const g = s("g", { transform: `matrix(1 -0.36 0 1 ${x} ${y + w * 0.36})` });
-    g.append(s("rect", { x: 10, y: 7, width: w, height: hh, rx: 12, fill: kind === "gold" ? "#4b3510" : "#030405", stroke: "#ffffff", "stroke-opacity": 0.1 }),
+    const g = s("g", { transform: `matrix(1 -0.36 0 1 ${x} ${y + w * 0.36})`, style: `color:var(--art-${kind}-mark)` });
+    g.append(s("rect", { x: 10, y: 7, width: w, height: hh, rx: 12, style: `fill:var(--art-${kind}-back);stroke:var(--art-edge)`, "stroke-opacity": 0.1 }),
       s("rect", { width: w, height: hh, rx: 12, fill: `url(#iso-${kind})`, stroke: "url(#iso-edge)", "stroke-width": 1.3 }));
-    marks[mark](g, w, hh, kind === "gold" ? "#5a3f0e" : "#8f99a6"); svg.append(g);
+    marks[mark](g, w, hh, "currentColor"); svg.append(g);
   }
   return svg;
 }
@@ -1234,7 +1239,7 @@ async function pageHome(view, ctx) {
   keyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
   const hasKey = !!localStorage.getItem("si-key");
   const floatA = h("div", { class: "float-card a", hidden: true }), floatB = h("div", { class: "float-card b", hidden: true });
-  view.append(h("section", { class: "hero-dark" },
+  view.append(h("section", { class: "hero-banner" },
     h("div", {}, h("span", { class: "hero-kicker" }, h("i"), "Your personal NSE stock assistant"),
       h("h2", { class: "display" }, "Invest with evidence, built for ", h("em", {}, "Indian markets.")),
       h("p", {}, "Search any NSE stock and get a plain buy / wait / don't-buy call with the reasons on both sides. Build a portfolio in seconds, see patterns and AI forecast ranges on the chart, and ask questions in plain English. Every method shows its tested track record."),
@@ -1260,7 +1265,7 @@ async function pageHome(view, ctx) {
   const gap = live.bars[0].cagr - live.bars[1].cagr, gapText = `${gap > 0 ? "+" : ""}${num(gap, 1)} pts/yr`;
   floatA.replaceChildren(h("b", { class: cls(gap) }, gapText), "momentum fund vs Nifty 500 price index"); floatB.replaceChildren(h("b", {}, `${num(band.mid, 0)}%`), `of outcomes inside the ${band.horizon}-day 80% range`);
   floatA.hidden = floatB.hidden = false;
-  const tile = (visual, k, sub) => h("div", { class: "card ring-tile" }, visual, h("div", {}, h("div", { class: "k" }, k), h("div", { class: "muted", style: "font-size:12px" }, sub)));
+  const tile = (visual, k, sub) => h("div", { class: "card ring-tile" }, visual, h("div", {}, h("div", { class: "k" }, k), h("div", { class: "muted", style: "font-size:var(--fs-xs)" }, sub)));
   const drawStats = () => stats.replaceChildren(h("h2", { class: "section-title" }, "Measured, not promised"), h("div", { class: "grid cols-4" },
     tile(h("div", { class: `big-num ${cls(gap)}` }, gapText), "Momentum fund vs Nifty 500 price index", `live ETF, ${live.window}. ${live.benchmark_note}`),
     tile(ring(band.mid / 100, `${num(band.mid, 0)}%`, css("--up")), "Outcomes inside the 80% range", `${band.horizon}-day band, out of sample — the target is 80%`),
@@ -1293,7 +1298,7 @@ async function pageBuilder(view, ctx) {
         h("div", { class: "ctl" }, h("span", { class: "k" }, "Risk"), seg("risk", [["full", "Always invested"], ["balanced", "Balanced"], ["defensive", "Defensive"]]))),
       h("div", { class: "grid", style: "align-content:start" }, h("label", { class: "ctl" }, h("span", { class: "k" }, "Number of stocks: ", nOut), nRange),
         h("div", { class: "ctl" }, h("span", { class: "k" }, "Tap a sector to leave it out"), sectors),
-        h("p", { class: "muted", style: "font-size:12.5px;margin:0" }, "Momentum uses NSE's Nifty200 Momentum 30 method, the one signal here with a measured edge. Balanced cuts the position in crash-risk markets; Defensive also holds cash when the market trend is down.")))), out);
+        h("p", { class: "muted", style: "font-size:var(--fs-sm);margin:0" }, "Momentum uses NSE's Nifty200 Momentum 30 method, the one signal here with a measured edge. Balanced cuts the position in crash-risk markets; Defensive also holds cash when the market trend is down.")))), out);
   const build = async () => {
     if (!(state.capital >= 1000)) { out.replaceChildren(h("div", { class: "card" }, h("p", { class: "muted" }, "Enter at least ₹1,000."))); return; }
     const my = ++seq;
@@ -1309,10 +1314,10 @@ async function pageBuilder(view, ctx) {
     const apply = () => Dialog(ctx, "Add these stocks to your portfolio?", `This adds ${b.holdings.length} BUY transactions dated today. Do this after you have actually bought them.`, ["Add to portfolio", async () => {
       await api("/ui/builder/apply", { method: "POST", body: JSON.stringify({ holdings: b.holdings.map((x) => ({ symbol: x.symbol, shares: x.shares, price: x.price })) }) });
       toast("Added to your portfolio"); location.hash = "#/portfolio"; }]);
-    const kpi = (k, v, sub, c = "") => h("div", { class: "stat kpi" }, h("div", { class: "k" }, k), h("div", { class: `v num ${c}` }, v), h("div", { class: "muted", style: "font-size:12px" }, sub));
+    const kpi = (k, v, sub, c = "") => h("div", { class: "stat kpi" }, h("div", { class: "k" }, k), h("div", { class: `v num ${c}` }, v), h("div", { class: "muted", style: "font-size:var(--fs-xs)" }, sub));
     const kpis = h("div", { class: "card" }, h("div", { class: "grid cols-4" }, kpi("Invested", inr(b.capital - b.cash_left, 0), `${b.holdings.length} stocks`), kpi("Cash left", inr(b.cash_left, 0), `plan invests ${Math.round(b.invest_fraction * 100)}% now`),
       kpi("Volatility", `${num(r.portfolio_vol_pct, 1)}%`, `a year · beta ${num(r.beta)}`), kpi("Worst fall, past year", `${num(r.max_drawdown_pct, 1)}%`, `bad day (95%): ${num(r.var_95_1d_pct, 1)}%`, "down")),
-      h("p", { class: "muted", style: "font-size:12.5px;margin:12px 0 0" }, `Next review: ${b.next_rebalance}. Market trend ${b.market.trend}.`));
+      h("p", { class: "muted", style: "font-size:var(--fs-sm);margin:12px 0 0" }, `Next review: ${b.next_rebalance}. Market trend ${b.market.trend}.`));
     const table = h("div", { class: "card" }, h("div", { class: "spread" }, h("h3", { style: "margin:0" }, "Your basket"), h("button", { class: "btn primary", onclick: apply }, "Add all to my portfolio")),
       h("div", { class: "table-wrap" }, h("table", { class: "basket" }, h("tr", {}, h("th", {}, "Stock"), h("th", { class: "r" }, "Shares"), h("th", { class: "r" }, "Price"), h("th", { class: "r" }, "Amount"), h("th", {}, "Weight"), h("th", { class: "r" }, "Stop-loss")),
         ...b.holdings.map((x) => h("tr", { class: "link", title: x.why, onclick: () => location.hash = `#/stock/${encodeURIComponent(x.symbol)}` },
@@ -1356,6 +1361,7 @@ const ROUTES = [
   { path: "performance", title: "Track record", section: "Learn", label: "Track record", render: pagePerformance },
   { path: "reports", title: "My reports", section: "Learn", label: "My reports", render: pageReports },
   { path: "report", title: "Report", section: "Learn", render: pageReport },
+  { path: "guide", title: "How to use StockIntel", section: "Learn", label: "Guide", render: pageGuide },
 ];
 const NOT_FOUND = { title: "Page not found", render: (view) => view.append(EmptyState("compass", `There is no page at ${location.hash}.`, null,
   h("a", { class: "btn primary", href: "#/home" }, "Go to Home"))) };
@@ -1393,4 +1399,4 @@ async function route() {
   try { await r.render(view, ctx); } catch (e) { if (ctx.live()) view.replaceChildren(ErrorState(e, route)); }
 }
 window.addEventListener("hashchange", route);
-document.addEventListener("DOMContentLoaded", () => { drawNavs(); route(); });
+document.addEventListener("DOMContentLoaded", () => { $("#theme").append(icon("theme")); $(".search .icon").append(icon("search")); drawNavs(); route(); });

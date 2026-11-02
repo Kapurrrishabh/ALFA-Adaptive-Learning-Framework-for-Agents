@@ -60,6 +60,16 @@ def _tokens(text: str) -> List[str]:
     return out
 
 
+def stems(text: str) -> set:
+    """The words of `text` that carry meaning, stemmed as BM25 reads them: "candles" and "candle" are one word."""
+    return set(_tokens(text))
+
+
+def covers(text: str, question: str) -> bool:
+    """Whether `text` uses every word of `question` that carries meaning, as this module tokenizes them."""
+    return stems(question) <= stems(text)
+
+
 def _shares_word(query: List[str], title: List[str]) -> bool:
     """Whether a question and a heading name the same thing, allowing for the crude stemmer above:
     "tax" and "taxe" (from "Taxes") count as the same word."""

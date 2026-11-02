@@ -7,6 +7,7 @@ and the one rule that the row a served question is built into is the row trainin
 
 import csv
 import json
+import re
 from datetime import date, timedelta
 
 import numpy as np
@@ -389,7 +390,7 @@ def test_a_stated_chance_is_absent_until_a_calibrator_is_fitted(market, router):
 PASSAGE = "A stop loss order sells a holding automatically once its price falls to a level you set."
 
 
-def reference(written, confidence=0.5, paraphrase=False, model=None, live=None):
+def reference(written, confidence=0.5, paraphrase=False, model=None, live=None, **parts):
     """The retrieval path over a five-chunk index, with the decoder writing one fixed answer.
 
     Its own tokenizer, not the advisory one: what the two decoders write is what these tests vary, and a
@@ -403,7 +404,7 @@ def reference(written, confidence=0.5, paraphrase=False, model=None, live=None):
             Chunk("AAPL holders often set one below the last close.", [], "d4", "2021-06-05")]
     return Reference(Hybrid(held, pretokenize), FakeTokenizer(written),
                      model or FakeModel(confidence), Config, QUESTION_TOKENS, PASSAGES,
-                     ANSWER_TEMPERATURE, ANSWER_TOP_P, paraphrase=paraphrase, live=live)
+                     ANSWER_TEMPERATURE, ANSWER_TOP_P, paraphrase=paraphrase, live=live, **parts)
 
 
 def test_a_question_naming_no_instrument_is_answered_from_the_documents(market, router):
@@ -825,6 +826,22 @@ class ExplodingWriter:
         raise AssertionError("the language model was asked to reword something it must not touch")
 
 
+def entailing(pairs):
+    """An entailment model that finds every sentence entailed, for tests about something else."""
+    return [1.0] * len(pairs)
+
+
+def doubting(claim):
+    """An entailment model that finds one sentence entailed by nothing and every other entailed."""
+    return lambda pairs: [0.0 if said == claim else 1.0 for _, said in pairs]
+
+
+def literal(pairs):
+    """An entailment model that finds a sentence entailed by a premise holding each of its words."""
+    words = lambda text: set(re.findall(r"\w+", text.lower()))
+    return [float(words(said) <= words(premise)) for premise, said in pairs]
+
+
 def phrased_agent(market, router, written, writer, **kw):
     built = agent(market, router, written=written, **kw)
     built.writer = writer
@@ -850,6 +867,7 @@ def test_a_rewrite_that_keeps_every_figure_is_served_and_names_its_writer(market
     ("Up 13.8% in 20 days, closed at 165.00, and it will rise further.", "claims a direction"),  # adds a call
     ("Up 13.8% in 20 days, closed at ₹165.00.", "writes ₹"),                                   # swaps currency
     ("Up:\n- 13.8% in 20 days\n- closed at 165.00", "breaks into lines"),                     # a list
+    ("Up a lot, 13.8% in 20 days, and closed at 165.00.", "sizes a figure"),                    # adds a size
 ])
 def test_a_rewrite_that_changes_the_facts_serves_alfas_words_and_says_why(market, router, reply, reason):
     turn = phrased_agent(market, router, DRAFT, FakeWriter(reply)).answer(ASKED)
@@ -875,10 +893,9 @@ NEWS = Chunk("Mint, 6 Oct 2026: Reliance Industries commissioned its new refiner
              "https://n.test/reliance", "2026-10-06")
 
 
-def news_reference(writer, news=(NEWS,), live=None):
-    built = reference("never written", model=ExplodingModel(), live=live or ExplodingLive())
-    built.writer, built.news = writer, FakeLive(list(news))
-    return built
+def news_reference(writer, news=(NEWS,), live=None, entails=entailing, **parts):
+    return reference("never written", model=ExplodingModel(), live=live or ExplodingLive(), writer=writer,
+                     news=FakeLive(list(news)), entails=entails, **parts)
 
 
 def test_a_question_about_lately_is_answered_from_the_newswire_alone(market, router):
@@ -915,9 +932,8 @@ def judged(lesson, headline):
 def test_a_move_word_question_is_taught_when_the_judge_rates_the_lesson_above_the_news(market, router):
     """"How are capital gains on shares taxed?" says "gains", and was sent to the newswire instead of the
     lesson on taxes that answers it."""
-    built = news_reference(ExplodingWriter())
-    built.lessons = lambda question: [("Taxes on listed equity", "Gains held over a year are taxed at 12.5%.")]
-    built.judge = judged(LESSON_FLOOR + 0.1, LESSON_FLOOR)
+    taxes = [("Taxes on listed equity", "Gains held over a year are taxed at 12.5%.")]
+    built = news_reference(ExplodingWriter(), judge=judged(LESSON_FLOOR + 0.1, LESSON_FLOOR), lessons=ranked(taxes))
     turn = agent(market, router, reference=built).answer("how are capital gains on shares taxed ?")
     assert turn.spoke and turn.intent == "reference lesson"
 
@@ -926,9 +942,8 @@ def test_a_lesson_below_the_floor_is_not_served_even_when_no_headline_rates_high
     """"How do i book profits after gains" was matched to the lesson on the P/B ratio by the word "book"."""
     booked = Chunk("Mint, 28 Oct 2026: Traders book profits after gains in bank stocks.", [], "https://n.test/book",
                    "2026-10-28")
-    built = news_reference(None, news=(booked,))
-    built.lessons = lambda question: [("P/B ratio (price to book)", "P/B is price over book value per share.")]
-    built.judge = judged(LESSON_FLOOR - 0.01, 0.0)
+    built = news_reference(None, news=(booked,), judge=judged(LESSON_FLOOR - 0.01, 0.0),
+                           lessons=ranked([("P/B ratio (price to book)", "P/B is price over book value per share.")]))
     turn = agent(market, router, reference=built).answer("how do i book profits after gains ?")
     assert turn.intent == "reference recent" and booked.text in turn.served
 
@@ -937,8 +952,7 @@ def test_a_move_word_in_a_question_naming_no_company_and_no_lesson_reads_the_new
     """"Why did the sensex crash?" read from the corpus was quoted a passage on the 2016 demonetisation crash."""
     crash = Chunk("Mint, 28 Oct 2026: The Sensex crashed 900 points as bank stocks fell.", [], "https://n.test/crash",
                   "2026-10-28")
-    built = news_reference(None, news=(crash,))
-    built.lessons = lambda question: []
+    built = news_reference(None, news=(crash,), lessons=lambda question, k: [], judge=judged(LESSON_FLOOR, 0.0))
     turn = agent(market, router, reference=built).answer("why did the sensex crash ?")
     assert turn.intent == "reference recent" and crash.text in turn.served
 
@@ -947,11 +961,82 @@ def test_a_move_question_reads_the_news_when_the_judge_rates_a_headline_above_th
     """"Why are bond yields rising" was served the lesson on free cash flow yield, because its heading says "yield"."""
     moved = Chunk("Mint, 28 Oct 2026: The Nifty slipped as bond yields kept rising.", [], "https://n.test/yields",
                   "2026-10-28")
-    built = news_reference(None, news=(moved,))
-    built.lessons = lambda asked: [("Free cash flow and FCF yield", "FCF yield is free cash flow over market value.")]
-    built.judge = judged(LESSON_FLOOR + 0.1, LESSON_FLOOR + 0.2)
+    yields = [("Free cash flow and FCF yield", "FCF yield is free cash flow over market value.")]
+    built = news_reference(None, news=(moved,), lessons=ranked(yields),
+                           judge=judged(LESSON_FLOOR + 0.1, LESSON_FLOOR + 0.2))
     turn = agent(market, router, reference=built).answer("are bond yields going to rise ?")
     assert turn.intent == "reference recent" and moved.text in turn.served
+
+
+TAX_LESSONS = [("ELSS (tax-saving funds)", "ELSS funds lock your money in for three years."),
+               ("Taxes on listed equity", "Short-term gains on shares are taxed at 20%.")]
+
+
+def ranked(lessons):
+    """The knowledge base's first `k` lessons, as it gives them when its best section names one."""
+    return lambda question, k: lessons[:k]
+
+
+def headless(lessons):
+    """Lessons as the knowledge base gives them when its best section's heading shares no word with the question."""
+    return lambda question, k: lessons if k > 1 else []
+
+
+def rating(*lessons):
+    """A judge rating the lessons as given and every headline after them at 0."""
+    return lambda question, texts: list(lessons) + [0.0] * (len(texts) - len(lessons))
+
+
+def test_the_lessons_bm25_finds_are_served_in_the_rerankers_order():
+    """BM25's order taught ELSS for "what is the tax on short term profit when shares rise", over the lesson on taxes."""
+    from backend.models.agent.run.ask import lessons_from
+    found = lessons_from()("what do candle patterns show ?", 4)
+    reranked = lessons_from(lambda question, texts: list(range(len(texts))))("what do candle patterns show ?", 4)
+    assert len(found) > 1 and reranked == found[::-1]
+
+
+def test_on_a_move_word_question_the_rerankers_first_lesson_is_served_over_one_the_judge_rates_higher(market, router):
+    """Rated by closeness, "what is concentration risk" got the lesson on risk contribution at 0.758 against 0.742."""
+    rates = lambda question, texts: [LESSON_FLOOR + 0.2 if TAX_LESSONS[1][1] in text else
+                                     LESSON_FLOOR + 0.01 if TAX_LESSONS[0][1] in text else 0.0 for text in texts]
+    built = news_reference(None, lessons=ranked(TAX_LESSONS), judge=rates)
+    turn = agent(market, router, reference=built).answer("do elss funds gain tax free ?")
+    assert turn.intent == "reference lesson" and turn.served == TAX_LESSONS[0][1]
+
+
+def test_a_question_whose_best_section_names_no_lesson_is_taught_one_the_judge_rates_over_the_floor(market, router):
+    """"What tax applies when i sell shares at a profit after 6 months" was served a US forum post, though the judge
+    rated the lesson on taxes, the only one BM25 found, at 0.748."""
+    built = news_reference(None, lessons=headless(TAX_LESSONS[1:]), judge=rating(LESSON_FLOOR + 0.05))
+    turn = agent(market, router, reference=built).answer("what is owed on a quick share profit ?")
+    assert turn.intent == "reference lesson" and turn.served == TAX_LESSONS[1][1]
+
+
+def test_a_question_whose_best_section_names_no_lesson_is_not_taught_one_below_the_floor(market, router):
+    built = news_reference(None, lessons=headless(TAX_LESSONS), judge=rating(LESSON_FLOOR - 0.01, 0.9))
+    turn = agent(market, router, reference=built).answer("what is a stop loss order ?")
+    assert turn.served == PASSAGE
+
+
+def test_with_no_judge_only_a_lesson_bm25s_best_section_names_is_served(market, router):
+    built = reference("never written", model=ExplodingModel(), lessons=headless(TAX_LESSONS))
+    turn = agent(market, router, reference=built).answer("what is a stop loss order ?")
+    assert turn.served == PASSAGE
+
+
+def test_lessons_and_news_without_a_judge_are_refused_when_the_reference_is_built():
+    with pytest.raises(ValueError, match="judge"):
+        news_reference(None, lessons=ranked(TAX_LESSONS))
+
+
+@pytest.mark.parametrize("question", ["what does it mean if a stock fell over the last few weeks on low volume ?",
+                                      "why does RSI use the last 14 days ?"])
+def test_a_window_in_a_question_naming_no_company_does_not_keep_it_from_its_lesson(market, router, question):
+    """Read as a time word, "over the last few weeks" sent the first question to an unrelated headline on JGB yields."""
+    volume = [("Volume, OBV and accumulation/distribution", "Volume confirms price moves.")]
+    built = news_reference(None, judge=judged(LESSON_FLOOR + 0.05, 0.0), lessons=ranked(volume))
+    turn = agent(market, router, reference=built).answer(question)
+    assert turn.intent == "reference lesson"
 
 
 @pytest.mark.parametrize("question,intent", [("is AAPL overbought right now ?", "overbought"),
@@ -1005,11 +1090,166 @@ def test_a_writer_that_finds_no_answer_serves_the_plain_answer_not_its_half_refu
     assert turn.spoke and "founded" not in turn.served and NEWS.text in turn.served
 
 
+ASKED_YES_NO = "are refinery stocks falling ?"
+
+
+@pytest.mark.parametrize("reply", ["NO", "Yes, Reliance Industries commissioned a refinery unit (Mint, 6 Oct 2026)."])
+def test_a_writer_that_answers_yes_or_no_serves_the_plain_answer(market, router, reply):
+    """"are it stocks falling" was served "NO", a verdict the prompt asks the writer not to give."""
+    from backend.models.agent import phrase
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply))).answer(ASKED_YES_NO)
+    assert turn.spoke and turn.served == phrase.recent_plain(None, None, [NEWS]) and turn.phrased_by == ""
+    assert "answers yes or no" in turn.unphrased_because
+
+
+def test_a_writer_sentence_no_passage_entails_serves_the_plain_answer_and_names_it(market, router):
+    """"Bond yields are not falling." was served for passages saying global yields were rising, and HHEM judged it
+    0.25: a verdict no passage gives, in more wordings than any word rule caught."""
+    from backend.models.agent import phrase
+    verdict = "Refinery shares show no sign of a fall."
+    built = news_reference(FakeWriter(f"{verdict} Reliance Industries commissioned a unit (Mint, 6 Oct 2026)."),
+                           entails=doubting(verdict))
+    turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
+    assert turn.spoke and turn.served == phrase.recent_plain(None, None, [NEWS]) and turn.phrased_by == ""
+    assert f"no passage says “{verdict}”" in turn.unphrased_because
+
+
+@pytest.mark.parametrize("reply", ["Reliance Industries commissioned its new refinery unit. (Mint, 6 Oct 2026)",
+                                   "Reliance Industries commissioned its new refinery unit (Mint, 6 Oct 2026).",
+                                   "Refinery stocks moved after the new unit (Mint, 6 Oct 2026; ET, 7 Oct 2026)."])
+def test_a_passages_own_source_and_date_in_brackets_is_not_read_as_a_claim(market, router, reply):
+    """Read alone, "(Mint, 6 Oct 2026)" scored as low as 0.002 against the passage it names, and a sentence carrying its
+    source failed against the passage sentence that said it word for word."""
+    moved = Chunk("ET, 7 Oct 2026: Refinery stocks moved.", [], "https://n.test/moved", "2026-10-07")
+    built = news_reference(FakeWriter(reply), news=(NEWS, moved),
+                           entails=lambda pairs: [0.0 if "(" in said else 1.0 for _, said in pairs])
+    turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
+    assert turn.served == reply and turn.phrased_by == "test-lm"
+
+
+@pytest.mark.parametrize("reply", ["Reliance Industries commissioned its new refinery unit (its biggest in years).",
+                                   "Reliance Industries commissioned its new refinery unit (Mint, 6 Oct 2026). "
+                                   "(Two more units are planned.)"])
+def test_a_claim_in_brackets_that_no_passage_entails_serves_the_plain_answer(market, router, reply):
+    """"TCS shares fell 2% (their worst day in years)" was served: each bracket was left out before the gate read it."""
+    from backend.models.agent import phrase
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply), entails=literal)).answer(ASKED_YES_NO)
+    assert turn.served == phrase.recent_plain(None, None, [NEWS]) and "no passage says" in turn.unphrased_because
+
+
+def test_a_passages_figure_in_brackets_after_another_subject_is_read_with_its_sentence(market, router):
+    """"The Nifty fell (over 500 points) after the RBI's announcement." was served, though the 500 points were the
+    Sensex's: the entailment model reads a bracket as an aside. This fake does too, and knows whose fall the figure
+    was; `literal` cannot pin this, as the passages joined hold every word."""
+    from backend.models.agent import phrase
+    fell = Chunk("ET, 7 Oct 2026: Tata Steel shares fell 3%. Refinery stocks fell after the RBI hike.", [],
+                 "https://n.test/fell", "2026-10-07")
+    tied = lambda pairs: [float("3%" not in re.sub(r"\(.*?\)", "", said) or "Tata Steel" in said) for _, said in pairs]
+    built = news_reference(FakeWriter("Refinery stocks fell (3%) after the RBI hike (ET, 7 Oct 2026)."), news=(fell,),
+                           entails=tied)
+    turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
+    assert turn.served == phrase.recent_plain(None, None, [fell])
+    assert "ET, 7 Oct 2026 does not say “Refinery stocks fell 3% after the RBI hike.”" in turn.unphrased_because
+
+
+def test_a_figure_the_reply_ties_to_another_name_than_its_passage_does_serves_the_plain_answer(market, router):
+    """"Infosys and Wipro each fell about 1.2%" passed the entailment model, though 1.2% was the Nifty's fall."""
+    from backend.models.agent import phrase
+    nifty = Chunk("ET, 7 Oct 2026: The Nifty fell 1.2% as refinery stocks dropped.", [], "https://n.test/n", "2026-10-07")
+    built = news_reference(FakeWriter("Reliance Industries shares fell 1.2% (ET, 7 Oct 2026)."), news=(NEWS, nifty))
+    turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
+    assert turn.served == phrase.recent_plain(None, None, [NEWS, nifty])
+    assert "it ties 1.2% to Reliance Industries" in turn.unphrased_because
+
+
+@pytest.mark.parametrize("reply", ["Refinery stocks are not falling.", "Refinery stocks aren't falling (Mint, 6 Oct 2026)."])
+def test_a_reply_that_only_denies_the_question_serves_the_plain_answer(market, router, reply):
+    """"The market is not crashing." passed the entailment model, which reads negation badly, and no passage said it."""
+    from backend.models.agent import phrase
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply))).answer(ASKED_YES_NO)
+    assert turn.served == phrase.recent_plain(None, None, [NEWS]) and "gives its own verdict" in turn.unphrased_because
+
+
+def test_a_denial_that_goes_on_to_report_the_passages_is_left_to_the_entailment_model(market, router):
+    reply = "Refinery stocks are not falling; Reliance Industries commissioned its new refinery unit (Mint, 6 Oct 2026)."
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply))).answer(ASKED_YES_NO)
+    assert turn.served == reply and turn.phrased_by == "test-lm"
+
+
+STEEL = Chunk("ET, 7 Oct 2026: Refinery stocks fell as Tata Steel shares fell 3%.", [], "https://n.test/steel", "2026-10-07")
+
+
+@pytest.mark.parametrize("reply", ["Reliance Industries commissioned its new refinery unit (ET, 7 Oct 2026).",
+                                   "Reliance Industries commissioned its new refinery unit. (ET, 7 Oct 2026)"])
+def test_a_sentence_citing_a_source_that_does_not_say_it_serves_the_plain_answer(market, router, reply):
+    """"Wipro shares dropped 3% after a guidance cut (Economic Times, 28 Oct 2026)." passed: Mint had reported it."""
+    from backend.models.agent import phrase
+    built = news_reference(FakeWriter(reply), news=(NEWS, STEEL), entails=literal)
+    turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
+    assert turn.served == phrase.recent_plain(None, None, [NEWS, STEEL])
+    assert "ET, 7 Oct 2026 does not say “Reliance Industries commissioned its new refinery unit.”" in turn.unphrased_because
+
+
+def test_a_sentence_citing_the_source_that_says_it_is_served(market, router):
+    reply = "Reliance Industries commissioned its new refinery unit (Mint, 6 Oct 2026)."
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply), news=(NEWS, STEEL), entails=literal)).answer(
+        ASKED_YES_NO)
+    assert turn.served == reply and turn.phrased_by == "test-lm"
+
+
+def test_a_reply_that_only_names_a_source_serves_the_plain_answer(market, router):
+    from backend.models.agent import phrase
+    turn = agent(market, router, reference=news_reference(FakeWriter("(Mint, 6 Oct 2026)"))).answer(ASKED_YES_NO)
+    assert turn.served == phrase.recent_plain(None, None, [NEWS]) and "states nothing" in turn.unphrased_because
+
+
+def test_a_sentence_that_joins_two_passages_is_entailed_by_them_together(market, router):
+    """"The Sensex rose 410 points, while Wipro shares fell 3%" scored 0.0 against each of its two passages alone."""
+    slid = Chunk("Mint, 6 Oct 2026: TCS shares slid while results were due.", [], "https://n.test/tcs", "2026-10-06")
+    reply = "Reliance Industries commissioned its new refinery unit, while TCS shares slid"
+    built = news_reference(FakeWriter(reply), news=(NEWS, slid), entails=literal)
+    turn = agent(market, router, reference=built).answer("are refinery and tcs stocks falling ?")
+    assert turn.served == reply and turn.phrased_by == "test-lm"
+
+
+def test_a_writer_without_an_entailment_model_is_refused_when_the_reference_is_built():
+    with pytest.raises(ValueError, match="entails"):
+        news_reference(FakeWriter("never asked"), entails=None)
+
+
+def test_a_writer_with_no_news_to_reword_needs_no_entailment_model(market, router):
+    """Only news replies are checked by it, and `--phrase` without `--live` loaded its 568 MB for nothing."""
+    built = reference("never written", model=ExplodingModel(), writer=ExplodingWriter())
+    assert agent(market, router, reference=built).answer("what is a stop loss order ?").served == PASSAGE
+
+
+def test_a_writer_saying_the_passages_do_not_mention_it_is_a_refusal_not_an_answer(market, router):
+    """"Pharma stocks are not specifically mentioned in the passages provided." was served, and HHEM judged it 0.17."""
+    writer = FakeWriter("Refinery stocks are not specifically mentioned in the passages provided.")
+    turn = agent(market, router, reference=news_reference(writer)).answer(ASKED_YES_NO)
+    assert not turn.spoke and turn.served == finance.NOT_IN_SOURCES
+
+
+def test_a_writer_that_reports_what_happened_on_a_yes_no_question_is_served(market, router):
+    reply = "Reliance Industries commissioned its new refinery unit (Mint, 6 Oct 2026)."
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply))).answer(ASKED_YES_NO)
+    assert turn.served == reply and turn.phrased_by == "test-lm"
+
+
+def test_a_report_in_the_questions_own_words_is_served_when_the_passages_entail_it(market, router):
+    """"The Nifty has fallen 1.2% as IT stocks dropped on weak US cues (ET, 27 Oct 2026)." was refused for "has the
+    nifty fallen", by a word rule that read any restatement of the question as a verdict."""
+    said = Chunk("Mint, 6 Oct 2026: Refinery stocks fell 2% after the new unit opened.", [], "https://n.test/r",
+                 "2026-10-06")
+    reply = "Refinery stocks are falling, down 2% after the new unit opened (Mint, 6 Oct 2026)."
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply), news=(said,))).answer(ASKED_YES_NO)
+    assert turn.served == reply and turn.phrased_by == "test-lm"
+
+
 def test_forum_and_encyclopedia_passages_are_quoted_not_reworded(market, router):
     """The language model misattributed long prose ("HDFCBANK.NS is a subsidiary of HDFC Bank"), as ALFA's
     own generator did, so only dated headlines are reworded."""
-    built = reference("never written", model=ExplodingModel())
-    built.writer = ExplodingWriter()
+    built = reference("never written", model=ExplodingModel(), writer=ExplodingWriter(), entails=entailing)
     turn = agent(market, router, reference=built).answer("what is a stop loss order ?")
     assert turn.spoke and turn.served == PASSAGE
 
@@ -1017,6 +1257,65 @@ def test_forum_and_encyclopedia_passages_are_quoted_not_reworded(market, router)
 def test_a_question_not_about_money_is_refused_even_when_a_passage_matches(market, router):
     turn = agent(market, router, reference=reference("never written", model=ExplodingModel())).answer(
         "what did the committee vote on at the meeting ?")
+    assert not turn.spoke and turn.served == finance.OFF_TOPIC
+
+
+@pytest.mark.parametrize("question", ["what does RSI mean ?", "what is diversification ?",
+                                      "what does it mean when the macd line rises above the signal line ?",
+                                      "does volume rise before a breakout ?", "why are small caps rallying ?",
+                                      "are fiis and diis buying ?", "how do i read a candlestick chart ?",
+                                      "what is cagr ?", "what is xirr ?", "what is a hammer candle ?",
+                                      "do breakouts need volume ?"])
+def test_market_words_alone_put_a_question_about_money(question):
+    """Each of the first five found its lesson or a headline and was refused as not about money."""
+    assert finance.about_money(question)
+
+
+@pytest.mark.parametrize("question", ["write me a poem about the sea", "what is the weather in Mumbai ?",
+                                      "who won the cricket match yesterday ?", "tell me a joke", "asdfgh qwerty",
+                                      "how many hours should i sleep ?", "recommend a good movie for tonight",
+                                      "what are the top songs on the music charts ?", "show me a chart of the weather",
+                                      "how do i make a pie chart in excel ?", "what is stochastic gradient descent ?",
+                                      "what is the volume of a sphere ?", "how do i turn up the volume on my phone ?",
+                                      "how do i treat an acne breakout ?",
+                                      "how many candles go on a cake, one candle a year ?",
+                                      "why do weather charts put the key below the chart ?"])
+def test_a_question_about_something_else_is_not_about_money(question):
+    assert not finance.about_money(question)
+
+
+@pytest.mark.parametrize("question,lesson", [
+    ("what is a pennant ?", ("Flags and pennants", "A pennant is a small triangle after a sharp move.")),
+    ("what is a hanging man ?", ("Hammer and hanging man", "Both have a small body near the top of the range.")),
+])
+def test_a_lesson_that_uses_every_word_of_the_question_is_served_though_no_money_word_is_in_it(market, router, question,
+                                                                                                lesson):
+    """A lesson is about money by construction, so naming its topic is enough: "what is a pennant" names no market word."""
+    built = reference("never written", model=ExplodingModel())
+    built.lessons = lambda asked, k: [lesson]
+    turn = agent(market, router, reference=built).answer(question)
+    assert turn.spoke and turn.intent == "reference lesson"
+
+
+def test_the_words_a_lesson_is_cited_with_do_not_put_a_question_on_topic(market, router):
+    """Its evidence wraps a lesson in "document lesson: ... published undated", which no lesson says."""
+    built = reference("never written", model=ExplodingModel())
+    built.lessons = lambda asked, k: [("Candle anatomy", "A candle shows the open, high, low and close of one period.")]
+    turn = agent(market, router, reference=built).answer("what is an undated document ?")
+    assert not turn.spoke and turn.served == finance.OFF_TOPIC
+
+
+@pytest.mark.parametrize("question,lesson", [
+    ("how do candles burn ?", ("Candle anatomy", "A candle shows the open, high, low and close of one period.")),
+    ("what is a black hole ?", ("Three white soldiers and three black crows", "Three long black candles in a row.")),
+    ("what is the volume of a sphere ?", ("Volume, OBV and accumulation/distribution", "Volume confirms price moves.")),
+    ("how do i treat an acne breakout ?", ("Breakouts and false breakouts", "A breakout is a close beyond a range.")),
+])
+def test_a_lesson_sharing_one_word_with_a_question_about_something_else_is_refused(market, router, question, lesson):
+    """The lessons' heading check lets one shared word through, and every lesson is about money, not the question."""
+    built = reference("never written", model=ExplodingModel())
+    built.lessons = lambda asked, k: [lesson]
+    turn = agent(market, router, reference=built).answer(question)
     assert not turn.spoke and turn.served == finance.OFF_TOPIC
 
 
@@ -1033,19 +1332,60 @@ def test_an_exchange_listed_name_resolves_to_its_ticker_as_whole_words(tmp_path)
 def test_a_concept_question_naming_no_company_is_answered_from_the_lessons_first(market, router):
     """The corpus is mostly US forums: "how does a SIP work" read from it was Wikipedia's sales incentive plan."""
     built = reference("never written", model=ExplodingModel())
-    built.lessons = lambda question: [("SIP (systematic investment plan)", "A SIP invests a fixed amount every month.")]
+    built.lessons = lambda question, k: [("SIP (systematic investment plan)", "A SIP invests a fixed amount every month.")]
     turn = agent(market, router, reference=built).answer("how does a SIP work ?")
     assert turn.spoke and turn.served == "A SIP invests a fixed amount every month." and turn.intent == "reference lesson"
-    built.lessons = lambda question: []
+    built.lessons = lambda question, k: []
     assert agent(market, router, reference=built).answer("what is a stop loss order ?").served == PASSAGE
 
 
-def test_a_question_that_says_lately_reads_the_dated_sources_before_the_advisory_path(market, router):
-    """"how is AAPL doing lately" was refused at ALFA's confidence cut while the price files held its answer."""
+@pytest.mark.parametrize("question", ["how has RELIANCE.NS been doing lately ?",
+                                      "how has RELIANCE.NS been doing over the last month ?",
+                                      "how is RELIANCE.NS performing ?", "how has RELIANCE.NS done this year ?"])
+def test_a_question_sure_to_ask_how_the_price_moved_reads_the_dated_sources_before_the_advisory_path(market, router,
+                                                                                                      question):
+    """"how is AAPL doing lately" and "how has TCS been doing over the last month" were refused at ALFA's confidence cut
+    while the price files held their answer, and so was every one of its 294 answers on how a price moved."""
     turn = agent(market, router, model=ExplodingModel(),
                  reference=news_reference(FakeWriter("Reliance commissioned a refinery unit (Mint, 6 Oct 2026)."))).answer(
-        "how has RELIANCE.NS been doing lately ?")
+        question)
     assert turn.spoke and turn.intent == "reference recent"
+
+
+@pytest.mark.parametrize("question,recent", [("how has RELIANCE.NS done over the past month ?", True),
+                                             ("RELIANCE.NS last 30 days performance", True),
+                                             ("how did RELIANCE.NS do over the last six months ?", True),
+                                             ("how is RELIANCE.NS performing ?", False)])
+def test_a_question_the_router_is_unsure_of_reads_the_dated_sources_only_when_it_names_a_window(market, router, question,
+                                                                                                recent):
+    """The router read "what does TCS do" as a question on how its price moved, at a margin under the gate."""
+    built = news_reference(FakeWriter("Reliance commissioned a refinery unit (Mint, 6 Oct 2026)."), live=FakeLive([]))
+    turn = agent(market, router, gate_cut=1e9, model=ExplodingModel(), reference=built).answer(question)
+    assert (turn.intent == "reference recent") == recent
+
+
+@pytest.mark.parametrize("filings", [RefusedLive(), ExplodingLive()])
+@pytest.mark.parametrize("question", ["how has AAPL performed ?", "how has AAPL done over the past month ?"])
+def test_a_question_sure_to_ask_how_the_price_moved_is_answered_from_the_price_files_without_filings(registered, router,
+                                                                                                    filings, question):
+    """"how is AAPL doing" was refused as unreachable when EDGAR refused us, though the price files held the answer, and
+    it waited on EDGAR when EDGAR did answer. A window is a span of prices, not a reason to read filings."""
+    built = news_reference(ExplodingWriter(), news=(), filings=filings)
+    turn = agent(registered, router, model=ExplodingModel(), reference=built).answer(question)
+    assert turn.spoke and turn.served.startswith("AAPL closed at $") and turn.because == ""
+
+
+APPLE = Chunk("Mint, 6 Oct 2026: Apple shares rose after AAPL launched a new phone.", [], "https://n.test/aapl",
+              "2026-10-06")
+
+
+@pytest.mark.parametrize("news,said", [((), "could not read its SEC filings"), ((APPLE,), APPLE.text)])
+def test_filings_that_cannot_be_read_cost_their_own_passages_not_the_turn(registered, router, news, said):
+    """The reply names the filings only when nothing else was found; the turn records the refusal either way."""
+    built = news_reference(None, news=news, filings=RefusedLive())
+    turn = agent(registered, router, model=ExplodingModel(), reference=built).answer("how has AAPL done lately ?")
+    assert turn.spoke and turn.served.startswith("AAPL closed at $") and said in turn.served
+    assert ("SEC filings" in turn.served) == (not news) and "403 from efts.sec.gov" in turn.because
 
 
 def test_a_rewrite_that_misspells_the_ticker_serves_alfas_words(market, router):
