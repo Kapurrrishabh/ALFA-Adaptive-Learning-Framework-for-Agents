@@ -97,6 +97,7 @@ class KnowledgeBase:
                 self.chunks.append(Chunk(path.name, title.strip(), body.strip()))
         if not self.chunks:
             raise FileNotFoundError(f"no knowledge sections found in {directory}")
+        self.short_forms = {w for c in self.chunks for w in re.findall(r"\b[A-Z][A-Z0-9&]+\b", c.title)}
         self.docs = [_tokens(c.title + " " + c.title + " " + c.text) for c in self.chunks]
         self.avgdl = sum(map(len, self.docs)) / len(self.docs)
         df = Counter(t for d in self.docs for t in set(d))

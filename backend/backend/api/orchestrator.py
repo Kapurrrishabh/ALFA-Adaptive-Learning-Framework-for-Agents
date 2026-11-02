@@ -271,7 +271,8 @@ class Orchestrator:
     # --- entry point --------------------------------------------------------------
     def handle(self, message: str, portfolio: str, session_id: str) -> Reply:
         s = self.session(portfolio, session_id)
-        intent = classify(message, sorted(self.known), s.current is not None, self.research_phrases)
+        intent = classify(message, sorted(self.known), knowledge_base().short_forms, s.current is not None,
+                          self.research_phrases)
         if intent.horizon:
             s.horizon = intent.horizon
         if intent.risk_profile:
@@ -299,7 +300,7 @@ class Orchestrator:
         try:
             writer = self.hub.writer()
             with self.model_call(s.portfolio):
-                name = intent_lm.choose(message, ROUTABLE, writer)
+                name = intent_lm.choose(message, ROUTABLE, writer, declined="help")
         except (LLMUnavailable, DataUnavailable) as exc:
             log.info("no language model to route %r: %s", message, exc)
             return intent

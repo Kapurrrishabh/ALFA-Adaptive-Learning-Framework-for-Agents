@@ -1985,10 +1985,46 @@ def test_an_unrecognised_question_is_routed_by_the_language_model(orch, monkeypa
     assert "market_regime:" in writer.prompts[0]
 
 
-def test_a_question_the_language_model_cannot_place_says_so_instead_of_guessing(orch, monkeypatch):
+@pytest.mark.parametrize("question", ["what is the weather in Mumbai?", "what is the capital of France?",
+                                      "what is the best restaurant in Pune?", "what is the population of India?"])
+def test_a_question_the_language_model_cannot_place_gets_the_help_list_instead_of_a_guess(orch, monkeypatch, question):
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
-    reply = orch.handle("what is the weather in Mumbai?", DEFAULT_PORTFOLIO, "route2")
-    assert reply.data["no_answer"] and "don't have a lesson" in reply.text
+    reply = orch.handle(question, DEFAULT_PORTFOLIO, "route2")
+    assert reply.intent == "help" and reply.data["no_answer"]
+
+
+@pytest.mark.parametrize("question", [
+    "is gold a good buy at this price?", "is silver a good buy this year?", "is real estate a good buy in this market?",
+    "is bitcoin a good buy, or is it a bubble?", "is there a good buy this week?", "is the stock market a good buy?",
+    "is that index fund a good buy?", "is a house a good buy at this rate?", "is Nifty a good buy at this level?",
+    "Someone told me about gold, is that a good buy?", "Gold looks cheap, would it be a good buy?",
+    "My uncle keeps talking about silver. Is that a good buy?", "and silver, is that a buy?",
+    "What about gold, would it be a decent buy?", "Gold has rallied 20%. Is it still a good buy?",
+    "is the market overbought?", "is gold overbought?", "Gold rose 10% this month, is it overbought?",
+    "Silver went up a lot, is it overbought?", "Bitcoin keeps going up, is it overbought?",
+    "Gold is up 30% this year. Is it overbought?", "what does a buy rating mean?", "explain a buy-and-hold strategy",
+    "how does a buy stop order work?", "is a buy-back good for shareholders?", "should I invest in ELSS?", "is PEER a good buy?",
+    "PEER dropped 8% today. Is it a good buy?", "should I hold on to PEER?", "is PEER overbought?",
+])
+def test_a_question_about_another_subject_is_not_answered_for_the_stock_in_the_session(orch, monkeypatch, question):
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "other")
+    text = orch.handle(question, DEFAULT_PORTFOLIO, "other").text
+    assert "TEST" not in text and "Test Industries" not in text
+
+
+@pytest.mark.parametrize("question", ["is it a good buy?", "is this a buy?"])
+def test_a_buy_question_about_the_stock_in_the_session_gets_its_verdict(orch, question):
+    orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "follow-up")
+    reply = orch.handle(question, DEFAULT_PORTFOLIO, "follow-up")
+    assert reply.intent == "should_buy" and reply.text.startswith("TEST:")
+
+
+@pytest.mark.parametrize("label", ["knowledge", "a dividend is a share of profit"])   # a reply that is no label is ignored
+def test_a_finance_word_without_a_lesson_still_says_we_have_no_entry(orch, monkeypatch, label):
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker(label))
+    reply = orch.handle("what is a dividend?", DEFAULT_PORTFOLIO, "route4")
+    assert reply.intent == "knowledge" and "don't have a lesson" in reply.text
 
 
 def test_chat_works_without_a_language_model(orch, monkeypatch):

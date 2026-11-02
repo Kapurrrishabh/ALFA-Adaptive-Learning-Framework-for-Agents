@@ -15,9 +15,11 @@ the list and nothing else. Pick the label whose description comes closest, even 
 indirect. Reply NONE only when the question is not about investing, markets, money or the user's holdings at all."""
 
 
-def choose(question: str, options: Dict[str, str], writer) -> Optional[str]:
-    """The label whose description fits `question`, or None when the LM declines or misbehaves."""
+def choose(question: str, options: Dict[str, str], writer, declined: str) -> Optional[str]:
+    """The label whose description fits `question`, `declined` when the LM says none fits, or None when it misbehaves."""
     listed = "\n".join(f"{name}: {what}" for name, what in options.items())
     reply = writer.create(SYSTEM, [{"role": "user", "content": f"{listed}\n\nQuestion: {question}\nLabel:"}])
     answer = writer.text(reply).strip().strip(".:`'\"").lower()
+    if answer == "none":
+        return declined
     return answer if answer in options else None
