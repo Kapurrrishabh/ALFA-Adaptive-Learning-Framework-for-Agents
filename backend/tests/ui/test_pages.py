@@ -3,11 +3,12 @@ the search box, the theme toggle, the shared dialog, toasts, and error and empty
 or screen reader user gets."""
 import re
 
+import httpx
 import pytest
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="Playwright is not installed: pip install -e '.[dev]'")
 
-from .conftest import KEY  # noqa: E402
+from .conftest import KEY, RUN_REQUESTS  # noqa: E402
 
 pytestmark = pytest.mark.ui
 WIDTHS = [390, 800, 1366]   # provisional: a phone, the nav breakpoint itself, a laptop
@@ -17,7 +18,8 @@ SECTIONS = ["Home", "Markets", "Portfolio", "Ask", "Learn"]
 NO_PAGE = ["nowhere", "stock", "stock/%E0%A4"]
 PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signals", "builder", "chat", "learn",
          "performance", "reports", *NO_PAGE]
-# Chrome logs a failed fetch without its address, so failures are read from the responses; an API 404 is how a missing model shows up
+# Chrome logs a failed fetch without its address, so failures are read from the responses; an API 404 is how a missing model shows up,
+# and a 429 means the run outgrew the test key's rate limit, which otherwise shows only as a click that times out
 UNNAMED_FETCH_ERROR = "Failed to load resource"
 LONG_NAME = "Parag Parikh Flexi Cap Fund Direct Plan Growth"
 EMOJI = re.compile("[\u2600-\u27bf\U0001f300-\U0001faff]")
@@ -35,7 +37,7 @@ class Tab:
         self.page.on("requestfailed", self._ended)
         self.page.on("pageerror", lambda e: self.errors.append(str(e)))
         self.page.on("console", lambda m: self.errors.append(m.text) if m.type == "error" and not m.text.startswith(UNNAMED_FETCH_ERROR) else None)
-        self.page.on("response", lambda r: self.errors.append(f"{r.status} {r.url}") if r.status >= 500 or (r.status >= 400 and "/static/" in r.url) else None)
+        self.page.on("response", lambda r: self.errors.append(f"{r.status} {r.url}") if r.status >= 500 or r.status == 429 or (r.status >= 400 and "/static/" in r.url) else None)
         self.page.goto(f"{base_url}/#key={KEY}")
         self.settle()
 
@@ -727,6 +729,12 @@ def test_a_saved_key_that_is_not_a_key_asks_to_sign_in(browser, base_url):
 def test_a_rate_limit_shows_the_servers_words_with_the_limit(browser, base_url):
     limit = "rate limit of 120 requests/minute exceeded"
     assert limit in explore_answered_with(browser, base_url, status=429, json={"detail": limit}).page.inner_text("#view")
+
+
+def test_the_shared_test_key_is_never_refused_in_a_whole_runs_requests(base_url):
+    with httpx.Client(base_url=base_url, headers={"X-API-Key": KEY}) as client:
+        codes = {client.get("/search", params={"q": "TE"}).status_code for _ in range(RUN_REQUESTS)}
+    assert codes == {200}
 
 
 def test_two_toasts_do_not_overlap(browser, base_url):
