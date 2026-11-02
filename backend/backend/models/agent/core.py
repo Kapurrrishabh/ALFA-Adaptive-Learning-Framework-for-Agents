@@ -26,8 +26,10 @@ The first two of those five are also where a **reference** answer gets its chanc
 routed intent whose answer is a refusal. A question naming no instrument, one the router cannot place, or
 one it placed as asking for a figure we do not hold, is not necessarily a question we hold nothing on -- it
 is one the price snapshot cannot answer. So before any of those three refusals is returned, `reference` is
-asked to find it in the documents. Those three and nowhere else on purpose: an intent the router placed on
-a figure we do have is answered from that figure, because that is the path whose faithfulness is measured.
+asked to find it in the documents. Beyond those three, only a question about what happened lately, or one the
+router is sure asks how the price moved, reads the dated sources first (`Reference.asks_lately`), and that
+answer opens with the price files' own figures in a sentence of ours. Any other intent the router placed on a
+figure we do have is answered from that figure, because that is the path whose faithfulness is measured.
 With no `reference` given, all three refuse exactly as they did before it existed.
 """
 
@@ -97,12 +99,13 @@ class Agent:
                     or self._quiet(question, self.domain.NO_SUBJECT, "no subject"))
 
         route = self.router.route(self.domain.without_subject(question, ticker))
-        if self.reference is not None and self.reference.asks_lately(question, route.label == self.domain.MOVES):
-            looked = self._looked_up(question, as_of, ticker=ticker, margin=route.margin)
+        sure = bool(self.gate.answers([route.margin])[0])
+        if self.reference is not None and self.reference.asks_lately(question, route.label == self.domain.MOVES, sure):
+            looked = self._looked_up(question, as_of, ticker=ticker, margin=route.margin, lately=True)
             if looked is not None:
                 return looked
 
-        if not bool(self.gate.answers([route.margin])[0]):
+        if not sure:
             return (self._looked_up(question, as_of, ticker=ticker, margin=route.margin)
                     or self._quiet(question, self.domain.UNKNOWN_QUESTION, "unclear question",
                                    ticker=ticker, margin=route.margin))
@@ -140,7 +143,7 @@ class Agent:
                     written, evidence, confidence, self._stated(confidence), speaks, route.margin,
                     unsupported, because, taken_at, phrased.by, phrased.because)
 
-    def _looked_up(self, question, as_of, ticker="", margin=float("nan")):
+    def _looked_up(self, question, as_of, ticker="", margin=float("nan"), lately=False):
         """A turn read out of the documents, or None when there is nothing to read one from.
 
         None, not a refusal, so a caller that gets nothing back still returns the refusal it already had.
@@ -161,7 +164,7 @@ class Agent:
         try:
             looked = self.reference.look_up(question, as_of,
                                             self.market.subject(ticker) if ticker else None,
-                                            self.market.snapshot(ticker, as_of) if ticker else None)
+                                            self.market.snapshot(ticker, as_of) if ticker else None, lately)
         except SearchFailed as error:
             # A refusal rather than nothing, and a different refusal from the trained one: the documents
             # would have been asked and were not, so saying "i am not sure what you are asking" would
@@ -172,14 +175,14 @@ class Agent:
             return None
         # Checked once something was found, so a question nothing matched keeps the refusal it always had:
         # 519,135 general passages answer "write me a poem about the sea" out of The Lusiads otherwise.
-        if not ticker and not self.domain.about_money(question):
+        if not ticker and not self.domain.about_money(question, looked.lesson):
             return self._quiet(question, self.domain.OFF_TOPIC, "not about money", margin=margin)
         if looked.how == UNANSWERED:
             return self._quiet(question, self.domain.NOT_IN_SOURCES, "sources do not answer it", ticker=ticker,
                                evidence=looked.evidence, margin=margin, as_of=looked.day or None)
         return Turn(question, question, ticker, f"{REFERENCE} {looked.how}", looked.served,
                     looked.answer, looked.evidence, looked.confidence, None, True, margin,
-                    looked.unsupported, "", looked.day or None, looked.phrased_by, looked.unphrased_because)
+                    looked.unsupported, looked.unread, looked.day or None, looked.phrased_by, looked.unphrased_because)
 
     def _stated(self, confidence):
         """The chance of being right, in the units B3 fitted. None until a calibrator has been fitted."""
