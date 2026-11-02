@@ -390,10 +390,16 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     @app.get("/portfolio/funds")
     def portfolio_funds(owner: str = Depends(auth)):
         from backend.database.sources import amfi
-        txs = orch.store.fund_transactions(owner)
-        # with no funds the page must not wait on, or fail with, AMFI's daily download
-        schemes = {s.code: s for s in amfi.schemes()} if txs else {}
-        return ok({**funds.holdings(txs, schemes), "transactions": txs, "source": amfi.NAV_SOURCE})
+        from dataclasses import asdict
+        txs, schemes = orch.store.fund_transactions(owner), {}
+        try:
+            # with no funds the page must not wait on, or fail with, AMFI's daily download
+            schemes = {s.code: s for s in amfi.schemes()} if txs else {}
+            valued = {**funds.holdings(txs, schemes), "valuation_error": None}
+        except DataUnavailable as exc:      # the transactions still list, so a fund AMFI dropped can be deleted
+            valued = {"valuation_error": str(exc)}
+        named = [{**t, "scheme": asdict(schemes[t["scheme_code"]]) if t["scheme_code"] in schemes else None} for t in txs]
+        return ok({**valued, "transactions": named, "source": amfi.NAV_SOURCE})
 
     @app.post("/portfolio/funds/transactions")
     def add_fund_transaction(tx: FundTransactionIn, owner: str = Depends(auth)):

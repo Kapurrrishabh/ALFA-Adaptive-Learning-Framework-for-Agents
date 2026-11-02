@@ -74,7 +74,7 @@ def build_positions(transactions: Sequence[Transaction]) -> Dict[str, Position]:
         held = sum(l[0] for l in q)
         if tx.quantity > held + 1e-9:
             raise ValueError(f"SELL of {tx.quantity} {tx.symbol} on {tx.trade_date} exceeds the "
-                             f"{held} shares held; fix the transaction history")
+                             f"{held} held; fix the transaction history")
         remaining = tx.quantity
         proceeds_per_share = tx.price - tx.fees / tx.quantity
         while remaining > 1e-12:

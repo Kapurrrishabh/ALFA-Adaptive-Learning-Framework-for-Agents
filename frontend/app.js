@@ -115,14 +115,15 @@ const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v
     box.classList.toggle("open", items.length > 0); q.setAttribute("aria-expanded", String(items.length > 0));
     if (sel >= 0) q.setAttribute("aria-activedescendant", `suggest-${sel}`); else q.removeAttribute("aria-activedescendant");
   };
-  const ask = (kind, path, v, rows) => api(path + encodeURIComponent(v)).then((r) => { found[kind] = { for: v, rows: rows(r) }; if (v === q.value.trim()) { sel = -1; draw(); } });
+  const ask = (kind, path, v, rows) => api(path + encodeURIComponent(v)).then((r) => { if (v === q.value.trim()) { found[kind] = { for: v, rows: rows(r) }; sel = -1; draw(); } });
   q.addEventListener("input", () => {
     clearTimeout(timer);
     const v = q.value.trim(); if (!v) { items = []; return close(); }
     timer = setTimeout(() => {
       ask("stocks", "/ui/search?q=", v, (r) => r).catch((e) => { if (v === q.value.trim()) toast(`Search failed: ${errorWords(e)}`); });
-      // a 400 is a query too short to find a fund by; the stocks still show
-      ask("funds", "/ui/funds/search?q=", v, (r) => r.funds).catch((e) => { if (v === q.value.trim() && e.status !== 400) toast(`Fund search failed: ${errorWords(e)}`); });
+      // a 400 is a query too short to find a fund by and a 404 is AMFI's file out of reach; the stocks still show,
+      // and the search page says why
+      ask("funds", "/ui/funds/search?q=", v, (r) => r.funds).catch((e) => { if (v === q.value.trim() && e.status !== 400 && e.status !== 404) toast(`Fund search failed: ${errorWords(e)}`); });
     }, 150);
   });
   q.addEventListener("keydown", (e) => {
@@ -780,6 +781,32 @@ const stockRow = (r, right) => h("a", { href: `#/stock/${encodeURIComponent(r.sy
     h("div", { style: "min-width:0" }, h("div", { class: "t" }, r.name || r.symbol), h("div", { class: "s" }, r.symbol))),
   h("div", { class: "right" }, right));
 const priceChange = (price, chgPct) => [h("div", { class: "num" }, inr(price)), h("div", { class: `num ${cls(chgPct)}`, style: "font-size:12.5px" }, pct(chgPct))];
+const fundHref = (code) => `#/fund/${encodeURIComponent(code)}`;
+const planName = (p) => [p.plan, p.option].filter(Boolean).join(" · ") || "AMFI names no plan";
+// a search hit is a fund with its plans, best first, so the row opens the first plan
+const fundRow = (f) => h("a", { href: fundHref(f.plans[0].code) },
+  h("div", { style: "min-width:0" }, h("div", { class: "t" }, f.fund), h("div", { class: "s" }, `${f.amc} · ${f.category}`)),
+  h("div", { class: "right muted" }, `${f.plans.length} ${f.plans.length === 1 ? "plan" : "plans"}`));
+function fundsCard(ctx, held) {
+  const stat = ([k, v]) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v num" }, v));
+  const valued = () => [h("div", { class: "grid cols-4" }, ...[["Invested", inr(held.invested)], ["Value", inr(held.value)], ["Returns", `${inr(held.gain)} (${pct(held.gain_pct)})`]].map(stat)),
+    held.holdings.length ? h("div", { class: "table-wrap" }, h("table", {},
+    h("tr", {}, h("th", {}, "Fund"), h("th", { class: "r" }, "Units"), h("th", { class: "r" }, "Avg / NAV"), h("th", { class: "r" }, "Value"), h("th", { class: "r" }, "Returns")),
+    ...held.holdings.map((x) => h("tr", {}, h("td", {}, h("div", { class: "t" }, h("a", { href: fundHref(x.code) }, x.fund)), h("div", { class: "s" }, `${planName(x)} · NAV on ${x.nav_date}`)),
+      h("td", { class: "r num" }, num(x.units, 3)), h("td", { class: "r num" }, h("div", {}, inr(x.avg_nav, 4)), h("div", { class: "muted" }, inr(x.nav, 4))),
+      h("td", { class: "r num" }, inr(x.value, 0)), h("td", { class: `r num ${cls(x.gain)}` }, h("div", {}, inr(x.gain, 0)), h("div", {}, pct(x.gain_pct))))))) : h("p", { class: "muted" }, "You hold no fund units now.")];
+  // AMFI names only the schemes it still lists
+  const name = (t) => t.scheme ? t.scheme.fund : `Code ${t.scheme_code}`;
+  const txs = h("table", {}, h("tr", {}, h("th", {}, "Date"), h("th", {}, "Fund"), h("th", {}, "Type"), h("th", { class: "r" }, "Units"), h("th", { class: "r" }, "NAV"), h("th", {})),
+    ...held.transactions.map((t) => h("tr", {}, h("td", {}, t.trade_date), h("td", {}, t.scheme ? [h("div", { class: "t" }, h("a", { href: fundHref(t.scheme_code) }, name(t))), h("div", { class: "s" }, planName(t.scheme))] : name(t)), h("td", { class: t.side === "BUY" ? "up" : "down" }, t.side),
+      h("td", { class: "r num" }, num(t.units, 3)), h("td", { class: "r num" }, inr(t.nav, 4)),
+      h("td", { class: "r" }, h("button", { class: "btn small", onclick: () => Dialog(ctx, "Delete this fund transaction?", `${t.side} ${num(t.units, 3)} units of ${name(t)} at ${inr(t.nav, 4)} on ${t.trade_date}.`,
+        ["Delete", async () => { await api(`/portfolio/funds/transactions/${t.id}`, { method: "DELETE" }); route(); }]) }, "Delete")))));
+  return h("div", { class: "card" }, h("h3", {}, held.valuation_error == null ? `Mutual funds (${held.holdings.length})` : "Mutual funds"),
+    held.valuation_error == null ? valued() : h("p", {}, `Your funds cannot be valued now: ${held.valuation_error}.`),
+    h("h3", { style: "margin-top:16px" }, "Fund transactions"), txs,
+    h("p", { class: "muted", style: "font-size:12px" }, `${held.valuation_error == null ? `Valued at each fund's latest NAV from ${held.source}. ` : ""}To add a fund, search for it and press “Add to portfolio” on its page.`));
+}
 const onOurSide = (e) => !e.status || e.status >= 500;
 function errorWords(e) {
   return e.status === 401 ? "Please sign in." : e.status === 403 ? "Confirm your email first." : onOurSide(e) ? "Something went wrong on our side." : e.message;
@@ -1045,20 +1072,28 @@ function addTxModal(ctx, sym, price) {
 
 async function pagePortfolio(view, ctx) {
   view.append(h("div", { class: "card" }, skel(60)));
-  let p, held, rep = null;
-  try { [p, held] = await Promise.all([api("/portfolio", { signal: ctx.signal }).catch((e) => { if (e.status === 404) return null; throw e; }), api("/portfolio/funds", { signal: ctx.signal })]); }
-  catch (e) { view.replaceChildren(ErrorState(e, route)); return; }
+  // asked apart: AMFI's first download of the day can take 40 s, and a funds failure must not hide the stocks
+  const asked = api("/portfolio/funds", { signal: ctx.signal }).then((f) => ({ f }), (e) => ({ e }));
+  const funds = h("div", { class: "card" }, h("h3", {}, "Mutual funds"), skel(60));
+  const showFunds = ({ f, e }) => e ? showCardError(funds)(e) : f.transactions.length ? funds.replaceWith(fundsCard(ctx, f)) : funds.remove();
+  let p, rep = null;
+  try { p = await api("/portfolio", { signal: ctx.signal }); } catch (e) { if (e.status !== 404) { view.replaceChildren(ErrorState(e, route)); return; } }
   const addStock = (words) => h("button", { class: "btn primary", onclick: () => addTxModal(ctx, "", null) }, words);
   if (!p || !p.transactions.length) {
-    view.replaceChildren(...held.transactions.length ? [fundsCard(ctx, held), h("div", { class: "row", style: "margin-top:18px" }, addStock("+ Add a stock"))]
-      : [EmptyState("pie", "Your portfolio is empty", "Add the stocks you own (quantity, average price, date) to track P&L, risk and get sell signals. To add a mutual fund, search for it and add it from its page.", addStock("+ Add your first stock"))]);
+    const held = await asked;
+    if (held.f && !held.f.transactions.length) {
+      view.replaceChildren(EmptyState("pie", "Your portfolio is empty", "Add the stocks you own (quantity, average price, date) to track P&L, risk and get sell signals. To add a mutual fund, search for it and add it from its page.", addStock("+ Add your first stock")));
+      return;
+    }
+    view.replaceChildren(funds, h("div", { class: "row", style: "margin-top:18px" }, addStock("+ Add a stock"), p ? h("span", { class: "muted" }, `Cash: ${inr(p.cash)}`) : null));
+    showFunds(held);
     return;
   }
   try { rep = await api("/portfolio/analysis", { signal: ctx.signal }); } catch (e) { view.replaceChildren(ErrorState(e, route)); return; }
-  const upl = rep.unrealized_pl;
+  const upl = rep.unrealized_pl, withFunds = h("div", { class: "muted" }), stocksOnly = h("div");
   const summary = h("div", { class: "card" }, h("div", { class: "spread" }, h("div", {}, h("div", { class: "muted" }, "Current value"), h("div", { class: "price num" }, inr(rep.total_value)),
     h("div", { class: `num ${cls(upl)}`, style: "font-weight:600" }, `${upl > 0 ? "+" : ""}${inr(upl)} (${pct(rep.unrealized_pl_pct)}) total returns`),
-    held.transactions.length ? h("div", { class: "muted" }, `Stocks and cash. With your mutual funds: ${inr(rep.total_value + held.value)}`) : null),
+    withFunds),
     h("div", { class: "row" }, h("button", { class: "btn", onclick: () => addTxModal(ctx, "", null) }, "+ Add transaction"), h("a", { class: "btn primary", href: "#/signals" }, "What should I do?"))),
     h("div", { class: "grid cols-4", style: "margin-top:16px" }, ...[["Invested", inr(rep.cost_basis)], ["Cash", inr(rep.cash)], ["Realised P&L", inr(rep.realized_pl)], ["Last 5 sessions", `${inr(rep.week_change.total_change_value)} (${pct(rep.week_change.total_change_pct)})`]]
       .map(([k, v]) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v num" }, v)))));
@@ -1086,15 +1121,20 @@ async function pagePortfolio(view, ctx) {
       h("span", { class: "k" }, "Beta to Nifty"), h("span", { class: "num" }, num(r.beta)),
       h("span", { class: "k" }, "Effective holdings"), h("span", { class: "num" }, num(rep.concentration.effective_holdings, 1)),
       h("span", { class: "k" }, "Biggest risk source"), h("span", {}, Object.entries(r.risk_contribution_pct || {}).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, v]) => `${k} ${num(v, 0)}%`).join(", "))) : h("p", { class: "muted" }, r.note || "Not enough history yet."),
-    held.transactions.length ? h("p", { class: "muted" }, "These risk figures cover your stocks only.") : null,
+    stocksOnly,
     rep.flags.length ? h("ul", { class: "checks con", style: "margin-top:12px" }, ...rep.flags.map((f) => h("li", {}, f))) : h("p", { class: "up" }, "No concentration or volatility flags."));
   const txs = h("div", { class: "card" }, h("h3", {}, "Transactions"), h("table", {},
     h("tr", {}, h("th", {}, "Date"), h("th", {}, "Stock"), h("th", {}, "Type"), h("th", { class: "r" }, "Qty"), h("th", { class: "r" }, "Price"), h("th", {})),
     ...p.transactions.map((t, i) => h("tr", {}, h("td", {}, t.trade_date), h("td", {}, t.symbol), h("td", { class: t.side === "BUY" ? "up" : "down" }, t.side), h("td", { class: "r num" }, num(t.quantity, 0)), h("td", { class: "r num" }, inr(t.price)),
       h("td", { class: "r" }, h("button", { class: "btn small", onclick: () => Dialog(ctx, "Delete this transaction?", `${t.side} ${num(t.quantity, 0)} ${t.symbol} at ${inr(t.price)} on ${t.trade_date}.`,
         ["Delete", async () => { await api(`/portfolio/transactions/${i}`, { method: "DELETE" }); route(); }]) }, "Delete"))))));
-  view.replaceChildren(summary, h("div", { style: "margin-top:18px" }, histCard), h("div", { class: "grid cols-2", style: "margin-top:18px" }, h("div", { class: "grid" }, holdings, held.transactions.length ? fundsCard(ctx, held) : null, txs), h("div", { class: "grid", style: "align-content:start" }, alloc, risk)),
+  view.replaceChildren(summary, h("div", { style: "margin-top:18px" }, histCard), h("div", { class: "grid cols-2", style: "margin-top:18px" }, h("div", { class: "grid" }, holdings, funds, txs), h("div", { class: "grid", style: "align-content:start" }, alloc, risk)),
     h("p", { class: "footer-note" }, `As of ${rep.as_of}. ${rep.assumptions.join(" ")}`));
+  const held = await asked;
+  showFunds(held);
+  if (!held.f || !held.f.transactions.length) return;
+  stocksOnly.append(h("p", { class: "muted" }, "These risk figures cover your stocks only."));
+  if (held.f.valuation_error == null) withFunds.append(`Stocks and cash. With your mutual funds: ${inr(rep.total_value + held.f.value)}`);
 }
 
 async function pageSignals(view, ctx) {

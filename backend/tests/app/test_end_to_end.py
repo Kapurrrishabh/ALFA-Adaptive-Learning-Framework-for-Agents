@@ -1979,7 +1979,7 @@ def test_a_fund_code_that_is_not_a_number_is_refused_before_any_download(app_cli
     from backend.database.sources import amfi
     asked = []
     monkeypatch.setattr(amfi, "_download", asked.append)
-    assert (app_client.get("/ui/funds/..%2Fx").status_code, asked) == (404, [])
+    assert (app_client.get("/ui/funds/abc").status_code, asked) == (422, [])
 
 
 def test_learn_titles_the_fund_lessons(app_client):
@@ -2022,6 +2022,33 @@ def test_a_portfolio_with_no_funds_is_served_while_amfi_is_down(app_client, fund
     from backend.database.sources import amfi
     del funds_served[amfi.NAV_URL]
     assert app_client.get("/portfolio/funds").json()["holdings"] == []
+
+
+def hold_funds(orch, accounts, transactions):
+    """Written straight to the store: the route would ask AMFI, and refuses a code AMFI does not list now."""
+    orch.save_portfolio(owner(accounts), 0.0, "moderate", "medium", [])
+    orch.store.save_fund_transactions(owner(accounts), transactions)
+
+
+def test_held_funds_are_listed_with_the_reason_while_amfi_is_down(app_client, orch, accounts, funds_served):
+    from backend.database.sources import amfi
+    del funds_served[amfi.NAV_URL]
+    hold_funds(orch, accounts, [FUND_BUY])
+    r = app_client.get("/portfolio/funds")
+    assert (r.status_code, len(r.json()["transactions"]), "could not download" in r.json()["valuation_error"]) == (200, 1, True)
+
+
+def test_a_held_fund_amfi_no_longer_lists_is_named_in_the_error_and_can_be_deleted(app_client, orch, accounts, funds_served):
+    hold_funds(orch, accounts, [{**FUND_BUY, "scheme_code": 999999}])
+    r = app_client.get("/portfolio/funds").json()
+    assert "999999" in r["valuation_error"]
+    assert app_client.delete(f"/portfolio/funds/transactions/{r['transactions'][0]['id']}").status_code == 200
+
+
+def test_a_fund_transaction_carries_its_schemes_name(app_client, funds_served):
+    app_client.post("/portfolio/funds/transactions", json=FUND_BUY)
+    tx = app_client.get("/portfolio/funds").json()["transactions"][0]
+    assert (tx["scheme"]["fund"], tx["scheme"]["plan"]) == ("HDFC Mid Cap Fund", "Direct Plan")
 
 
 def test_the_stock_report_is_unchanged_by_funds(app_client, funds_served):

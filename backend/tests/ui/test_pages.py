@@ -776,7 +776,39 @@ def test_a_fund_added_from_its_page_shows_in_the_portfolio_and_its_total(browser
     try:
         tab.go("#/portfolio")
         view = tab.page.inner_text("#view")
-        assert "Mutual funds (1)" in view and "₹2,105.12" in view and "With your mutual funds:" in view
+        total = tab.context.request.get(f"{base_url}/portfolio/analysis").json()["total_value"] + 2105.12
+        assert "Mutual funds (1)" in view and f"With your mutual funds: {tab.page.evaluate('(v) => inr(v)', total)}" in view
     finally:       # the other tests share this user's portfolio
         for tx in tab.context.request.get(f"{base_url}/portfolio/funds").json()["transactions"]:
             tab.context.request.delete(f"{base_url}/portfolio/funds/transactions/{tx['id']}")
+
+
+def test_the_stocks_show_while_the_funds_are_still_loading(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    held = []
+    tab.page.route("**/portfolio/funds", lambda route: held.append(route))
+    tab.page.evaluate("location.hash = '#/portfolio'")
+    tab.page.wait_for_selector("#view table a[href='#/stock/TEST']")
+    assert len(held) == 1
+    held[0].continue_()
+
+
+def test_a_funds_failure_shows_in_the_funds_card_and_leaves_the_stocks(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    tab.page.route("**/portfolio/funds", lambda route: route.fulfill(status=503, json={"detail": "AMFI is down"}))
+    tab.go("#/portfolio")
+    card = tab.page.locator("#view .card", has=tab.page.locator("h3", has_text="Mutual funds"))
+    assert "Something went wrong on our side." in card.inner_text()
+    assert tab.page.locator("#view table a[href='#/stock/TEST']").count() == 1
+
+
+def test_a_fund_amfi_no_longer_lists_stays_deletable_beside_the_stocks(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    gone = {"valuation_error": "AMFI's NAV file has no NAV in the last 7 days for the schemes [999999] you hold",
+            "transactions": [{"id": 1, "scheme_code": 999999, "side": "BUY", "units": 10, "nav": 200.0, "fees": 0.0,
+                              "trade_date": "2025-01-02", "scheme": None}], "source": "AMFI"}
+    tab.page.route("**/portfolio/funds", lambda route: route.fulfill(json=gone))   # the shape GET /portfolio/funds gives
+    tab.go("#/portfolio")
+    card = tab.page.locator("#view .card", has=tab.page.locator("h3", has_text="Mutual funds"))
+    assert ("[999999]" in card.inner_text(), card.locator("button", has_text="Delete").count()) == (True, 1)
+    assert tab.page.locator("#view table a[href='#/stock/TEST']").count() == 1
