@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from tests.app.conftest import EMAIL, PASSWORD, SECRET, FakeGoogle, Outbox
+from tests.app.test_portfolio_backtest import NSE_FILES
 
 RUN_REQUESTS = 700   # provisional: signed-in requests the pages sent in one full browser run (683 on 2026-11-01, 676 on 2026-11-02, 665 with 360 px added); recount when the suite grows
 STOCKS = pd.DataFrame({"symbol": ["TEST", "PEER"], "name": ["Test Industries Ltd.", "Peer Power Ltd."],
@@ -63,7 +64,7 @@ def base_url(tmp_path_factory, outbox):
     from backend.api.app import create_app
     from backend.api.orchestrator import Orchestrator
     from backend.config import resolve_symbol
-    from backend.database.sources import insider
+    from backend.database.sources import insider, panel
     from backend.database.sources.panel import panel_from_frames
     from backend.database.sources.provider import DataUnavailable
     from backend.database.sources.synthetic import SyntheticProvider
@@ -93,6 +94,11 @@ def base_url(tmp_path_factory, outbox):
         mp.setattr(alfa_fan, "WEIGHTS", missing / "alfa.npz")
         mp.setattr(gru_line, "WEIGHTS", missing / "path_gru.npz")
         mp.setattr(insider, "load", no_insider)
+        lists = tmp_path_factory.mktemp("nse-lists")     # NSE's lists, for the import preview, as if downloaded today
+        for name, url in panel.NSE_LISTS.items():
+            if url.rsplit("/", 1)[1] in NSE_FILES:
+                (lists / f"{name}.csv").write_text(NSE_FILES[url.rsplit("/", 1)[1]])
+        mp.setattr(panel, "CACHE_DIR", lists)
         mp.setattr(api_mod, "RATE_PER_MIN", 20 * RUN_REQUESTS)   # every tab signs in as one user, so all share its one bucket: 10x a run's requests
         # every browser tab signs in as the same user, and all of them from 127.0.0.1
         mp.setattr(api_mod, "SIGN_INS_PER_MIN", 10_000)

@@ -81,7 +81,8 @@ const safeNext = (next) => /^#\/(?!\/)/.test(next || "") ? next : "#/home";
 const signInHash = () => "#/signin?next=" + encodeURIComponent(location.hash || "#/home");
 async function api(path, opts = {}) {
   if (opts.method && opts.signal) throw new Error(`${opts.method} ${path}: a write is never cancelled, so it takes no signal`);
-  const res = await fetch(path, { credentials: "same-origin", ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } });
+  // a FormData body needs the browser's own Content-Type, which names the boundary between its parts
+  const res = await fetch(path, { credentials: "same-origin", ...opts, headers: { ...(opts.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...(opts.headers || {}) } });
   const body = await res.json().catch(() => ({}));
   if (res.status === 401 && me) { me = null; drawAccount(); location.replace(signInHash()); }
   const detail = Array.isArray(body.detail) ? body.detail.map((d) => d.msg).join("; ") : body.detail?.reason || body.detail;

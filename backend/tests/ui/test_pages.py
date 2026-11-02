@@ -10,6 +10,8 @@ import pytest
 sync_api = pytest.importorskip("playwright.sync_api", reason="Playwright is not installed: pip install -e '.[dev]'")
 
 from backend.paths import FRONTEND  # noqa: E402
+from tests.app.test_portfolio_backtest import HOLDING, zerodha_holdings  # noqa: E402
+
 from .conftest import EMAIL, PASSWORD, RUN_REQUESTS, sign_in  # noqa: E402
 
 pytestmark = pytest.mark.ui
@@ -18,7 +20,7 @@ AXE_WIDTHS = [390, 1366]   # every element shown at 800 px is also shown at one 
 THEMES = ["dark", "light"]
 SECTIONS = ["Home", "Markets", "Portfolio", "Ask", "Learn"]
 NO_PAGE = ["nowhere", "stock", "stock/%E0%A4"]
-PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signals", "builder", "chat", "learn",
+PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signals", "builder", "import", "chat", "learn",
          "performance", "reports", "guide", *NO_PAGE]
 SIGNED_OUT_PAGES = ["signin", "signup", "verify?token=old", "reset", "reset?token=old"]
 # Chrome logs a failed fetch without its address, so failures are read from the responses; an API 404 is how a missing model shows up,
@@ -1139,6 +1141,36 @@ def test_toasts_on_a_phone_leave_the_bottom_nav_uncovered(browser, base_url):
     tab.page.evaluate("() => { toast('Saved to portfolio'); toast('Added to your portfolio'); }")
     toasts, nav = tab.page.locator(".toasts").bounding_box(), tab.page.locator("#bnav").bounding_box()
     assert toasts["y"] + toasts["height"] <= nav["y"], (toasts, nav)
+
+
+def import_preview(browser, base_url):
+    """The import page after it checked a Zerodha holdings file built here: RELIANCE found by its ISIN, and MOVEDUP
+    to check, as its ISIN is not in NSE's lists; neither has a buy date."""
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    tab.go("#/import")
+    rows = [{**HOLDING, "Symbol": "RELIANCE", "ISIN": "INE002A01018"}, {**HOLDING, "Symbol": "MOVEDUP", "ISIN": "INE999Z01019"}]
+    tab.page.set_input_files("input[type=file]", files=[{"name": "holdings.xlsx", "buffer": zerodha_holdings(*rows),
+                                                          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}])
+    tab.page.click("button:text-is('Check this file')")
+    tab.page.get_by_role("table").wait_for(timeout=10000)
+    tab.page.get_by_label("Stock for MOVEDUP").select_option("MOVEDUP")
+    return tab
+
+
+def test_an_import_with_its_gaps_filled_sends_each_row_and_opens_the_holdings(browser, base_url):
+    tab, sent = import_preview(browser, base_url), []
+    tab.page.route("**/portfolio/import/confirm", lambda route: (sent.append(route.request.post_data_json), route.fulfill(json={"status": "saved", "transactions": 3})))
+    tab.page.get_by_label("Date for RELIANCE").fill("2024-05-02")
+    tab.page.get_by_label("Date for MOVEDUP").fill("2025-01-15")
+    tab.page.click("button:text-is('Add 2 transactions')")
+    tab.wait_until(lambda: tab.page.evaluate("location.hash") == "#/portfolio")
+    assert [(x["symbol"], x["trade_date"]) for x in sent[0]["stocks"]] == [("RELIANCE", "2024-05-02"), ("MOVEDUP", "2025-01-15")]
+
+
+def test_an_import_cannot_be_confirmed_while_a_buy_date_is_missing(browser, base_url):
+    tab = import_preview(browser, base_url)
+    tab.page.get_by_label("Date for RELIANCE").fill("2024-05-02")
+    assert tab.page.locator("button:text-is('Add 1 transaction')").is_disabled()
 
 
 def test_no_earlier_test_leaves_a_tab_open(browser):

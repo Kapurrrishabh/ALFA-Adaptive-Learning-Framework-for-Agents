@@ -30,6 +30,11 @@ def test_service_worker_caches_exactly_the_files_index_html_loads():
     assert sorted(cached) == sorted({"/"} | loaded)
 
 
+def test_the_import_template_is_read_as_our_csv_template():
+    from backend.user.portfolio import importers
+    assert importers.parse((FRONTEND / "import-template.csv").read_bytes()).source == "CSV template"
+
+
 def test_index_html_runs_no_inline_script():
     bodies = re.findall(r"<script\b[^>]*>(.*?)</script>", (FRONTEND / "index.html").read_text(), re.S)
     assert bodies and not [b for b in bodies if b.strip()]

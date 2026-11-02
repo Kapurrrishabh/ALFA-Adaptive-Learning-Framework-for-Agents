@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from backend.advisory import report as R
 from backend.user.portfolio.alerts import evaluate
 from backend.api.accounts import owner_of
-from backend.api.app import HSTS, PUBLIC_PATHS, SECURITY_HEADERS, create_app
+from backend.api.app import HSTS, PUBLIC_PATHS, SECURITY_HEADERS, SET_UP_FIRST, create_app
 from backend.config import DEFAULT_PORTFOLIO, FORECAST_DAYS
 from backend.api.orchestrator import Orchestrator
 from backend.advisory.calculators.screener import screen
@@ -22,6 +22,7 @@ from backend.database.sources import synthetic
 from .conftest import EMAIL, END, NOW, PASSWORD, PUBLIC_URL, sign_in
 from .test_funds import NAV_TEXT, growing, mfapi_json
 from .test_nlu_llm import _Picker
+from .test_portfolio_backtest import HOLDING, PASSWORD as PDF_PASSWORD, PDF, casparser, nse_directory, zerodha_holdings  # noqa: F401
 
 ORACLE = Path(__file__).resolve().parents[3] / "deploy" / "oracle"
 SERVE_NEEDS = ["STOCKINTEL_AUTH_SECRET", "STOCKINTEL_PUBLIC_URL"]
@@ -1240,6 +1241,80 @@ def test_builder_leaves_out_excluded_sectors_and_rejects_bad_input(app_client):
     assert "PEER" not in [x["symbol"] for x in b["holdings"]]
     assert app_client.get("/ui/builder?capital=500").status_code == 422
     assert app_client.get("/ui/builder?capital=100000&n=2").status_code == 422
+
+
+RELIANCE_HELD = {**HOLDING, "Symbol": "RELIANCE", "ISIN": "INE002A01018", "Quantity Available": 4}
+SET_UP = {"cash": 1000, "risk_profile": "moderate", "horizon": "medium"}
+IMPORTED = {"symbol": "RELIANCE", "side": "BUY", "quantity": 4, "price": 1300, "trade_date": "2026-06-30"}
+
+
+def preview(client, data, password=""):
+    return client.post("/portfolio/import/preview", files={"file": ("statement", data)}, data={"password": password})
+
+
+def test_an_import_preview_counts_found_checked_and_unknown_rows(orch, accounts, nse_directory):
+    unlisted_isin = {**RELIANCE_HELD, "ISIN": "INE999Z01019"}
+    unknown = {**RELIANCE_HELD, "Symbol": "GONE", "ISIN": "INE999Z01019"}
+    r = preview(signed_in_client(orch, accounts), zerodha_holdings(RELIANCE_HELD, unlisted_isin, unknown)).json()
+    assert (r["source"], r["as_of"], r["counts"]) == ("Zerodha holdings", "2026-06-30",
+                                                      {"matched": 1, "check": 1, "not_found": 1})
+
+
+def test_an_import_preview_gives_the_shares_already_held_of_each_found_stock(orch, accounts, nse_directory):
+    client = signed_in_client(orch, accounts)
+    client.post("/portfolio", json={**SET_UP, "transactions": [{**IMPORTED, "quantity": 7}]})
+    assert preview(client, zerodha_holdings(RELIANCE_HELD)).json()["held"] == {"RELIANCE": 7}
+
+
+def test_an_anonymous_import_preview_gets_401(orch, accounts, nse_directory):
+    r = preview(TestClient(create_app(orch, accounts), base_url=PUBLIC_URL), zerodha_holdings(RELIANCE_HELD))
+    assert (r.status_code, r.json()) == UNAUTHORIZED
+
+
+def test_an_import_file_over_the_upload_limit_gets_413(orch, accounts, monkeypatch):
+    monkeypatch.setattr("backend.api.app.MAX_UPLOAD", 100)
+    assert preview(signed_in_client(orch, accounts), b"x" * 101).status_code == 413
+
+
+def test_a_pdf_import_without_the_cas_reader_gets_501(orch, accounts, casparser):
+    casparser(None)
+    assert preview(signed_in_client(orch, accounts), PDF, PDF_PASSWORD).status_code == 501
+
+
+def test_an_import_preview_leaves_no_file_in_the_backed_up_cache(orch, accounts, nse_directory):
+    from backend.database.sources import panel
+    before = sorted(panel.CACHE_DIR.rglob("*"))
+    preview(signed_in_client(orch, accounts), zerodha_holdings(RELIANCE_HELD))
+    assert sorted(panel.CACHE_DIR.rglob("*")) == before
+
+
+def test_a_pdf_password_never_reaches_the_logs(orch, accounts, casparser, caplog):
+    import logging
+    caplog.set_level(logging.DEBUG)
+    casparser("raise IncorrectPasswordError('Incorrect PDF password!')")
+    assert preview(signed_in_client(orch, accounts), PDF, PDF_PASSWORD).status_code == 400
+    assert PDF_PASSWORD not in caplog.text
+
+
+@pytest.mark.parametrize("mode, symbols", [("add", ["TEST", "RELIANCE"]), ("replace", ["RELIANCE"])])
+def test_an_import_confirm_adds_to_or_replaces_the_transactions(orch, accounts, mode, symbols):
+    client = signed_in_client(orch, accounts)
+    client.post("/portfolio", json={**SET_UP, "transactions": [
+        {"symbol": "TEST", "side": "BUY", "quantity": 5, "price": 100, "trade_date": "2025-06-02"}]})
+    assert client.post("/portfolio/import/confirm", json={"mode": mode, "stocks": [IMPORTED]}).status_code == 200
+    assert [t["symbol"] for t in orch.store.portfolio(owner(accounts))["transactions"]] == symbols
+
+
+def test_an_import_that_sells_more_than_is_held_gets_400_and_writes_nothing(orch, accounts):
+    client = signed_in_client(orch, accounts)
+    client.post("/portfolio/cash", json=SET_UP)
+    r = client.post("/portfolio/import/confirm", json={"mode": "add", "stocks": [{**IMPORTED, "side": "SELL"}]})
+    assert r.status_code == 400 and orch.store.portfolio(owner(accounts))["transactions"] == []
+
+
+def test_an_import_confirm_before_setting_up_gets_400_and_writes_nothing(orch, accounts):
+    r = signed_in_client(orch, accounts).post("/portfolio/import/confirm", json={"mode": "add", "stocks": [IMPORTED]})
+    assert (r.status_code, r.json()["detail"]) == (400, SET_UP_FIRST) and orch.store.portfolio(owner(accounts)) is None
 
 
 def test_ai_forecast_says_why_when_models_are_switched_off(app_client, monkeypatch):

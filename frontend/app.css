@@ -105,6 +105,7 @@ h2 { font-size: var(--fs-lg); margin: 0 0 12px; }
 .btn.primary:hover { background: var(--brand-2); }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--brand); }
 .btn.small { padding: 5px 10px; font-size: var(--fs-xs); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
 .tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
 .tabs button { background: none; border: 0; padding: 10px 12px; color: var(--muted); font-weight: 600; font-size: var(--fs-sm); border-bottom: 2px solid transparent; }
 .tabs [aria-selected="true"] { color: var(--brand); border-color: var(--brand); }
@@ -208,6 +209,7 @@ tr.link:hover { background: var(--bg-2); cursor: pointer; }
 .field [aria-invalid] { border-color: var(--down); }
 .card.auth { max-width: 460px; }
 .auth a:not(.btn) { color: var(--brand); text-decoration: underline; }
+.import-sources p { overflow-wrap: anywhere; }
 .toasts { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 60; width: max-content; max-width: 92vw;
   display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .toast { background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 10px; }
