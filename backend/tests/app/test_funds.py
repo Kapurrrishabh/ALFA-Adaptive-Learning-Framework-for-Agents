@@ -206,6 +206,10 @@ def test_an_isin_held_only_in_the_reinvestment_column_finds_its_scheme():
     assert [(f["fund"], [p["code"] for p in f["plans"]]) for f in hit] == [("Nippon India Corporate Bond Fund", [109472])]
 
 
+def test_a_schemes_plans_are_every_plan_of_its_fund_in_search_order():
+    assert [p["code"] for p in amfi.plans(CURRENT, by_code(105759))] == [118989, 118990, 105758, 105759]
+
+
 @pytest.mark.parametrize("query", ["", " ", "a", "--"])
 def test_a_query_too_short_to_search_is_refused(query):
     with pytest.raises(ValueError, match="at least 2 letters"):

@@ -1960,3 +1960,24 @@ def test_an_unknown_fund_code_is_a_404_that_says_how_to_find_one(app_client, fun
     r = app_client.get("/ui/funds/999999")
     assert r.status_code == 404 and "999999" in r.json()["detail"] and "/ui/funds/search" in r.json()["detail"]
 
+
+
+def test_fund_page_lists_every_plan_of_its_fund(app_client, funds_served):
+    r = app_client.get("/ui/funds/105759").json()
+    assert [p["code"] for p in r["plans"]] == [118989, 118990, 105758, 105759]
+
+
+def test_fund_page_carries_the_fund_lessons(app_client, funds_served):
+    r = app_client.get("/ui/funds/118989").json()
+    assert "Direct and regular plans" in [lesson["title"] for lesson in r["lessons"]]
+
+
+def test_a_fund_code_that_is_not_a_number_is_refused_before_any_download(app_client, funds_served, monkeypatch):
+    from backend.database.sources import amfi
+    asked = []
+    monkeypatch.setattr(amfi, "_download", asked.append)
+    assert (app_client.get("/ui/funds/..%2Fx").status_code, asked) == (404, [])
+
+
+def test_learn_titles_the_fund_lessons(app_client):
+    assert "Mutual funds and ETFs" in [t["topic"] for t in app_client.get("/ui/learn").json()]
