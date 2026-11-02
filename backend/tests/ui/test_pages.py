@@ -1,7 +1,8 @@
-"""The web app in a real browser: the navs at three widths, every page's basics, leaving a page mid-load,
+"""The web app in a real browser: the navs at four widths, every page's basics, leaving a page mid-load,
 the search box, the theme toggle, the shared dialog, toasts, and error and empty states, and what a keyboard
 or screen reader user gets."""
 import re
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -12,7 +13,7 @@ from backend.paths import FRONTEND  # noqa: E402
 from .conftest import KEY, RUN_REQUESTS  # noqa: E402
 
 pytestmark = pytest.mark.ui
-WIDTHS = [390, 800, 1366]   # provisional: a phone, the nav breakpoint itself, a laptop
+WIDTHS = [360, 390, 800, 1366]   # provisional: a small phone, a phone, the nav breakpoint itself, a laptop
 AXE_WIDTHS = [390, 1366]   # every element shown at 800 px is also shown at one of these
 THEMES = ["dark", "light"]
 SECTIONS = ["Home", "Markets", "Portfolio", "Ask", "Learn"]
@@ -24,9 +25,18 @@ PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signal
 UNNAMED_FETCH_ERROR = "Failed to load resource"
 LONG_NAME = "Parag Parikh Flexi Cap Fund Direct Plan Growth"
 EMOJI = re.compile("[\u2600-\u27bf\U0001f300-\U0001faff]")
-CUT_LABELS = """() => [...document.querySelectorAll("#view svg[viewBox] text")].filter((t) => t.getClientRects().length).flatMap((t) => {
+CUT_LABELS = """(root) => [...document.querySelectorAll(`${root} svg[viewBox] text`)].filter((t) => t.getClientRects().length).flatMap((t) => {
   const v = t.ownerSVGElement.viewBox.baseVal, b = t.getBBox(), slack = 0.5;
   return b.x < v.x - slack || b.y < v.y - slack || b.x + b.width > v.x + v.width + slack || b.y + b.height > v.y + v.height + slack ? [t.textContent] : []; })"""
+# a line chart's transparent hover area is its plot
+LINE_PLOT_SHARES = """() => [...document.querySelectorAll("#view svg[aria-label*='. Latest: ']")].map((svg) =>
+  svg.querySelector(":scope > rect[fill=transparent]").width.baseVal.value / svg.viewBox.baseVal.width)"""
+CURRENT_TAB_CUT = """() => { const tab = document.querySelector("#view .subnav [aria-current]"); if (!tab) return false;
+  const t = tab.getBoundingClientRect(), nav = tab.parentElement.getBoundingClientRect(); return t.left < nav.left || t.right > nav.right; }"""
+CUT_CHART_CONTROLS = """() => { const card = document.querySelector(".card:has(> .mode-tabs)").getBoundingClientRect();
+  return [...document.querySelectorAll(".card:has(> .mode-tabs) :is(.mode-tabs, .seg) button")].filter((b) => {
+    const r = b.getBoundingClientRect(), box = b.parentElement.getBoundingClientRect();
+    return r.left < box.left || r.right > box.right || box.left < card.left || box.right > card.right; }).map((b) => b.textContent); }"""
 
 
 class Tab:
@@ -72,6 +82,11 @@ class Tab:
             waited += 50
             assert waited < limit_ms, f"still waiting after {limit_ms} ms"
 
+    def open_every_disclosure(self):
+        """Open each <details> on the page, so what waits behind "Show details" or "Chart options" is checked too."""
+        self.page.evaluate("document.querySelectorAll('#view details').forEach((d) => { d.open = true; })")
+        self.settle()
+
 
 @pytest.fixture(scope="module")
 def browser():
@@ -91,8 +106,9 @@ def close_tabs(browser):
 
 @pytest.fixture(scope="module")
 def visits(browser, base_url):
-    """What each page showed at each width: its h1 texts, the errors it logged, whether it scrolled sideways,
-    the text of its empty states and banners, the names of its charts, and the chart labels cut off at a chart's edge."""
+    """What each page showed at each width, every disclosure open: its h1 texts, the errors it logged, whether it scrolled sideways,
+    the text of its empty states and banners, the names of its charts, the chart labels cut off at a chart's edge,
+    the share of each line chart's width its plot had, and whether its current sub-nav tab was cut off."""
     out = {}
     for width in WIDTHS:
         tab = Tab(browser, base_url, width)
@@ -100,11 +116,13 @@ def visits(browser, base_url):
         for name in PAGES:
             seen = len(tab.errors)
             tab.go(f"#/{name}")
+            tab.open_every_disclosure()
             out[(width, name)] = {"h1": tab.page.locator("h1").all_inner_texts(), "errors": tab.errors[seen:],
                                   "sideways": tab.page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"),
                                   "states": tab.page.locator("#view .empty, #view .banner").all_inner_texts(),
                                   "charts": tab.page.locator("#view svg[role=img]").evaluate_all("els => els.map((el) => el.getAttribute('aria-label'))"),
-                                  "cut": tab.page.evaluate(CUT_LABELS)}
+                                  "cut": tab.page.evaluate(CUT_LABELS, "#view"), "plots": tab.page.evaluate(LINE_PLOT_SHARES),
+                                  "tab_cut": tab.page.evaluate(CURRENT_TAB_CUT)}
         tab.context.close()
     return out
 
@@ -149,12 +167,89 @@ def test_no_chart_label_is_cut_off_at_the_chart_edge(visits, width):
     assert {name: visits[(width, name)]["cut"] for name in PAGES if visits[(width, name)]["cut"]} == {}
 
 
+@pytest.mark.parametrize("width", WIDTHS)
+def test_every_line_chart_keeps_half_its_width_for_the_plot(visits, width):
+    # PROVISIONAL: half; the names at the line ends once left a 390 px phone's plot about a third of its chart
+    shares = {name: visits[(width, name)]["plots"] for name in PAGES if visits[(width, name)]["plots"]}
+    assert shares, "no page drew a line chart, so this check cannot fail"
+    assert {name: s for name, s in shares.items() if min(s) < 0.5} == {}
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+def test_the_current_sub_nav_tab_is_in_view(visits, width):
+    assert [name for name in PAGES if visits[(width, name)]["tab_cut"]] == []
+
+
 @pytest.mark.parametrize("chart_tab", ["Technical", "Intraday", "Price & projection"])
 def test_no_stock_chart_label_is_cut_off_on_a_phone(browser, base_url, chart_tab):
     tab = Tab(browser, base_url, 390)
     tab.go("#/stock/TEST")
     show_chart_tab(tab, chart_tab)
-    assert tab.page.evaluate(CUT_LABELS) == []
+    assert tab.page.evaluate(CUT_LABELS, "#view") == []
+
+
+def test_no_label_in_show_details_is_cut_off_on_a_phone_even_with_a_one_digit_rsi(browser, base_url):
+    tab = Tab(browser, base_url, 360, service_workers="block")
+
+    def one_digit_rsi(route):
+        indicators = route.fetch().json()
+        route.fulfill(json={**indicators, "rsi": [*indicators["rsi"][:-1], 5.0]})
+    tab.page.route("**/indicators?*", one_digit_rsi)
+    tab.go("#/stock/TEST")
+    tab.open_every_disclosure()
+    assert tab.page.evaluate(CUT_LABELS, ".stock-details") == []
+
+
+@pytest.mark.parametrize("chart_tab", ["Technical", "Intraday", "Price & projection"])
+def test_every_chart_control_fits_on_a_small_phone(browser, base_url, chart_tab):
+    tab = Tab(browser, base_url, 360)
+    tab.go("#/stock/TEST")
+    show_chart_tab(tab, chart_tab)
+    assert tab.page.evaluate(CUT_CHART_CONTROLS) == []
+
+
+def test_on_a_phone_the_verdict_comes_before_the_chart(browser, base_url):
+    tab = Tab(browser, base_url, 390)
+    tab.go("#/stock/TEST")
+    verdict, chart = (tab.page.locator(card).bounding_box() for card in (".verdict", ".card:has(> .mode-tabs)"))
+    assert verdict["y"] + verdict["height"] <= chart["y"]
+
+
+def test_a_stock_page_asks_for_no_analyst_note_on_its_own(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/stock/TEST")
+    assert [url for url in tab.requests if "/analyst" in url] == []
+
+
+def test_explain_in_plain_words_asks_for_the_analyst_note(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/stock/TEST")
+    tab.page.click("button:text-is('Explain in plain words')")
+    tab.settle()
+    assert [url for url in tab.requests if "/analyst" in url] == [f"{base_url}/ui/stock/TEST/analyst"]
+
+
+def paths_asked_with_every_stock_panel_open(browser, base_url):
+    """The paths a stock page asked for once Show details and the Research tab were opened too."""
+    tab = Tab(browser, base_url, 1366)
+    sent = len(tab.requests)
+    tab.go("#/stock/TEST")
+    tab.page.click("summary:text-is('Show details')")
+    tab.page.get_by_role("tab", name="Research").click()
+    tab.settle()
+    return [urlsplit(url).path for url in tab.requests[sent:]]
+
+
+@pytest.mark.parametrize("path", ["/ui/stock/TEST/technical", "/stocks/TEST/analysis", "/ui/stock/TEST/verdict"])
+def test_a_stock_page_asks_for_each_of_its_data_once(browser, base_url, path):
+    assert paths_asked_with_every_stock_panel_open(browser, base_url).count(path) == 1
+
+
+def test_on_a_phone_the_chat_send_box_is_above_the_bottom_nav(browser, base_url):
+    tab = Tab(browser, base_url, 360)
+    tab.go("#/chat")
+    composer, nav = tab.page.locator(".composer").bounding_box(), tab.page.locator("#bnav").bounding_box()
+    assert composer["y"] + composer["height"] <= nav["y"], (composer, nav)
 
 
 def test_each_pattern_chart_names_its_proven_edges(visits):
@@ -164,7 +259,7 @@ def test_each_pattern_chart_names_its_proven_edges(visits):
 
 @pytest.fixture(scope="module")
 def axe_findings(browser, base_url):
-    """axe's serious and critical findings on every page, in each theme, at a phone's and a laptop's width:
+    """axe's serious and critical findings on every page, every disclosure open, in each theme, at a phone's and a laptop's width:
     each rule with the elements it flagged."""
     axe = pytest.importorskip("axe_playwright_python.sync_playwright", reason="axe is not installed: pip install -e '.[dev]'").Axe()
     out = {}
@@ -175,6 +270,7 @@ def axe_findings(browser, base_url):
                 tab.page.click("#theme")
             for name in PAGES:
                 tab.go(f"#/{name}")
+                tab.open_every_disclosure()
                 out[(theme, width, name)] = {v["id"]: [n["target"] for n in v["nodes"]] for v in axe.run(tab.page).response["violations"]
                                              if v["impact"] in ("serious", "critical")}
             tab.context.close()
