@@ -390,6 +390,14 @@ def test_every_private_route_refuses_anonymous_callers(orch, accounts, headers):
     assert len(answers) > 50 and {k: v for k, v in answers.items() if v != UNAUTHORIZED} == {}
 
 
+def test_every_route_is_one_the_anonymous_walk_checks(orch, accounts):
+    """The walk above reads only APIRoutes, so a plain route or a websocket added later would escape it unnoticed."""
+    from fastapi.routing import APIRoute
+    from starlette.routing import Mount
+    assert [r.path for r in routes_of(create_app(orch, accounts))
+            if not isinstance(r.original_route, APIRoute) and not (isinstance(r.original_route, Mount) and r.path == "/static")] == []
+
+
 def test_every_public_path_is_a_route(orch, accounts):
     assert set(PUBLIC_PATHS) - {r.path for r in routes_of(create_app(orch, accounts))} == set()
 
@@ -748,6 +756,15 @@ def test_api_rate_limit(orch, monkeypatch, accounts):
     client = signed_in_client(orch, accounts)
     codes = [client.get("/search?q=TE").status_code for _ in range(5)]
     assert codes[:3] == [200, 200, 200] and 429 in codes[3:]
+
+
+def test_one_users_requests_do_not_use_up_another_users_limit(orch, monkeypatch, accounts):
+    import backend.api.app as api_mod
+    monkeypatch.setattr(api_mod, "RATE_PER_MIN", 3)
+    app = create_app(orch, accounts)
+    first, second = signed_in_client(orch, accounts, app=app), signed_in_client(orch, accounts, "other@example.com", app=app)
+    assert 429 in [first.get("/search?q=TE").status_code for _ in range(5)]
+    assert second.get("/search?q=TE").status_code == 200
 
 
 def test_api_chat_round_trip(orch, accounts):
