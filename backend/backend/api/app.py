@@ -20,6 +20,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from pydantic.networks import validate_email
 
 from backend.advisory import report as R
 from backend.advisory.calculators.backtest import strategies as S
@@ -67,6 +68,14 @@ class TokenBucket:
                 return False
             self.state[key] = [tokens - 1, now]
             return True
+
+
+def email_key(email: str) -> str:
+    """The address as the sign-in routes read it: their EmailStr drops spaces and a 'Name <...>' wrapper."""
+    try:
+        return validate_email(email)[1].lower()
+    except ValueError:      # the route refuses it too, so it only needs a bucket of its own
+        return email.lower()
 
 
 class ChatIn(BaseModel):
@@ -147,7 +156,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
             except ValueError:
                 raise HTTPException(400, "The request body is not valid JSON.") from None
             email = body.get("email") if isinstance(body, dict) else None
-        if isinstance(email, str) and not per_email.allow(email.lower()):
+        if isinstance(email, str) and not per_email.allow(email_key(email)):
             raise HTTPException(429, f"More than {EMAIL_TRIES} tries for this email address in "
                                      f"{EMAIL_WINDOW_S // 60} minutes. Wait a few minutes and try again.")
 
@@ -213,11 +222,15 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     @app.delete("/users/me", status_code=204)
     async def delete_me(owner: str = Depends(auth), user=Depends(accounts.current_user),
                         manager=Depends(accounts.users.get_user_manager)):
-        # India's DPDP Act gives a right to erasure; the account goes last, so a failure part-way can be retried
-        orch.store.delete_portfolio(owner)
-        orch.store.delete_usage(owner)
-        orch.forget(owner)
+        # India's DPDP Act gives a right to erasure. Erase before the account goes, so a failure part-way can be
+        # retried, and after, because another tab's request that signed in just before may have saved since
+        def erase():
+            orch.store.delete_portfolio(owner)
+            orch.store.delete_usage(owner)
+            orch.forget(owner)
+        erase()
         await manager.delete(user)
+        erase()
 
     @app.get("/ui/search", dependencies=[Depends(auth)])
     def ui_search(q: str = Query(min_length=1, max_length=40)):

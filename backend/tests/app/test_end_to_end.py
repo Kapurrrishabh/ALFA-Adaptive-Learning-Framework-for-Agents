@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from backend.advisory import report as R
 from backend.user.portfolio.alerts import evaluate
 from backend.api.accounts import owner_of
-from backend.api.app import create_app
+from backend.api.app import PUBLIC_PATHS, create_app
 from backend.config import DEFAULT_PORTFOLIO, FORECAST_DAYS
 from backend.api.orchestrator import Orchestrator
 from backend.advisory.calculators.screener import screen
@@ -373,7 +373,6 @@ def routes_of(app):
 def anonymous_answers(app, headers):
     """What every route outside PUBLIC_PATHS and /auth/ answers an anonymous caller, by method and path."""
     from fastapi.routing import APIRoute
-    from backend.api.app import PUBLIC_PATHS
     client, answers = TestClient(app, base_url=PUBLIC_URL, headers=headers), {}
     for route in routes_of(app):
         if isinstance(route.original_route, APIRoute) and route.path not in PUBLIC_PATHS and not route.path.startswith("/auth/"):
@@ -392,7 +391,6 @@ def test_every_private_route_refuses_anonymous_callers(orch, accounts, headers):
 
 
 def test_every_public_path_is_a_route(orch, accounts):
-    from backend.api.app import PUBLIC_PATHS
     assert set(PUBLIC_PATHS) - {r.path for r in routes_of(create_app(orch, accounts))} == set()
 
 
@@ -450,15 +448,17 @@ def test_the_11th_login_from_one_address_in_a_minute_gets_429(orch, accounts):
     assert codes == [400] * 10 + [429]
 
 
-@pytest.mark.parametrize("path", ["/auth/cookie/login", "/auth/forgot-password"])
+@pytest.mark.parametrize("path", ["/auth/cookie/login", "/auth/forgot-password", "/auth/request-verify-token",
+                                  "/auth/register"])
 def test_the_per_email_limit_counts_an_address_however_it_is_typed(orch, accounts, monkeypatch, path):
     import backend.api.app as api_mod
     monkeypatch.setattr(api_mod, "EMAIL_TRIES", 2)
     client = TestClient(create_app(orch, accounts), base_url=PUBLIC_URL)
     accounts.create_user(EMAIL, PASSWORD, verified=True)
+    typed = (EMAIL, EMAIL.upper(), EMAIL.title(), f" {EMAIL}", f"{EMAIL} ", f"Asha <{EMAIL}>", f"Ravi <{EMAIL}>")
     tries = [client.post(path, data={"username": email, "password": PASSWORD}) if path.endswith("login")
-             else client.post(path, json={"email": email}) for email in (EMAIL, EMAIL.upper(), EMAIL.title())]
-    assert (tries[2].status_code, "this email address" in tries[2].json()["detail"]) == (429, True)
+             else client.post(path, json={"email": email, "password": PASSWORD}) for email in typed]
+    assert [(r.status_code, "this email address" in r.text) for r in tries[2:]] == [(429, True)] * 5
 
 
 def test_signing_out_with_a_json_header_and_no_body_works(orch, accounts):
@@ -478,6 +478,11 @@ def test_the_privacy_page_and_googles_return_page_open_signed_out(orch, accounts
     from backend.paths import FRONTEND
     r = TestClient(create_app(orch, accounts), base_url=PUBLIC_URL).get(path)
     assert (r.status_code, r.text) == (200, (FRONTEND / page).read_text())
+
+
+@pytest.mark.parametrize("path", [*PUBLIC_PATHS, "/static/app.js", "/static/app.css"])
+def test_every_public_path_and_the_app_files_open_signed_out(orch, accounts, path):
+    assert TestClient(create_app(orch, accounts), base_url=PUBLIC_URL).get(path).status_code == 200
 
 
 @pytest.mark.parametrize("on", [True, False])
@@ -524,8 +529,8 @@ def test_one_users_portfolio_is_not_anothers(orch, accounts):
 
 def test_one_users_reports_are_not_listed_for_another(asha_and_ravi):
     asha, ravi = asha_and_ravi
-    asha.post("/reports/TEST")
-    assert ravi.get("/reports").json() == []
+    made = asha.post("/reports/TEST").json()["id"]
+    assert ([r["id"] for r in asha.get("/reports").json()], ravi.get("/reports").json()) == ([made], [])
 
 
 def test_one_users_signal_plan_is_kept_for_that_user_only(orch, accounts, asha_and_ravi, signal_inputs):
@@ -537,7 +542,7 @@ def test_one_users_acknowledgement_does_not_hide_anothers_alert(orch, asha_and_r
     asha, ravi = asha_and_ravi
     alert = orch.store.save_alert("TEST", "price_move", "high", "TEST moved 6%", ["moved 6%"])
     asha.post(f"/alerts/{alert}/ack")
-    assert [a["id"] for a in ravi.get("/alerts").json()] == [alert]
+    assert [[a["id"] for a in client.get("/alerts").json()] for client in (asha, ravi)] == [[], [alert]]
 
 
 def test_one_users_chat_is_not_anothers_with_the_same_session_id(orch, accounts, monkeypatch):
@@ -605,6 +610,19 @@ def test_deleting_an_account_drops_its_chat_sessions(orch, accounts, asha_and_ra
     asha_and_ravi[0].post("/chat", json={"message": "Analyze TEST", "session_id": "s1"})
     asha_and_ravi[0].delete("/users/me")
     assert [key for key in orch.sessions if key[0] == gone] == []
+
+
+def test_a_save_from_another_tab_while_the_account_is_deleted_is_removed_too(orch, accounts, asha_and_ravi,
+                                                                            monkeypatch):
+    from backend.api.accounts import UserManager
+    real_delete, gone = UserManager.delete, owner(accounts)
+
+    async def delete_then_save(self, user, *args):
+        await real_delete(self, user, *args)
+        orch.save_portfolio(gone, 500, "moderate", "medium", [])     # that tab signed in before the account went
+    monkeypatch.setattr(UserManager, "delete", delete_then_save)
+    asha_and_ravi[0].delete("/users/me")
+    assert orch.store.portfolio(gone) is None
 
 
 def test_the_state_backup_holds_no_sign_in_while_the_live_database_keeps_it(orch, accounts, db_path, tmp_path):

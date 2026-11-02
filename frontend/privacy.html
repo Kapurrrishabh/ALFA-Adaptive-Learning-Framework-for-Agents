@@ -33,6 +33,19 @@
 <h2>Who can see it</h2>
 <p>You, when you are signed in, and the person who runs this copy of the app.</p>
 
+<h2>Who else gets some of it</h2>
+<ul>
+  <li><b>The email service</b> the app sends mail through gets your email address and the emails the app sends
+    you, such as the link to confirm your address or to reset your password.</li>
+  <li><b>Google,</b> if you sign in with Google. Google then knows you use this app, and it tells the app your
+    email address and its ID for your account.</li>
+  <li><b>AI services,</b> when the person who runs the app turns them on. Your chat questions, with the figures
+    the app worked out to answer them, can go to Anthropic's Claude, directly or through Amazon Bedrock. Those
+    figures can include your portfolio. A question the app does not understand can go to the app's own language
+    model, which may run on Hugging Face, so that it can choose how to answer. That model also writes the stock
+    notes, and a note can say whether you hold the stock. These services do not get your email address.</li>
+</ul>
+
 <h2>The backup</h2>
 <p>So that a restart does not lose anything, the app copies its database to a private Hugging Face dataset every
   few minutes. The copy holds the accounts and portfolios, but no sign-ins. Only the person who runs the app can
