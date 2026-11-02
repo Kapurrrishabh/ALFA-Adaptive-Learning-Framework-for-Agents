@@ -80,6 +80,7 @@ h2 { font-size: 18px; margin: 0 0 12px; }
 .btn.primary:hover { background: var(--brand-2); }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--brand); }
 .btn.small { padding: 5px 10px; font-size: 12.5px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
 .tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
 .tabs button { background: none; border: 0; padding: 10px 12px; color: var(--muted); font-weight: 600; border-bottom: 2px solid transparent; }
 .tabs [aria-selected="true"] { color: var(--brand); border-color: var(--brand); }

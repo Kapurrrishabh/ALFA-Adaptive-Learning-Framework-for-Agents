@@ -71,7 +71,8 @@ async function api(path, opts = {}) {
   if (opts.method && opts.signal) throw new Error(`${opts.method} ${path}: a write is never cancelled, so it takes no signal`);
   const key = localStorage.getItem("si-key") || "";
   if (key && !KEY_RE.test(key)) { localStorage.removeItem("si-key"); askKey(); throw Object.assign(new Error("The saved key is not a valid key; please paste it again"), { status: 401 }); }
-  const res = await fetch(path, { ...opts, headers: { "X-API-Key": key, "Content-Type": "application/json", ...(opts.headers || {}) } });
+  // a FormData body needs the browser's own Content-Type, which names the boundary between its parts
+  const res = await fetch(path, { ...opts, headers: { "X-API-Key": key, ...(opts.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...(opts.headers || {}) } });
   const body = await res.json().catch(() => ({}));
   if (res.status === 401) askKey();
   const detail = Array.isArray(body.detail) ? body.detail.map((d) => d.msg).join("; ") : body.detail;

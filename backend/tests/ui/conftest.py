@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from tests.app.conftest import EMAIL, PASSWORD, SECRET
+from tests.app.test_portfolio_backtest import NSE_FILES
 
 KEY = "k" * 24      # the web app asks for a key until its sign-in screens ship; the server ignores it
 STOCKS = pd.DataFrame({"symbol": ["TEST", "PEER"], "name": ["Test Industries Ltd.", "Peer Power Ltd."],
@@ -57,7 +58,7 @@ def base_url(tmp_path_factory):
     from backend.api.app import create_app
     from backend.api.orchestrator import Orchestrator
     from backend.config import resolve_symbol
-    from backend.database.sources import insider
+    from backend.database.sources import insider, panel
     from backend.database.sources.panel import panel_from_frames
     from backend.database.sources.provider import DataUnavailable
     from backend.database.sources.synthetic import SyntheticProvider
@@ -87,6 +88,11 @@ def base_url(tmp_path_factory):
         mp.setattr(alfa_fan, "WEIGHTS", missing / "alfa.npz")
         mp.setattr(gru_line, "WEIGHTS", missing / "path_gru.npz")
         mp.setattr(insider, "load", no_insider)
+        lists = tmp_path_factory.mktemp("nse-lists")     # NSE's lists, for the import preview, as if downloaded today
+        for name, url in panel.NSE_LISTS.items():
+            if url.rsplit("/", 1)[1] in NSE_FILES:
+                (lists / f"{name}.csv").write_text(NSE_FILES[url.rsplit("/", 1)[1]])
+        mp.setattr(panel, "CACHE_DIR", lists)
         # every browser tab signs in as the same user, and all of them from 127.0.0.1
         mp.setattr(app_module, "SIGN_INS_PER_MIN", 10_000)
         mp.setattr(app_module, "EMAIL_TRIES", 10_000)
