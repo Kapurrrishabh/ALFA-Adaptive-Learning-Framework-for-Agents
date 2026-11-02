@@ -455,10 +455,14 @@ def test_the_per_email_limit_counts_an_address_however_it_is_typed(orch, account
     monkeypatch.setattr(api_mod, "EMAIL_TRIES", 2)
     client = TestClient(create_app(orch, accounts), base_url=PUBLIC_URL)
     accounts.create_user(EMAIL, PASSWORD, verified=True)
-    typed = (EMAIL, EMAIL.upper(), EMAIL.title(), f" {EMAIL}", f"{EMAIL} ", f"Asha <{EMAIL}>", f"Ravi <{EMAIL}>")
-    tries = [client.post(path, data={"username": email, "password": PASSWORD}) if path.endswith("login")
-             else client.post(path, json={"email": email, "password": PASSWORD}) for email in typed]
-    assert [(r.status_code, "this email address" in r.text) for r in tries[2:]] == [(429, True)] * 5
+    login = path.endswith("login")
+    shouted = {"Content-Type": "Application/X-WWW-Form-Urlencoded" if login else "Application/JSON"}
+    typed = [(email, {}) for email in (EMAIL, EMAIL.upper(), EMAIL.title(), f" {EMAIL}", f"{EMAIL} ",
+                                       f"Asha <{EMAIL}>", f"Ravi <{EMAIL}>")] + [(EMAIL, shouted)]
+    tries = [client.post(path, data={"username": email, "password": PASSWORD}, headers=headers) if login
+             else client.post(path, json={"email": email, "password": PASSWORD}, headers=headers)
+             for email, headers in typed]
+    assert [(r.status_code, "this email address" in r.text) for r in tries[2:]] == [(429, True)] * 6
 
 
 def test_signing_out_with_a_json_header_and_no_body_works(orch, accounts):
@@ -623,6 +627,25 @@ def test_a_save_from_another_tab_while_the_account_is_deleted_is_removed_too(orc
     monkeypatch.setattr(UserManager, "delete", delete_then_save)
     asha_and_ravi[0].delete("/users/me")
     assert orch.store.portfolio(gone) is None
+
+
+def test_other_requests_are_served_while_an_account_is_erased(orch, accounts, monkeypatch):
+    import threading
+    started, served, waits, real_forget = threading.Event(), threading.Event(), [], orch.forget
+
+    def slow_forget(portfolio):
+        started.set()
+        waits.append(served.wait(20))       # times out if the erase holds the event loop that serves /health
+        real_forget(portfolio)
+    monkeypatch.setattr(orch, "forget", slow_forget)
+    with signed_in_client(orch, accounts) as client:       # one event loop for both requests
+        deleting = threading.Thread(target=client.delete, args=("/users/me",))
+        deleting.start()
+        started.wait(20)
+        client.get("/health")
+        served.set()
+        deleting.join()
+    assert waits == [True, True]
 
 
 def test_the_state_backup_holds_no_sign_in_while_the_live_database_keeps_it(orch, accounts, db_path, tmp_path):

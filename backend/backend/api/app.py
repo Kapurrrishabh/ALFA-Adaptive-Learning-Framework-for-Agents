@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -150,7 +151,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
 
     async def limit_email(request: Request) -> None:
         email = (await request.form()).get("username")      # the login form; an empty form for other bodies
-        if "json" in request.headers.get("content-type", "") and (raw := await request.body()):
+        if "json" in request.headers.get("content-type", "").lower() and (raw := await request.body()):
             try:
                 body = json.loads(raw)
             except ValueError:
@@ -228,9 +229,9 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
             orch.store.delete_portfolio(owner)
             orch.store.delete_usage(owner)
             orch.forget(owner)
-        erase()
+        await run_in_threadpool(erase)
         await manager.delete(user)
-        erase()
+        await run_in_threadpool(erase)
 
     @app.get("/ui/search", dependencies=[Depends(auth)])
     def ui_search(q: str = Query(min_length=1, max_length=40)):
