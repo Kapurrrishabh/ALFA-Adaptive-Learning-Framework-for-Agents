@@ -335,15 +335,18 @@ class Hub:
         return {"query": q, "funds": amfi.search(amfi.schemes(), q), "source": amfi.NAV_SOURCE}
 
     def fund(self, code: int) -> Dict[str, Any]:
-        """One scheme's AMFI facts and latest NAV, with its record from the NAV history when mfapi.in has it."""
+        """One scheme's AMFI facts and latest NAV, its fund's other plans and the fund lessons, with its record from
+        the NAV history when mfapi.in has it."""
         from dataclasses import asdict
         from backend.advisory.calculators import funds
         from backend.database.sources import amfi
-        scheme = next((s for s in amfi.schemes() if s.code == code), None)
+        schemes = amfi.schemes()
+        scheme = next((s for s in schemes if s.code == code), None)
         if scheme is None:
             raise DataUnavailable(f"no scheme with AMFI code {code} has a NAV in the last {amfi.LIVE_DAYS} days; "
                                   "find the fund's code with /ui/funds/search")
-        out = {"scheme": asdict(scheme), "source": {"nav": amfi.NAV_SOURCE, "history": amfi.HISTORY_SOURCE}}
+        out = {"scheme": asdict(scheme), "plans": amfi.plans(schemes, scheme), "lessons": self.lessons("funds.md"),
+               "source": {"nav": amfi.NAV_SOURCE, "history": amfi.HISTORY_SOURCE}}
         try:
             nav = amfi.history(code)
             checked = amfi.history_check(nav, scheme)
@@ -725,17 +728,16 @@ class Hub:
                 "momentum_top": top, "insider_buys": ins, "insider_rule": {"days": days, "min_value_cr": min_value / 1e7}}
 
     # --- learn --------------------------------------------------------------------------------
+    def lessons(self, doc: str) -> List[Dict[str, str]]:
+        return [{"title": ch.title, "text": " ".join(ch.text.split("\n"))} for ch in knowledge_base().chunks if ch.doc == doc]
+
     def learn_index(self) -> List[Dict[str, Any]]:
-        kb = knowledge_base()
-        topics: Dict[str, List[Dict[str, str]]] = {}
-        for ch in kb.chunks:
-            text = " ".join(ch.text.split("\n"))
-            topics.setdefault(ch.doc, []).append({"title": ch.title, "text": text})
+        docs = dict.fromkeys(ch.doc for ch in knowledge_base().chunks)
         pretty = {"technical_indicators.md": "Technical indicators", "candlesticks.md": "Candlesticks",
                   "chart_patterns.md": "Chart patterns", "fundamentals.md": "Fundamentals & valuation",
                   "risk_metrics.md": "Risk & performance", "methodology.md": "How this system decides",
-                  "india_market.md": "Indian market basics"}
-        return [{"topic": pretty.get(doc, doc), "lessons": lessons} for doc, lessons in topics.items()]
+                  "india_market.md": "Indian market basics", "funds.md": "Mutual funds and ETFs"}
+        return [{"topic": pretty.get(doc, doc), "lessons": self.lessons(doc)} for doc in docs]
 
 
 def _record_summary(h: Dict[str, Any]) -> Dict[str, Any]:

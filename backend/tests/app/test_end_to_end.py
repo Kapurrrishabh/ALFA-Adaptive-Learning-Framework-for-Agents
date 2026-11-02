@@ -28,6 +28,7 @@ ORACLE = Path(__file__).resolve().parents[3] / "deploy" / "oracle"
 SERVE_NEEDS = ["STOCKINTEL_AUTH_SECRET", "STOCKINTEL_PUBLIC_URL"]
 OTHER = "ravi@example.com"
 UNAUTHORIZED = (401, {"detail": "Unauthorized"})    # fastapi-users' own refusal, not a 401 of ours
+FUND_BUY = {"scheme_code": 118989, "side": "BUY", "units": 10, "nav": 200.0, "trade_date": "2025-01-02"}
 
 
 @pytest.fixture
@@ -616,7 +617,8 @@ def count_rows(store, db_path):
     """Rows per table that a user owns, in the portfolio store and the accounts file; usage leaves out the all-users row."""
     import sqlite3
     from contextlib import closing
-    owned = ("portfolios", "transactions", "portfolio_snapshots", "reports", "signal_plans", "alert_acks")
+    owned = ("portfolios", "transactions", "fund_transactions", "portfolio_snapshots", "reports", "signal_plans",
+             "alert_acks")
     counts = {t: store.conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in owned}
     counts["usage"] = store.conn.execute("SELECT count(*) FROM usage WHERE who != '*'").fetchone()[0]
     with closing(sqlite3.connect(db_path)) as conn:
@@ -625,7 +627,7 @@ def count_rows(store, db_path):
 
 
 @pytest.fixture
-def asha_deleted(orch, accounts, db_path, asha_and_ravi, monkeypatch):
+def asha_deleted(orch, accounts, db_path, asha_and_ravi, monkeypatch, funds_served):
     """Both users made one row of each kind, then asha deleted her account; returns the counts before and after."""
     from backend.models.agent.client import SelfAgentClient
     monkeypatch.setattr(SelfAgentClient, "ask", lambda self, question, subject="", *, session: {})
@@ -633,6 +635,7 @@ def asha_deleted(orch, accounts, db_path, asha_and_ravi, monkeypatch):
     for client, email in zip(asha_and_ravi, (EMAIL, OTHER)):
         for method, path, body in (("post", "/reports/TEST", None), ("post", f"/alerts/{alert}/ack", None),
                                    ("post", "/ui/agent/ask", {"message": "Why?"}),
+                                   ("post", "/portfolio/funds/transactions", FUND_BUY),
                                    ("post", "/chat", {"message": "How is my portfolio performing?"})):
             assert getattr(client, method)(path, json=body).status_code == 200, path
         orch.store.save_plan(owner(accounts, email), {"as_of": END, "strategy": "momentum", "actions": []})
@@ -2245,3 +2248,103 @@ def test_an_unknown_fund_code_is_a_404_that_says_how_to_find_one(app_client, fun
     r = app_client.get("/ui/funds/999999")
     assert r.status_code == 404 and "999999" in r.json()["detail"] and "/ui/funds/search" in r.json()["detail"]
 
+
+
+def test_fund_page_lists_every_plan_of_its_fund(app_client, funds_served):
+    r = app_client.get("/ui/funds/105759").json()
+    assert [p["code"] for p in r["plans"]] == [118989, 118990, 105758, 105759]
+
+
+def test_fund_page_carries_the_fund_lessons(app_client, funds_served):
+    r = app_client.get("/ui/funds/118989").json()
+    assert "Direct and regular plans" in [lesson["title"] for lesson in r["lessons"]]
+
+
+def test_a_fund_code_that_is_not_a_number_is_refused_before_any_download(app_client, funds_served, monkeypatch):
+    from backend.database.sources import amfi
+    asked = []
+    monkeypatch.setattr(amfi, "_download", asked.append)
+    assert (app_client.get("/ui/funds/abc").status_code, asked) == (422, [])
+
+
+def test_learn_titles_the_fund_lessons(app_client):
+    assert "Mutual funds and ETFs" in [t["topic"] for t in app_client.get("/ui/learn").json()]
+
+
+def test_a_fund_added_to_the_portfolio_is_valued_at_amfis_nav(app_client, funds_served):
+    assert app_client.post("/portfolio/funds/transactions", json=FUND_BUY).status_code == 200
+    r = app_client.get("/portfolio/funds").json()
+    assert (r["invested"], r["value"], r["holdings"][0]["fund"]) == (2000.0, 2105.12, "HDFC Mid Cap Fund")
+    assert "AMFI" in r["source"]
+
+
+def test_selling_more_fund_units_than_held_gets_400_and_saves_nothing(app_client, funds_served):
+    r = app_client.post("/portfolio/funds/transactions", json={**FUND_BUY, "side": "SELL"})
+    assert (r.status_code, app_client.get("/portfolio/funds").json()["transactions"]) == (400, [])
+
+
+def test_a_fund_code_amfi_does_not_list_gets_400(app_client, funds_served):
+    r = app_client.post("/portfolio/funds/transactions", json={**FUND_BUY, "scheme_code": 999999})
+    assert r.status_code == 400 and "999999" in r.json()["detail"]
+
+
+def test_deleting_a_fund_buy_that_a_later_sale_needs_gets_400(app_client, funds_served):
+    app_client.post("/portfolio/funds/transactions", json=FUND_BUY)
+    app_client.post("/portfolio/funds/transactions", json={**FUND_BUY, "side": "SELL", "trade_date": "2025-03-03"})
+    buy = app_client.get("/portfolio/funds").json()["transactions"][0]
+    assert app_client.delete(f"/portfolio/funds/transactions/{buy['id']}").status_code == 400
+    assert len(app_client.get("/portfolio/funds").json()["transactions"]) == 2
+
+
+def test_a_deleted_fund_transaction_is_gone(app_client, funds_served):
+    app_client.post("/portfolio/funds/transactions", json=FUND_BUY)
+    tx = app_client.get("/portfolio/funds").json()["transactions"][0]
+    assert app_client.delete(f"/portfolio/funds/transactions/{tx['id']}").status_code == 200
+    assert app_client.delete(f"/portfolio/funds/transactions/{tx['id']}").status_code == 404
+
+
+def test_a_portfolio_with_no_funds_is_served_while_amfi_is_down(app_client, funds_served):
+    from backend.database.sources import amfi
+    del funds_served[amfi.NAV_URL]
+    assert app_client.get("/portfolio/funds").json()["holdings"] == []
+
+
+def hold_funds(orch, accounts, transactions):
+    """Written straight to the store: the route would ask AMFI, and refuses a code AMFI does not list now."""
+    orch.save_portfolio(owner(accounts), 0.0, "moderate", "medium", [])
+    orch.store.save_fund_transactions(owner(accounts), transactions)
+
+
+def test_held_funds_are_listed_with_the_reason_while_amfi_is_down(app_client, orch, accounts, funds_served):
+    from backend.database.sources import amfi
+    del funds_served[amfi.NAV_URL]
+    hold_funds(orch, accounts, [FUND_BUY])
+    r = app_client.get("/portfolio/funds")
+    assert (r.status_code, len(r.json()["transactions"]), "could not download" in r.json()["valuation_error"]) == (200, 1, True)
+
+
+def test_a_held_fund_amfi_no_longer_lists_is_named_in_the_error_and_can_be_deleted(app_client, orch, accounts, funds_served):
+    hold_funds(orch, accounts, [{**FUND_BUY, "scheme_code": 999999}])
+    r = app_client.get("/portfolio/funds").json()
+    assert "999999" in r["valuation_error"]
+    assert app_client.delete(f"/portfolio/funds/transactions/{r['transactions'][0]['id']}").status_code == 200
+
+
+def test_a_fund_transaction_carries_its_schemes_name(app_client, funds_served):
+    app_client.post("/portfolio/funds/transactions", json=FUND_BUY)
+    tx = app_client.get("/portfolio/funds").json()["transactions"][0]
+    assert (tx["scheme"]["fund"], tx["scheme"]["plan"]) == ("HDFC Mid Cap Fund", "Direct Plan")
+
+
+def test_the_stock_report_is_unchanged_by_funds(app_client, funds_served):
+    app_client.post("/portfolio/transactions", json={"symbol": "TEST", "side": "BUY", "quantity": 3, "price": 100,
+                                                     "trade_date": "2025-01-02"})
+    before = app_client.get("/portfolio/analysis").json()
+    app_client.post("/portfolio/funds/transactions", json=FUND_BUY)
+    assert app_client.get("/portfolio/analysis").json() == before
+
+
+def test_one_users_funds_are_not_anothers(asha_and_ravi, funds_served):
+    asha, ravi = asha_and_ravi
+    asha.post("/portfolio/funds/transactions", json=FUND_BUY)
+    assert ravi.get("/portfolio/funds").json()["transactions"] == []

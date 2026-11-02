@@ -12,7 +12,7 @@ sync_api = pytest.importorskip("playwright.sync_api", reason="Playwright is not 
 from backend.paths import FRONTEND  # noqa: E402
 from tests.app.test_portfolio_backtest import HOLDING, zerodha_holdings  # noqa: E402
 
-from .conftest import EMAIL, PASSWORD, RUN_REQUESTS, sign_in  # noqa: E402
+from .conftest import EMAIL, FUND, PASSWORD, RUN_REQUESTS, sign_in  # noqa: E402
 
 pytestmark = pytest.mark.ui
 WIDTHS = [360, 390, 800, 1366]   # provisional: a small phone, a phone, the nav breakpoint itself, a laptop
@@ -21,7 +21,7 @@ THEMES = ["dark", "light"]
 SECTIONS = ["Home", "Markets", "Portfolio", "Ask", "Learn"]
 NO_PAGE = ["nowhere", "stock", "stock/%E0%A4"]
 PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signals", "builder", "import", "chat", "learn",
-         "performance", "reports", "guide", *NO_PAGE]
+         "performance", "reports", "guide", f"fund/{FUND}", *NO_PAGE]
 SIGNED_OUT_PAGES = ["signin", "signup", "verify?token=old", "reset", "reset?token=old"]
 # Chrome logs a failed fetch without its address, so failures are read from the responses; an API 404 is how a missing model shows up,
 # and a 429 means the run outgrew the test key's rate limit, which otherwise shows only as a click that times out
@@ -1171,6 +1171,76 @@ def test_an_import_cannot_be_confirmed_while_a_buy_date_is_missing(browser, base
     tab = import_preview(browser, base_url)
     tab.page.get_by_label("Date for RELIANCE").fill("2024-05-02")
     assert tab.page.locator("button:text-is('Add 1 transaction')").is_disabled()
+
+
+def test_typing_a_funds_name_lists_it_under_mutual_funds(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.page.fill("#q", "hdfc mid")
+    funds = tab.page.locator("#suggest [role=group][aria-label='Mutual funds'] [role=option]")
+    funds.first.wait_for()
+    assert funds.first.inner_text().startswith("HDFC Mid Cap Fund")
+
+
+def test_the_search_page_lists_stocks_and_funds_apart(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/search?q=hdfc%20mid")
+    assert tab.page.locator("#view h3").all_inner_texts() == ["Stocks", "Mutual funds"]
+    assert tab.page.locator("#view a[href^='#/fund/']").first.inner_text().startswith("HDFC Mid Cap Fund")
+
+
+def test_the_fund_page_shows_the_nav_with_its_date_and_source(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go(f"#/fund/{FUND}")
+    text = tab.page.inner_text("#view")
+    assert "₹210.5120" in text and "NAV on 2026-10-29" in text and "Source: AMFI" in text
+
+
+def test_a_fund_added_from_its_page_shows_in_the_portfolio_and_its_total(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go(f"#/fund/{FUND}")
+    tab.page.click("text=+ Add to portfolio")
+    tab.page.fill("input[name=units]", "10")
+    tab.page.click(".modal button[type=submit]")
+    tab.settle()
+    try:
+        tab.go("#/portfolio")
+        view = tab.page.inner_text("#view")
+        total = tab.context.request.get(f"{base_url}/portfolio/analysis").json()["total_value"] + 2105.12
+        assert "Mutual funds (1)" in view and f"With your mutual funds: {tab.page.evaluate('(v) => inr(v)', total)}" in view
+    finally:       # the other tests share this user's portfolio
+        for tx in tab.context.request.get(f"{base_url}/portfolio/funds").json()["transactions"]:
+            tab.context.request.delete(f"{base_url}/portfolio/funds/transactions/{tx['id']}")
+
+
+def test_the_stocks_show_while_the_funds_are_still_loading(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    held = []
+    tab.page.route("**/portfolio/funds", lambda route: held.append(route))
+    tab.page.evaluate("location.hash = '#/portfolio'")
+    tab.page.wait_for_selector("#view table a[href='#/stock/TEST']")
+    assert len(held) == 1
+    held[0].continue_()
+
+
+def test_a_funds_failure_shows_in_the_funds_card_and_leaves_the_stocks(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    tab.page.route("**/portfolio/funds", lambda route: route.fulfill(status=503, json={"detail": "AMFI is down"}))
+    tab.go("#/portfolio")
+    card = tab.page.locator("#view .card", has=tab.page.locator("h3", has_text="Mutual funds"))
+    assert "Something went wrong on our side." in card.inner_text()
+    assert tab.page.locator("#view table a[href='#/stock/TEST']").count() == 1
+
+
+def test_a_fund_amfi_no_longer_lists_stays_deletable_beside_the_stocks(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    gone = {"valuation_error": "AMFI's NAV file has no NAV in the last 7 days for the schemes [999999] you hold",
+            "transactions": [{"id": 1, "scheme_code": 999999, "side": "BUY", "units": 10, "nav": 200.0, "fees": 0.0,
+                              "trade_date": "2025-01-02", "scheme": None}], "source": "AMFI"}
+    tab.page.route("**/portfolio/funds", lambda route: route.fulfill(json=gone))   # the shape GET /portfolio/funds gives
+    tab.go("#/portfolio")
+    card = tab.page.locator("#view .card", has=tab.page.locator("h3", has_text="Mutual funds"))
+    assert ("[999999]" in card.inner_text(), card.locator("button", has_text="Delete").count()) == (True, 1)
+    assert tab.page.locator("#view table a[href='#/stock/TEST']").count() == 1
 
 
 def test_no_earlier_test_leaves_a_tab_open(browser):

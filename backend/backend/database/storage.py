@@ -63,6 +63,15 @@ CREATE TABLE IF NOT EXISTS transactions (
     fees REAL NOT NULL DEFAULT 0, trade_date TEXT NOT NULL, sector TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_tx_portfolio ON transactions(portfolio_id, trade_date);
+-- funds stay out of transactions: the stock report prices each symbol there on the exchange
+CREATE TABLE IF NOT EXISTS fund_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+    scheme_code INTEGER NOT NULL, side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+    units REAL NOT NULL CHECK (units > 0), nav REAL NOT NULL CHECK (nav > 0),
+    fees REAL NOT NULL DEFAULT 0 CHECK (fees >= 0), trade_date TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_fund_tx_portfolio ON fund_transactions(portfolio_id, trade_date);
 CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
@@ -329,8 +338,25 @@ class Store:
             " WHERE portfolio_id = ? ORDER BY trade_date, id", (row["id"],))]
         return {**dict(row), "transactions": tx}
 
+    def save_fund_transactions(self, name: str, transactions: List[Dict[str, Any]]) -> None:
+        """Replace a portfolio's mutual fund transactions in one database transaction."""
+        pid = self._portfolio_id(name)
+        if pid is None:
+            raise ValueError(f"There is no portfolio {name!r} to keep fund transactions in; save the portfolio first.")
+        with self.conn:
+            self.conn.execute("DELETE FROM fund_transactions WHERE portfolio_id = ?", (pid,))
+            self.conn.executemany(
+                "INSERT INTO fund_transactions (portfolio_id, scheme_code, side, units, nav, fees, trade_date)"
+                " VALUES (?,?,?,?,?,?,?)", [(pid, t["scheme_code"], t["side"], t["units"], t["nav"], t.get("fees", 0.0),
+                                             t["trade_date"]) for t in transactions])
+
+    def fund_transactions(self, name: str) -> List[Dict[str, Any]]:
+        return [dict(r) for r in self.conn.execute(
+            "SELECT f.id, f.scheme_code, f.side, f.units, f.nav, f.fees, f.trade_date FROM fund_transactions f"
+            " JOIN portfolios p ON p.id = f.portfolio_id WHERE p.name = ? ORDER BY f.trade_date, f.id", (name,))]
+
     def delete_portfolio(self, name: str) -> None:
-        """Its transactions, snapshots, reports, plans and alert acknowledgements go with it (ON DELETE CASCADE)."""
+        """Its transactions, fund transactions, snapshots, reports, plans and alert acknowledgements go with it (ON DELETE CASCADE)."""
         with self.conn:
             self.conn.execute("DELETE FROM portfolios WHERE name = ?", (name,))
 
