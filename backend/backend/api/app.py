@@ -34,6 +34,7 @@ from backend.knowledge_base.lessons import knowledge_base
 from backend.paths import FRONTEND
 from backend.api.nlu import ALIASES
 from backend.api.orchestrator import DOMAINS, Orchestrator, SYMBOL_RE
+from backend.user.portfolio import funds
 from backend.user.portfolio.portfolio import what_if
 from backend.advisory.calculators.screener import screen
 
@@ -91,6 +92,15 @@ class TransactionIn(BaseModel):
     trade_date: date
     fees: float = Field(default=0.0, ge=0)
     sector: Optional[str] = Field(default=None, max_length=64)
+
+
+class FundTransactionIn(BaseModel):
+    scheme_code: int = Field(gt=0)
+    side: Literal["BUY", "SELL"]
+    units: float = Field(gt=0)
+    nav: float = Field(gt=0)
+    trade_date: date
+    fees: float = Field(default=0.0, ge=0)
 
 
 class PortfolioIn(BaseModel):
@@ -376,6 +386,39 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
             txs = [t for i, t in enumerate(p["transactions"]) if i != index]
             n = orch.save_portfolio(owner, p["cash"], p["risk_profile"], p["horizon"], txs)
         return {"status": "deleted", "transactions": n}
+
+    @app.get("/portfolio/funds")
+    def portfolio_funds(owner: str = Depends(auth)):
+        from backend.database.sources import amfi
+        txs = orch.store.fund_transactions(owner)
+        # with no funds the page must not wait on, or fail with, AMFI's daily download
+        schemes = {s.code: s for s in amfi.schemes()} if txs else {}
+        return ok({**funds.holdings(txs, schemes), "transactions": txs, "source": amfi.NAV_SOURCE})
+
+    @app.post("/portfolio/funds/transactions")
+    def add_fund_transaction(tx: FundTransactionIn, owner: str = Depends(auth)):
+        from backend.database.sources import amfi
+        if tx.scheme_code not in {s.code for s in amfi.schemes()}:
+            raise HTTPException(400, f"AMFI lists no scheme {tx.scheme_code} with a NAV in the last {amfi.LIVE_DAYS} "
+                                     "days. Find the fund with the search box and add it from its page.")
+        with orch.portfolio_lock(owner):
+            txs = orch.store.fund_transactions(owner) + [{**tx.model_dump(), "trade_date": tx.trade_date.isoformat()}]
+            funds.positions(txs)
+            if orch.store.portfolio(owner) is None:
+                orch.save_portfolio(owner, 0.0, "moderate", "medium", [])
+            orch.store.save_fund_transactions(owner, txs)
+        return {"status": "saved", "fund_transactions": len(txs)}
+
+    @app.delete("/portfolio/funds/transactions/{tx_id}")
+    def delete_fund_transaction(tx_id: int, owner: str = Depends(auth)):
+        with orch.portfolio_lock(owner):
+            txs = orch.store.fund_transactions(owner)
+            kept = [t for t in txs if t["id"] != tx_id]
+            if len(kept) == len(txs):
+                raise HTTPException(404, f"no fund transaction #{tx_id}")
+            funds.positions(kept)
+            orch.store.save_fund_transactions(owner, kept)
+        return {"status": "deleted", "fund_transactions": len(kept)}
 
     @app.post("/portfolio/cash")
     def set_cash(body: CashIn, owner: str = Depends(auth)):

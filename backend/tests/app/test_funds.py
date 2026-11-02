@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from backend.advisory.calculators import funds
+from backend.user.portfolio import funds as fund_holdings
 from backend.database.sources import amfi
 from backend.database.sources.provider import DataUnavailable
 
@@ -321,6 +322,37 @@ def test_a_history_carried_at_zero_has_no_return():
 def test_mfapi_answering_an_unknown_code_with_an_empty_scheme_is_no_history():
     with pytest.raises(DataUnavailable, match="no NAV history for scheme 118989"):
         amfi.parse_history(json.dumps({"meta": {"scheme_code": 0}, "data": [], "status": "SUCCESS"}), 118989)
+
+
+# --- holdings ----------------------------------------------------------------------------
+def fund_tx(code, side, units, nav, trade_date, fees=0.0):
+    return {"scheme_code": code, "side": side, "units": units, "nav": nav, "trade_date": trade_date, "fees": fees}
+
+
+def test_funds_held_are_valued_at_amfis_latest_nav():
+    held = fund_holdings.holdings([fund_tx(118989, "BUY", 10, 200.0, "2025-01-02")], {s.code: s for s in CURRENT})
+    assert (held["invested"], held["value"], held["gain"]) == (2000.0, 2105.12, 105.12)
+    assert [(h["code"], h["units"], h["nav_date"]) for h in held["holdings"]] == [(118989, 10, date(2026, 10, 29))]
+
+
+def test_a_fund_sold_in_full_is_no_longer_held():
+    txs = [fund_tx(118989, "BUY", 10, 200.0, "2025-01-02"), fund_tx(118989, "SELL", 10, 205.0, "2025-02-03")]
+    assert fund_holdings.holdings(txs, {})["holdings"] == []
+
+
+def test_selling_more_units_than_held_is_refused():
+    with pytest.raises(ValueError, match="exceeds"):
+        fund_holdings.positions([fund_tx(118989, "BUY", 1, 200.0, "2025-01-02"), fund_tx(118989, "SELL", 2, 205.0, "2025-02-03")])
+
+
+def test_a_held_fund_with_no_recent_nav_is_not_left_out_of_the_total():
+    with pytest.raises(DataUnavailable, match=r"\[147990\]"):
+        fund_holdings.holdings([fund_tx(147990, "BUY", 1, 10.0, "2019-01-02")], {s.code: s for s in CURRENT})
+
+
+def test_fund_transactions_need_a_saved_portfolio(store):
+    with pytest.raises(ValueError, match="save the portfolio first"):
+        store.save_fund_transactions("nobody", [fund_tx(118989, "BUY", 1, 200.0, "2025-01-02")])
 
 
 # --- analytics ---------------------------------------------------------------------------
