@@ -65,8 +65,9 @@ def unbound_figures(answer, passages):
     """(figure, name) for each figure the answer ties to a name no passage states it with, sentence by sentence.
 
     A figure is tied to the nearest name before it, or after it when none is before. Only names and figures some
-    passage holds are read: one none holds is `unsupported_figures`' to catch. An entailment model does not tie a
-    number to what it measures: "TCS shares fell 1.2%" passed for passages where 1.2% was the Nifty's fall.
+    passage holds are read: a figure none holds is `unsupported_figures`' to catch, and reading names none holds
+    refused 2 good replies of 298 to catch 1 bad, so "HCLTech shares lost 1.2%" is left to the entailment model. That
+    model does not tie a number to what it measures: "TCS shares fell 1.2%" passed where 1.2% was the Nifty's fall.
     """
     held = [passage.lower() for passage in passages]
     unbound = []

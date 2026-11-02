@@ -48,8 +48,8 @@ _DECLINES = re.compile(r"\bnone\.?\s*$|\b(does|do|did) not (provide|say|mention|
                        r"\bno (information|mention|reason|details?)\b|\bnot (\w+ly )?(mentioned|provided|specified)\b", re.I)
 # a yes or no in place of the report the prompt asks for: "NO" for "are it stocks falling"
 _BARE_VERDICT = re.compile(r"^\W*(yes|no)\s*([,.;:!]|$)", re.I)
-# Provisional, on sentence.entailment's scale. On 124 replies, 40 by the writer for user questions and 84 written to
-# test it, 0.5 to 0.7 were right on 115 and 0.85 on 117, too narrow a gain to fit; more writer replies would place it.
+# Provisional, on sentence.entailment's scale. On 298 replies, 207 by the writer and 91 written to test it, every cut
+# from 0.2 to 0.8 was right on 245 to 250 and 0.5 on 249: too narrow a spread to fit.
 ENTAILED = 0.5
 # a size the draft never gives: "Infosys is quite volatile" for a draft that gave the figure alone
 _SIZES = re.compile(r"\b(a lot|quite|very|highly|extremely|fairly|significant(ly)?|moderate(ly)?|sharp(ly)?|little)\b",
