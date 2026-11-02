@@ -59,6 +59,7 @@ def test_horizon_risk_and_sector_parsing():
     ("thanks!", False, "greeting"),
     ("why is the market going down?", False, "market_regime"),
     ("is the nifty falling?", False, "market_regime"),
+    ("why has the sensex been so weak?", False, "market_regime"),    # was a full stock analysis of ^BSESN
     ("the market looks weak", False, "market_regime"),
     ("tell me a joke", False, "help"),
     ("what is a stop-loss?", False, "knowledge"),

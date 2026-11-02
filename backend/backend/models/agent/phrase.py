@@ -22,6 +22,7 @@ from backend.models.guardrails.guardrails import BRACKETED
 # `text` is empty exactly when the language model's words are not served; `because` then says why
 Phrased = namedtuple("Phrased", "text by because")
 NOT_ANSWERED = "the language model read the passages and found no answer in them"
+HEADLINES_NOT_WHY = "These are headlines, and they do not prove why the market moved."
 
 # No glosses of terms: asked to explain volatility or RSI, the writer added sizes the draft never gives ("has moved a
 # lot", "not very risky") and HHEM fell from 0.89 to as low as 0.15 on 16 advisory answers.

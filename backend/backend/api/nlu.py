@@ -251,7 +251,7 @@ def classify(text: str, known_symbols: Sequence[str], short_forms: Set[str], has
         return intent("stops")
     if re.search(r"^(hi|hey|hello|yo|thanks|thank you|thx|ok|okay|bye|good (morning|afternoon|evening))\b[\s!.?]*$", t):
         return intent("greeting")
-    index_only = bool(symbols) and all(sym == "^NSEI" for sym, _ in symbols)   # "is the nifty falling" is a market question
+    index_only = bool(symbols) and all(sym in ("^NSEI", "^BSESN") for sym, _ in symbols)  # "is the nifty falling" is a market question
     if (not symbols or index_only) and re.search(r"market (trend|regime|condition|timing)|should i be (invested|in cash)|"
                                  r"is (the|this) (a )?(bull|bear)|downtrend|uptrend|reduce exposure|go to cash|"
                                  r"(market|nifty|sensex|index|indices)[^.?]*\b(down|up|fall|falling|fell|drop|dropping|"

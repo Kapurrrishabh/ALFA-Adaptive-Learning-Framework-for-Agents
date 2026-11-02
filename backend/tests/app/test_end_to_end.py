@@ -1749,6 +1749,62 @@ def test_the_app_reads_company_news_from_the_newswire_not_google(monkeypatch, tm
     assert [i.headline for i in items] == ["Tata Steel gets aid"] and items[0].url == "https://n.test/1"
 
 
+def _wire(orch, monkeypatch, tmp_path, *titled, rss=True):
+    """A newswire archive of (day, source, title) rows, newest first as news.refresh writes it."""
+    import json as _json
+    from backend.database.live import news
+    monkeypatch.setattr(orch, "use_rss_news", rss)
+    archive = tmp_path / "wire.jsonl"
+    archive.write_text("".join(_json.dumps({"link": f"https://n.test/{n}", "day": day, "source": source, "title": title,
+                                            "summary": ""}) + "\n" for n, (day, source, title) in enumerate(titled)))
+    monkeypatch.setattr(news.read, "__defaults__", (archive,))
+
+
+@pytest.mark.parametrize("question", ["why is the market falling?", "how come the market is falling?",
+                                      "what made the nifty fall today?"])
+def test_a_why_question_on_the_market_gets_the_trend_and_the_newest_market_headlines(orch, monkeypatch, tmp_path,
+                                                                                    question):
+    """"Why is the market falling?" got the trend and its figures, and no news at all."""
+    _wire(orch, monkeypatch, tmp_path, ("2026-09-25", "Mint", "Sensex falls 900 points as FIIs sell"),
+          ("2026-09-24", "Mint", "Rupee hits a record low"), ("2026-09-24", "Economic Times", "Rupee hits a record low"),
+          ("2026-09-24", "Mint", "Titan launches a new watch"), ("2026-09-10", "Mint", "Nifty ends flat"))
+    reply = orch.handle(question, DEFAULT_PORTFOLIO, "why")
+    assert reply.intent == "market_regime" and "10-month average" in reply.text and "24-month return" in reply.text
+    assert reply.text.endswith("\n\nWhat the latest market reports say:\n"
+                               "- 2026-09-25, Mint: “Sensex falls 900 points as FIIs sell”\n"
+                               "- 2026-09-24, Mint: “Rupee hits a record low”\n"
+                               "These are headlines, and they do not prove why the market moved.")
+
+
+@pytest.mark.parametrize("titled", [(), (("2026-09-17", "Mint", "Nifty ends flat"),)])
+def test_a_why_question_on_the_market_says_when_the_archive_has_no_market_news_that_week(orch, monkeypatch, tmp_path,
+                                                                                         titled):
+    _wire(orch, monkeypatch, tmp_path, *titled)
+    reply = orch.handle("what is driving the market down?", DEFAULT_PORTFOLIO, "stale")
+    assert reply.text.endswith("What the latest market reports say: the news archive has no market headline from the "
+                               "7 days up to 2026-09-25.")
+
+
+def test_one_feed_does_not_fill_the_market_reports_when_others_reported_that_day(orch, monkeypatch, tmp_path):
+    """The archive keeps no hour, so a day is in feed order: all five of 2 Nov 2026's were Economic Times."""
+    _wire(orch, monkeypatch, tmp_path, *[("2026-09-25", "Economic Times", f"Sensex story {n}") for n in range(5)],
+          ("2026-09-25", "Mint", "Why is the market rallying today? Sensex soars 900 pts"))
+    assert "- 2026-09-25, Mint: “Why is the market rallying today? Sensex soars 900 pts”" in orch.handle(
+        "why is the market falling?", DEFAULT_PORTFOLIO, "mixed").text
+
+
+def test_demo_mode_quotes_no_market_headlines(orch, monkeypatch, tmp_path):
+    """Every other newswire read is behind `use_rss_news`; here real headlines sat under an older demo trend."""
+    _wire(orch, monkeypatch, tmp_path, ("2026-09-25", "Mint", "Sensex falls 900 points as FIIs sell"), rss=False)
+    reply = orch.handle("why is the market falling?", DEFAULT_PORTFOLIO, "demo")
+    assert reply.text.endswith("What the latest market reports say: news is not read in demo mode.")
+
+
+def test_a_market_question_that_does_not_ask_why_gets_no_headlines(orch, monkeypatch, tmp_path):
+    _wire(orch, monkeypatch, tmp_path, ("2026-09-25", "Mint", "Sensex falls 900 points as FIIs sell"))
+    assert "market reports" not in orch.handle("is the market in a downtrend?", DEFAULT_PORTFOLIO, "what").text
+
+
 def test_the_news_view_lists_linked_headlines_not_evidence_lines(orch):
     from backend.advisory import report as R
     a = orch.analysis(orch.session(DEFAULT_PORTFOLIO, "news"), "TEST")

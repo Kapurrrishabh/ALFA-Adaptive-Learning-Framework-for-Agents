@@ -39,6 +39,10 @@ KEEP_DAYS = 90
 # Economic Times publishes a "Share Price Live Updates: <name> Stock Details" page per stock per day: 22 of
 # its 59 items on 2026-10-07, none of them reporting anything, and each one matched any question naming it
 FILLER = re.compile(r"share price live updates", re.I)
+# A headline about India's market as a whole, not one company. On the 227 headlines of 26 Oct-2 Nov 2026, "market"
+# alone added real estate and China's market, and "oil" alone added Vedanta Oil and Gas.
+MARKET_WIDE = re.compile(r"\b(nifty|sensex|d-street|dalal street|fiis?|fpis?|rupee|bond yields?|india bonds?|crude|"
+                         r"brent|oil[- ]prices?)\b", re.I)
 
 _READ = {}
 
