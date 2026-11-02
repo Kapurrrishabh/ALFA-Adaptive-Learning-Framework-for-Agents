@@ -1,34 +1,51 @@
-"""The web app in a real browser: the navs at three widths, every page's basics, leaving a page mid-load,
+"""The web app in a real browser: the navs at four widths, every page's basics, leaving a page mid-load,
 the search box, the theme toggle, the shared dialog, toasts, and error and empty states, and what a keyboard
 or screen reader user gets."""
 import re
+from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import pytest
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="Playwright is not installed: pip install -e '.[dev]'")
 
+from backend.paths import FRONTEND  # noqa: E402
 from tests.app.test_portfolio_backtest import HOLDING, zerodha_holdings  # noqa: E402
 
-from .conftest import KEY, sign_in  # noqa: E402
+from .conftest import EMAIL, PASSWORD, RUN_REQUESTS, sign_in  # noqa: E402
 
 pytestmark = pytest.mark.ui
-WIDTHS = [390, 800, 1366]   # provisional: a phone, the nav breakpoint itself, a laptop
+WIDTHS = [360, 390, 800, 1366]   # provisional: a small phone, a phone, the nav breakpoint itself, a laptop
 AXE_WIDTHS = [390, 1366]   # every element shown at 800 px is also shown at one of these
 THEMES = ["dark", "light"]
 SECTIONS = ["Home", "Markets", "Portfolio", "Ask", "Learn"]
 NO_PAGE = ["nowhere", "stock", "stock/%E0%A4"]
 PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signals", "builder", "import", "chat", "learn",
-         "performance", "reports", *NO_PAGE]
-# Chrome logs a failed fetch without its address, so failures are read from the responses; an API 404 is how a missing model shows up
+         "performance", "reports", "guide", *NO_PAGE]
+SIGNED_OUT_PAGES = ["signin", "signup", "verify?token=old", "reset", "reset?token=old"]
+# Chrome logs a failed fetch without its address, so failures are read from the responses; an API 404 is how a missing model shows up,
+# and a 429 means the run outgrew the test key's rate limit, which otherwise shows only as a click that times out
 UNNAMED_FETCH_ERROR = "Failed to load resource"
 LONG_NAME = "Parag Parikh Flexi Cap Fund Direct Plan Growth"
 EMOJI = re.compile("[\u2600-\u27bf\U0001f300-\U0001faff]")
+CUT_LABELS = """(root) => [...document.querySelectorAll(`${root} svg[viewBox] text`)].filter((t) => t.getClientRects().length).flatMap((t) => {
+  const v = t.ownerSVGElement.viewBox.baseVal, b = t.getBBox(), slack = 0.5;
+  return b.x < v.x - slack || b.y < v.y - slack || b.x + b.width > v.x + v.width + slack || b.y + b.height > v.y + v.height + slack ? [t.textContent] : []; })"""
+# a line chart's transparent hover area is its plot
+LINE_PLOT_SHARES = """() => [...document.querySelectorAll("#view svg[aria-label*='. Latest: ']")].map((svg) =>
+  svg.querySelector(":scope > rect[fill=transparent]").width.baseVal.value / svg.viewBox.baseVal.width)"""
+CURRENT_TAB_CUT = """() => { const tab = document.querySelector("#view .subnav [aria-current]"); if (!tab) return false;
+  const t = tab.getBoundingClientRect(), nav = tab.parentElement.getBoundingClientRect(); return t.left < nav.left || t.right > nav.right; }"""
+CUT_CHART_CONTROLS = """() => { const card = document.querySelector(".card:has(> .mode-tabs)").getBoundingClientRect();
+  return [...document.querySelectorAll(".card:has(> .mode-tabs) :is(.mode-tabs, .seg) button")].filter((b) => {
+    const r = b.getBoundingClientRect(), box = b.parentElement.getBoundingClientRect();
+    return r.left < box.left || r.right > box.right || box.left < card.left || box.right > card.right; }).map((b) => b.textContent); }"""
 
 
 class Tab:
-    """One signed-in browser tab on the app, counting its requests in flight and the errors it logs."""
+    """One browser tab on the app, signed in unless told otherwise, counting its requests in flight and the errors it logs."""
 
-    def __init__(self, browser, base_url, width, **context_options):
+    def __init__(self, browser, base_url, width, signed_in=True, **context_options):
         self.context = browser.new_context(viewport={"width": width, "height": 900}, **context_options)
         self.page = self.context.new_page()
         self.inflight, self.requests, self.errors = 0, [], []
@@ -37,9 +54,10 @@ class Tab:
         self.page.on("requestfailed", self._ended)
         self.page.on("pageerror", lambda e: self.errors.append(str(e)))
         self.page.on("console", lambda m: self.errors.append(m.text) if m.type == "error" and not m.text.startswith(UNNAMED_FETCH_ERROR) else None)
-        self.page.on("response", lambda r: self.errors.append(f"{r.status} {r.url}") if r.status >= 500 or (r.status >= 400 and "/static/" in r.url) else None)
-        sign_in(self.context, base_url)
-        self.page.goto(f"{base_url}/#key={KEY}")
+        self.page.on("response", lambda r: self.errors.append(f"{r.status} {r.url}") if r.status >= 500 or r.status == 429 or (r.status >= 400 and "/static/" in r.url) else None)
+        if signed_in:
+            sign_in(self.context, base_url)
+        self.page.goto(base_url)
         self.settle()
 
     def _started(self, request):
@@ -69,6 +87,11 @@ class Tab:
             waited += 50
             assert waited < limit_ms, f"still waiting after {limit_ms} ms"
 
+    def open_every_disclosure(self):
+        """Open each <details> on the page, so what waits behind "Show details" or "Chart options" is checked too."""
+        self.page.evaluate("document.querySelectorAll('#view details').forEach((d) => { d.open = true; })")
+        self.settle()
+
 
 @pytest.fixture(scope="module")
 def browser():
@@ -78,10 +101,19 @@ def browser():
         b.close()
 
 
+@pytest.fixture(autouse=True)
+def close_tabs(browser):
+    """Close the tabs each test opened: left open, they keep animating and slow every test after them."""
+    yield
+    for context in browser.contexts:
+        context.close()
+
+
 @pytest.fixture(scope="module")
 def visits(browser, base_url):
-    """What each page showed at each width: its h1 texts, the errors it logged, whether it scrolled sideways,
-    the text of its empty states and banners, and the names of its charts."""
+    """What each page showed at each width, every disclosure open: its h1 texts, the errors it logged, whether it scrolled sideways,
+    the text of its empty states and banners, the names of its charts, the chart labels cut off at a chart's edge,
+    the share of each line chart's width its plot had, and whether its current sub-nav tab was cut off."""
     out = {}
     for width in WIDTHS:
         tab = Tab(browser, base_url, width)
@@ -89,10 +121,13 @@ def visits(browser, base_url):
         for name in PAGES:
             seen = len(tab.errors)
             tab.go(f"#/{name}")
+            tab.open_every_disclosure()
             out[(width, name)] = {"h1": tab.page.locator("h1").all_inner_texts(), "errors": tab.errors[seen:],
                                   "sideways": tab.page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"),
                                   "states": tab.page.locator("#view .empty, #view .banner").all_inner_texts(),
-                                  "charts": tab.page.locator("#view svg[role=img]").evaluate_all("els => els.map((el) => el.getAttribute('aria-label'))")}
+                                  "charts": tab.page.locator("#view svg[role=img]").evaluate_all("els => els.map((el) => el.getAttribute('aria-label'))"),
+                                  "cut": tab.page.evaluate(CUT_LABELS, "#view"), "plots": tab.page.evaluate(LINE_PLOT_SHARES),
+                                  "tab_cut": tab.page.evaluate(CURRENT_TAB_CUT)}
         tab.context.close()
     return out
 
@@ -132,6 +167,96 @@ def test_every_chart_is_named_from_its_data(visits):
     assert {name: charts for name, charts in unnamed.items() if charts} == {}
 
 
+@pytest.mark.parametrize("width", WIDTHS)
+def test_no_chart_label_is_cut_off_at_the_chart_edge(visits, width):
+    assert {name: visits[(width, name)]["cut"] for name in PAGES if visits[(width, name)]["cut"]} == {}
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+def test_every_line_chart_keeps_half_its_width_for_the_plot(visits, width):
+    # PROVISIONAL: half; the names at the line ends once left a 390 px phone's plot about a third of its chart
+    shares = {name: visits[(width, name)]["plots"] for name in PAGES if visits[(width, name)]["plots"]}
+    assert shares, "no page drew a line chart, so this check cannot fail"
+    assert {name: s for name, s in shares.items() if min(s) < 0.5} == {}
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+def test_the_current_sub_nav_tab_is_in_view(visits, width):
+    assert [name for name in PAGES if visits[(width, name)]["tab_cut"]] == []
+
+
+@pytest.mark.parametrize("chart_tab", ["Technical", "Intraday", "Price & projection"])
+def test_no_stock_chart_label_is_cut_off_on_a_phone(browser, base_url, chart_tab):
+    tab = Tab(browser, base_url, 390)
+    tab.go("#/stock/TEST")
+    show_chart_tab(tab, chart_tab)
+    assert tab.page.evaluate(CUT_LABELS, "#view") == []
+
+
+def test_no_label_in_show_details_is_cut_off_on_a_phone_even_with_a_one_digit_rsi(browser, base_url):
+    tab = Tab(browser, base_url, 360, service_workers="block")
+
+    def one_digit_rsi(route):
+        indicators = route.fetch().json()
+        route.fulfill(json={**indicators, "rsi": [*indicators["rsi"][:-1], 5.0]})
+    tab.page.route("**/indicators?*", one_digit_rsi)
+    tab.go("#/stock/TEST")
+    tab.open_every_disclosure()
+    assert tab.page.evaluate(CUT_LABELS, ".stock-details") == []
+
+
+@pytest.mark.parametrize("chart_tab", ["Technical", "Intraday", "Price & projection"])
+def test_every_chart_control_fits_on_a_small_phone(browser, base_url, chart_tab):
+    tab = Tab(browser, base_url, 360)
+    tab.go("#/stock/TEST")
+    show_chart_tab(tab, chart_tab)
+    assert tab.page.evaluate(CUT_CHART_CONTROLS) == []
+
+
+def test_on_a_phone_the_verdict_comes_before_the_chart(browser, base_url):
+    tab = Tab(browser, base_url, 390)
+    tab.go("#/stock/TEST")
+    verdict, chart = (tab.page.locator(card).bounding_box() for card in (".verdict", ".card:has(> .mode-tabs)"))
+    assert verdict["y"] + verdict["height"] <= chart["y"]
+
+
+def test_a_stock_page_asks_for_no_analyst_note_on_its_own(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/stock/TEST")
+    assert [url for url in tab.requests if "/analyst" in url] == []
+
+
+def test_explain_in_plain_words_asks_for_the_analyst_note(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/stock/TEST")
+    tab.page.click("button:text-is('Explain in plain words')")
+    tab.settle()
+    assert [url for url in tab.requests if "/analyst" in url] == [f"{base_url}/ui/stock/TEST/analyst"]
+
+
+def paths_asked_with_every_stock_panel_open(browser, base_url):
+    """The paths a stock page asked for once Show details and the Research tab were opened too."""
+    tab = Tab(browser, base_url, 1366)
+    sent = len(tab.requests)
+    tab.go("#/stock/TEST")
+    tab.page.click("summary:text-is('Show details')")
+    tab.page.get_by_role("tab", name="Research").click()
+    tab.settle()
+    return [urlsplit(url).path for url in tab.requests[sent:]]
+
+
+@pytest.mark.parametrize("path", ["/ui/stock/TEST/technical", "/stocks/TEST/analysis", "/ui/stock/TEST/verdict"])
+def test_a_stock_page_asks_for_each_of_its_data_once(browser, base_url, path):
+    assert paths_asked_with_every_stock_panel_open(browser, base_url).count(path) == 1
+
+
+def test_on_a_phone_the_chat_send_box_is_above_the_bottom_nav(browser, base_url):
+    tab = Tab(browser, base_url, 360)
+    tab.go("#/chat")
+    composer, nav = tab.page.locator(".composer").bounding_box(), tab.page.locator("#bnav").bounding_box()
+    assert composer["y"] + composer["height"] <= nav["y"], (composer, nav)
+
+
 def test_each_pattern_chart_names_its_proven_edges(visits):
     names = [c for c in visits[(1366, "performance")]["charts"] if c.startswith("Excess return")]
     assert [c.rsplit(". ", 1)[1] for c in names] == ["Proven edge: none", "Proven edge: double top"]
@@ -139,20 +264,22 @@ def test_each_pattern_chart_names_its_proven_edges(visits):
 
 @pytest.fixture(scope="module")
 def axe_findings(browser, base_url):
-    """axe's serious and critical findings on every page, in each theme, at a phone's and a laptop's width:
+    """axe's serious and critical findings on every page, every disclosure open, in each theme, at a phone's and a laptop's width:
     each rule with the elements it flagged."""
     axe = pytest.importorskip("axe_playwright_python.sync_playwright", reason="axe is not installed: pip install -e '.[dev]'").Axe()
     out = {}
     for theme in THEMES:
         for width in AXE_WIDTHS:
-            tab = Tab(browser, base_url, width)
-            if tab.page.evaluate("document.documentElement.dataset.theme") != theme:
-                tab.page.click("#theme")
-            for name in PAGES:
-                tab.go(f"#/{name}")
-                out[(theme, width, name)] = {v["id"]: [n["target"] for n in v["nodes"]] for v in axe.run(tab.page).response["violations"]
-                                             if v["impact"] in ("serious", "critical")}
-            tab.context.close()
+            for signed_in, names in [(True, PAGES), (False, SIGNED_OUT_PAGES)]:
+                tab = Tab(browser, base_url, width, signed_in=signed_in)
+                if tab.page.evaluate("document.documentElement.dataset.theme") != theme:
+                    tab.page.click("#theme")
+                for name in names:
+                    tab.go(f"#/{name}")
+                    tab.open_every_disclosure()
+                    out[(theme, width, name)] = {v["id"]: [n["target"] for n in v["nodes"]] for v in axe.run(tab.page).response["violations"]
+                                                 if v["impact"] in ("serious", "critical")}
+                tab.context.close()
     return out
 
 
@@ -160,6 +287,12 @@ def axe_findings(browser, base_url):
 @pytest.mark.parametrize("theme", THEMES)
 def test_no_page_has_a_serious_accessibility_finding(axe_findings, theme, width):
     assert {name: axe_findings[(theme, width, name)] for name in PAGES if axe_findings[(theme, width, name)]} == {}
+
+
+@pytest.mark.parametrize("width", AXE_WIDTHS)
+@pytest.mark.parametrize("theme", THEMES)
+def test_no_sign_in_page_has_a_serious_accessibility_finding(axe_findings, theme, width):
+    assert {name: axe_findings[(theme, width, name)] for name in SIGNED_OUT_PAGES if axe_findings[(theme, width, name)]} == {}
 
 
 def test_leaving_explore_mid_load_keeps_the_new_page(browser, base_url):
@@ -209,6 +342,244 @@ def test_cleanup_a_page_registers_after_it_was_left_still_runs(browser, base_url
     assert tab.page.evaluate("async () => { finishLate(); await new Promise((r) => setTimeout(r)); return window.cleanedUp === true; }")
 
 
+def test_the_guide_shows_its_sections_to_someone_not_signed_in(browser, base_url):
+    tab = Tab(browser, base_url, 1366, signed_in=False)
+    tab.go("#/guide")
+    sections = [line.removeprefix("# ") for line in (FRONTEND / "guide.md").read_text().splitlines() if line.startswith("# ")]
+    assert tab.page.locator("#view h2").all_inner_texts() == sections
+
+
+def test_a_page_link_in_the_guide_opens_that_page_in_the_same_tab(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/guide")
+    tab.page.locator("#view .md").get_by_role("link", name="Holdings", exact=True).click()
+    assert tab.page.evaluate("location.hash") == "#/portfolio"
+
+
+PRIVATE_PAGES = [p for p in PAGES if p != "guide"]
+NEW_PASSWORD = "a kettle sings on the stove"
+
+
+def signed_out_at(browser, base_url, hash_):
+    tab = Tab(browser, base_url, 1366, signed_in=False)
+    tab.go(hash_)
+    return tab
+
+
+def sign_in_with_the_form(tab, email=EMAIL, password=PASSWORD):
+    tab.page.get_by_label("Email").fill(email)
+    tab.page.get_by_label("Password").fill(password)
+    tab.page.click("#view button[type=submit]")
+    tab.settle()
+
+
+def token_sent(outbox):
+    return next(word for word in outbox.sent[-1].get_content().split() if "token=" in word).split("token=", 1)[1]
+
+
+def new_account(base_url, outbox, email, verified=True):
+    """An account of its own, made through the sign-up routes, so a test can change it without touching the shared one."""
+    with httpx.Client(base_url=base_url) as client:
+        client.post("/auth/register", json={"email": email, "password": PASSWORD}).raise_for_status()
+        if verified:
+            client.post("/auth/verify", json={"token": token_sent(outbox)}).raise_for_status()
+
+
+def test_signed_out_every_private_page_lands_on_sign_in(browser, base_url):
+    tab = Tab(browser, base_url, 1366, signed_in=False)
+    landed = {}
+    for name in PRIVATE_PAGES:
+        tab.go(f"#/{name}")
+        landed[name] = tab.page.evaluate("location.hash").split("?")[0]
+    assert landed == {name: "#/signin" for name in PRIVATE_PAGES}
+
+
+def test_signing_in_with_email_reaches_home(browser, base_url):
+    tab = Tab(browser, base_url, 1366, signed_in=False)
+    sign_in_with_the_form(tab)
+    assert tab.page.locator("h1").all_inner_texts() == ["Home"]
+
+
+def test_signing_in_returns_to_the_page_that_asked_for_it(browser, base_url):
+    tab = signed_out_at(browser, base_url, "#/portfolio")
+    sign_in_with_the_form(tab)
+    assert tab.page.evaluate("location.hash") == "#/portfolio"
+
+
+def test_a_session_that_ends_mid_visit_sends_the_next_request_to_sign_in(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.context.clear_cookies()
+    tab.go("#/explore")
+    assert tab.page.evaluate("location.hash") == "#/signin?next=%23%2Fexplore"
+
+
+def test_a_wrong_password_is_refused_in_plain_words(browser, base_url):
+    tab = signed_out_at(browser, base_url, "#/signin")
+    sign_in_with_the_form(tab, password="not the password at all")
+    assert tab.page.inner_text("#view .dialog-error") == "That email and password do not match an account."
+
+
+def test_a_next_page_off_the_site_is_never_followed(browser, base_url):
+    tab = signed_out_at(browser, base_url, "#/signin?next=%2F%2Fevil.example")
+    sign_in_with_the_form(tab)
+    assert tab.page.evaluate("location.href") == f"{base_url}/#/home"
+
+
+def signed_out_by_the_menu(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/chat")
+    tab.page.evaluate("sessionStorage.setItem('si-chat-log', '[]')")
+    tab.page.click("#account summary")
+    tab.page.click("#account button:text-is('Sign out')")
+    tab.settle()
+    return tab
+
+
+def test_sign_out_returns_to_sign_in(browser, base_url):
+    assert signed_out_by_the_menu(browser, base_url).page.evaluate("location.hash") == "#/signin"
+
+
+def test_sign_out_clears_the_chat_log(browser, base_url):
+    assert signed_out_by_the_menu(browser, base_url).page.evaluate("sessionStorage.getItem('si-chat-log')") is None
+
+
+def test_sign_out_ends_the_session_on_the_server(browser, base_url):
+    tab = signed_out_by_the_menu(browser, base_url)
+    assert tab.context.request.get(f"{base_url}/users/me").status == 401
+
+
+def test_the_account_menu_holds_what_the_guide_says(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.page.click("#account summary")
+    assert tab.page.locator("#account .menu > *").all_inner_texts() == [EMAIL, "Guide", "Privacy", "Delete my account", "Sign out"]
+
+
+def test_the_account_menu_closes_on_escape(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.page.click("#account summary")
+    tab.page.keyboard.press("Escape")
+    assert tab.page.locator("#account details[open]").count() == 0
+
+
+def test_the_sign_in_page_links_to_the_guide(browser, base_url):
+    tab = signed_out_at(browser, base_url, "#/signin")
+    tab.page.get_by_role("link", name="guide", exact=True).click()
+    tab.settle()
+    assert tab.page.locator("h1").all_inner_texts() == ["How to use StockIntel"]
+
+
+def test_deleting_the_account_says_what_goes(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.page.click("#account summary")
+    tab.page.click("#account button:text-is('Delete my account')")
+    text = tab.page.inner_text("[role=dialog]")
+    assert [word for word in [EMAIL, "portfolio", "trades", "plans", "reports", "cannot be undone"] if word not in text] == []
+
+
+def test_a_deleted_account_can_no_longer_sign_in(browser, base_url, outbox):
+    new_account(base_url, outbox, "leaving@example.com")
+    tab = signed_out_at(browser, base_url, "#/signin")
+    sign_in_with_the_form(tab, "leaving@example.com")
+    tab.page.click("#account summary")
+    tab.page.click("#account button:text-is('Delete my account')")
+    tab.page.click("[role=dialog] button[type=submit]")
+    tab.settle()
+    sign_in_with_the_form(tab, "leaving@example.com")
+    assert tab.page.inner_text("#view .dialog-error") == "That email and password do not match an account."
+
+
+def test_a_bad_google_sign_in_link_shows_a_plain_error(browser, base_url):
+    tab = Tab(browser, base_url, 1366, signed_in=False)
+    tab.page.goto(f"{base_url}/login/google?code=bad&state=bad")
+    tab.settle()
+    assert tab.page.inner_text("#view .dialog-error") == "Signing in with Google did not finish. This sign-in link is broken. Start again."
+
+
+def test_a_bad_google_sign_in_link_leaves_no_code_in_the_address(browser, base_url):
+    tab = Tab(browser, base_url, 1366, signed_in=False)
+    tab.page.goto(f"{base_url}/login/google?code=bad&state=bad")
+    tab.settle()
+    assert "code=" not in tab.page.evaluate("location.href")
+
+
+def test_continue_with_google_comes_back_signed_in_to_the_page_asked_for(browser, base_url):
+    tab = signed_out_at(browser, base_url, "#/portfolio")
+    # Google's page answers at once, sending the browser back with a code and the state it was given
+    tab.page.route("https://accounts.example/**", lambda route: route.fulfill(status=302, headers={
+        "Location": f"{base_url}/login/google?code=ok&state={parse_qs(urlsplit(route.request.url).query)['state'][0]}"}))
+    tab.page.click("#view button:text-is('Continue with Google')")
+    tab.page.wait_for_url(f"{base_url}/#/portfolio")
+    tab.settle()
+    assert tab.page.locator("h1").all_inner_texts() == ["Holdings"]
+
+
+def test_a_new_account_confirmed_by_its_emailed_link_can_sign_in(browser, base_url, outbox):
+    tab = signed_out_at(browser, base_url, "#/signup")
+    tab.page.get_by_label("Email").fill("newcomer@example.com")
+    tab.page.get_by_label("Password").fill(PASSWORD)
+    tab.page.click("#view button[type=submit]")
+    tab.settle()
+    tab.go(f"#/verify?token={token_sent(outbox)}")
+    tab.go("#/signin")
+    sign_in_with_the_form(tab, "newcomer@example.com")
+    assert tab.page.locator("h1").all_inner_texts() == ["Home"]
+
+
+def test_a_short_password_is_refused_with_the_servers_rule(browser, base_url):
+    tab = signed_out_at(browser, base_url, "#/signup")
+    tab.page.get_by_label("Email").fill("brief@example.com")
+    tab.page.get_by_label("Password").fill("short words")
+    tab.page.click("#view button[type=submit]")
+    tab.settle()
+    assert tab.page.inner_text("#view .dialog-error").startswith("Use ")
+
+
+def resent_from(tab, outbox):
+    sent = len(outbox.sent)
+    tab.page.click("#view button:text-is('Send the link again')")
+    tab.settle()
+    return outbox.sent[sent:]
+
+
+def test_an_unconfirmed_sign_in_can_send_the_link_again(browser, base_url, outbox):
+    new_account(base_url, outbox, "unsure@example.com", verified=False)
+    tab = signed_out_at(browser, base_url, "#/signin")
+    sign_in_with_the_form(tab, "unsure@example.com")
+    assert [m["To"] for m in resent_from(tab, outbox)] == ["unsure@example.com"]
+
+
+def test_signing_up_again_with_an_unconfirmed_email_can_send_the_link_again(browser, base_url, outbox):
+    new_account(base_url, outbox, "again@example.com", verified=False)
+    tab = signed_out_at(browser, base_url, "#/signup")
+    tab.page.get_by_label("Email").fill("again@example.com")
+    tab.page.get_by_label("Password").fill(PASSWORD)
+    tab.page.click("#view button[type=submit]")
+    tab.settle()
+    assert [m["To"] for m in resent_from(tab, outbox)] == ["again@example.com"]
+
+
+def test_a_broken_confirmation_link_can_send_the_link_again(browser, base_url, outbox):
+    new_account(base_url, outbox, "expired@example.com", verified=False)
+    tab = signed_out_at(browser, base_url, "#/verify?token=old")
+    tab.page.get_by_label("Email").fill("expired@example.com")
+    assert [m["To"] for m in resent_from(tab, outbox)] == ["expired@example.com"]
+
+
+def test_a_forgotten_password_is_replaced_through_the_emailed_link(browser, base_url, outbox):
+    new_account(base_url, outbox, "forgetful@example.com")
+    tab = signed_out_at(browser, base_url, "#/reset")
+    tab.page.get_by_label("Email").fill("forgetful@example.com")
+    tab.page.click("#view button[type=submit]")
+    tab.settle()
+    tab.go(f"#/reset?token={token_sent(outbox)}")
+    tab.page.get_by_label("New password").fill(NEW_PASSWORD)
+    tab.page.click("#view button[type=submit]")
+    tab.settle()
+    tab.go("#/signin")
+    sign_in_with_the_form(tab, "forgetful@example.com", NEW_PASSWORD)
+    assert tab.page.locator("h1").all_inner_texts() == ["Home"]
+
+
 def test_tab_from_the_page_title_reaches_the_sub_nav(browser, base_url):
     tab = Tab(browser, base_url, 1366)
     tab.go("#/portfolio")
@@ -218,6 +589,7 @@ def test_tab_from_the_page_title_reaches_the_sub_nav(browser, base_url):
 
 def tab_to(tab, selector, presses=40):
     """Press Tab, as a keyboard user would, until focus is on an element matching selector."""
+    tab.page.locator(selector).first.wait_for()   # settle() can end before a starved page has drawn it
     for _ in range(presses):
         tab.page.keyboard.press("Tab")
         if tab.page.evaluate("(sel) => document.activeElement.matches(sel)", selector):
@@ -428,6 +800,31 @@ def test_theme_toggle_sends_no_request(browser, base_url):
     tab.page.click("#theme")
     tab.settle()
     assert tab.requests[sent:] == []
+
+
+def before_the_app_script(tab, expression):
+    """What a JavaScript expression gives just before app.js runs, on a reload."""
+    def note_it_first(route):
+        script = route.fetch()
+        route.fulfill(response=script, body=f"window.atStart = {expression};\n" + script.text())
+    tab.page.route("**/static/app.js", note_it_first)
+    tab.page.reload()
+    tab.settle()
+    return tab.page.evaluate("window.atStart")
+
+
+@pytest.mark.parametrize("scheme, chosen", [("light", None), ("dark", None), ("light", "dark"), ("dark", "light")])
+def test_the_chosen_or_else_the_system_theme_is_in_place_before_the_app_script_runs(browser, base_url, scheme, chosen):
+    tab = Tab(browser, base_url, 1366, color_scheme=scheme, service_workers="block")
+    if chosen:
+        tab.page.click("#theme")
+    assert before_the_app_script(tab, "document.documentElement.dataset.theme") == (chosen or scheme)
+
+
+def test_the_theme_button_has_its_final_size_before_its_icon_arrives(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    size = "(({ width, height }) => [width, height])(document.querySelector('#theme').getBoundingClientRect())"
+    assert before_the_app_script(tab, size) == tab.page.evaluate(size)
 
 
 THEME_COLOURS = """() => { const names = new Set();
@@ -720,16 +1117,16 @@ def test_try_again_after_a_server_error_loads_the_page(browser, base_url):
     assert tab.page.locator("#view .welcome").count() == 1
 
 
-def test_a_saved_key_that_is_not_a_key_asks_to_sign_in(browser, base_url):
-    tab = Tab(browser, base_url, 1366)
-    tab.page.evaluate("localStorage.setItem('si-key', 'not a key')")
-    tab.go("#/explore")
-    assert "Please sign in." in tab.page.inner_text("#view")
-
-
 def test_a_rate_limit_shows_the_servers_words_with_the_limit(browser, base_url):
     limit = "rate limit of 120 requests/minute exceeded"
     assert limit in explore_answered_with(browser, base_url, status=429, json={"detail": limit}).page.inner_text("#view")
+
+
+def test_the_signed_in_test_user_is_never_refused_in_a_whole_runs_requests(base_url):
+    with httpx.Client(base_url=base_url) as client:
+        assert client.post("/auth/cookie/login", data={"username": EMAIL, "password": PASSWORD}).is_success
+        codes = {client.get("/search", params={"q": "TE"}).status_code for _ in range(RUN_REQUESTS)}
+    assert codes == {200}
 
 
 def test_two_toasts_do_not_overlap(browser, base_url):
@@ -774,3 +1171,8 @@ def test_an_import_cannot_be_confirmed_while_a_buy_date_is_missing(browser, base
     tab = import_preview(browser, base_url)
     tab.page.get_by_label("Date for RELIANCE").fill("2024-05-02")
     assert tab.page.locator("button:text-is('Add 1 transaction')").is_disabled()
+
+
+def test_no_earlier_test_leaves_a_tab_open(browser):
+    # last in the file, so every other test has opened its tabs and ended before this looks
+    assert browser.contexts == []

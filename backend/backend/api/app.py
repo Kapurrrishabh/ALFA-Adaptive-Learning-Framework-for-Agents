@@ -10,6 +10,7 @@ the local database.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from dataclasses import asdict
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -50,6 +52,12 @@ MAX_KEYS = 10_000           # PROVISIONAL: past this many callers, buckets that 
 MAX_UPLOAD = 10_000_000     # PROVISIONAL: room for a long CAS PDF; check against real statements
 SET_UP_FIRST = "Set up your portfolio first: choose your risk level, time horizon and cash."
 PUBLIC_PATHS = ("/", "/health", "/manifest.webmanifest", "/sw.js", "/login/google", "/privacy")
+# Strict, because the web app runs no inline script or style and loads nothing from another site
+SECURITY_HEADERS = {"X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin", "X-Frame-Options": "DENY",
+                    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
+                    "img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; "
+                    "base-uri 'none'; form-action 'self'"}
+HSTS = "max-age=31536000"
 DOMAIN_ALIASES = {"fundamentals": "fundamental", "news": "news_sentiment", "patterns": "pattern",
                   "candlesticks": "candlestick", "analogues": "historical"}
 
@@ -81,6 +89,14 @@ def email_key(email: str) -> str:
         return validate_email(email)[1].lower()
     except ValueError:      # the route refuses it too, so it only needs a bucket of its own
         return email.lower()
+
+
+def theme_tokens(selector: str) -> Dict[str, str]:
+    """The tokens a theme block in app.css declares, so colours set outside the stylesheet follow it."""
+    blocks = re.findall(re.escape(selector) + r"\s*\{([^}]*)\}", (FRONTEND / "app.css").read_text())
+    if not blocks:
+        raise RuntimeError(f"app.css has no {selector} block; the install colours are read from it.")
+    return dict(re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", "".join(blocks)))
 
 
 class ChatIn(BaseModel):
@@ -140,6 +156,18 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     # No /openapi.json, /docs or /redoc: they skip sign-in and would map every route to anyone
     app = FastAPI(title="StockIntel", version="0.1.0", openapi_url=None,
                   description="Evidence-first stock research API. Decision-support only.")
+    headers = {**SECURITY_HEADERS, **({"Strict-Transport-Security": HSTS} if accounts.secure else {})}
+    light = theme_tokens(':root:not([data-theme="dark"])')
+    # One colour pair for the install screen: phones start in light mode, and theme.js recolours the bar on load
+    install_colours = {"theme_color": light["--bg"], "background_color": light["--bg-2"]}
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers.update(headers)
+        if response.headers.get("content-type", "").startswith("application/json"):
+            response.headers["Cache-Control"] = "no-store"      # JSON answers carry the user's own data
+        return response
 
     def same_origin(request: Request) -> None:
         # The browser sends our cookie with requests another site starts; these headers say who started it
@@ -160,7 +188,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
 
     async def limit_email(request: Request) -> None:
         email = (await request.form()).get("username")      # the login form; an empty form for other bodies
-        if "json" in request.headers.get("content-type", "") and (raw := await request.body()):
+        if "json" in request.headers.get("content-type", "").lower() and (raw := await request.body()):
             try:
                 body = json.loads(raw)
             except ValueError:
@@ -242,9 +270,9 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
             orch.store.delete_portfolio(owner)
             orch.store.delete_usage(owner)
             orch.forget(owner)
-        erase()
+        await run_in_threadpool(erase)
         await manager.delete(user)
-        erase()
+        await run_in_threadpool(erase)
 
     @app.get("/ui/search", dependencies=[Depends(auth)])
     def ui_search(q: str = Query(min_length=1, max_length=40)):
@@ -318,7 +346,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     @app.get("/manifest.webmanifest")
     def manifest():
         return JSONResponse({"name": "StockIntel", "short_name": "StockIntel", "start_url": "/#/home", "display": "standalone",
-                             "background_color": "#06080b", "theme_color": "#06080b",
+                             **install_colours,
                              "icons": [{"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]},
                             media_type="application/manifest+json")
 

@@ -56,6 +56,10 @@ UNANSWERED = "unanswered"
 # are asked with too ("is it overbought right now", "how far is it off its recent high").
 NEWS = re.compile(r"\b(today|yesterday|this (week|month|quarter)|latest|news|announc\w*|results?)\b", re.I)
 RECENT = re.compile(NEWS.pattern + r"|\b(lately|recent(ly)?|now|currently)\b", re.I)
+# A window counts only for how a named price moved: read as a time word anywhere, it sent "why does RSI use the
+# last 14 days" to the news instead of the lesson on RSI.
+LOOK_BACK = re.compile(RECENT.pattern + r"|\b(last|past|previous)( \w+){0,2} "
+                                        r"(days?|weeks?|months?|sessions?|years?|quarters?)\b", re.I)
 # A question about a price move or what a company is up to asks what happened lately, and the newswire is
 # read before anything else: "any news on tata steel" ranked over Wikipedia and the newswire together was
 # answered from its 2007 acquisition, because a long article repeats the name more often than a headline.
@@ -64,6 +68,9 @@ LATELY = re.compile(RECENT.pattern + r"|\b(fall(s|ing|en)?|fell|drop(s|ped|ping)
 # provisional, on `judge`'s scale (bge cosine) and from 32 questions with a move word: lessons beside the point
 # ("FCF yield" for bond yields) scored 0.53-0.62 and lessons that answered 0.66-0.84
 LESSON_FLOOR = 0.63
+# provisional: on 256 labelled lesson, tax and news wordings, the lesson first in `lessons`' order (ask.lessons_from) of
+# BM25's first 4, 6 and 8 sections was served right 202, 207 and 209 times, losing none; 2 more are too few to pick 8
+LESSONS_RANKED = 6
 
 
 class SearchFailed(RuntimeError):
@@ -74,8 +81,10 @@ class SearchFailed(RuntimeError):
     `requests` to exist.
     """
 
-Looked = namedtuple("Looked", "served evidence how unsupported confidence answer day phrased_by unphrased_because",
-                    defaults=("", ""))
+# `lesson` is a curated lesson's heading and text, which decide whether a question it answers is on topic; `unread`
+# names a source that could not be read for an answer the others gave
+Looked = namedtuple("Looked", "served evidence how unsupported confidence answer day phrased_by unphrased_because "
+                              "lesson unread", defaults=("", "", "", ""))
 
 
 class Reference:
@@ -90,12 +99,17 @@ class Reference:
 
     def __init__(self, index, tokenizer, model, config, question_tokens, passages,
                  temperature, top_p, rng=None, paraphrase=False, live=None, writer=None, news=None,
-                 filings=None, rank=None, lessons=None, judge=None):
+                 filings=None, rank=None, lessons=None, judge=None, entails=None):
         self.paraphrase = paraphrase
         # The language model that answers recent questions from prices, filings and headlines. Long
         # encyclopedia and forum text it misattributed ("HDFCBANK.NS is a subsidiary of HDFC Bank"), as
         # ALFA's own generator did, so those are still quoted. A failed check serves the plain answer.
         self.writer = writer
+        # (premise, hypothesis) pairs -> chance of entailment each, which every sentence the writer wrote must clear
+        if writer is not None and news is not None and entails is None:
+            raise ValueError("a Reference given a writer and news needs entails= to check its replies against the "
+                             "passages, as ask.reference_from does with entails_from()")
+        self.entails = entails
         # The newswire and SEC's filings on their own, read with the price snapshot for a question about
         # what happened lately (`LATELY`): headlines alone said Titan fell, not by how much or from where.
         self.news = news
@@ -103,12 +117,15 @@ class Reference:
         # Optional: (query, top_k, as_of) -> chunk indices, best first. Given, it replaces BM25 for the
         # stored passages; BM25 put the endorsed answer first 12.3% of the time (models/external/sentence.py).
         self.rank = rank
-        # Optional: question -> [(title, text)] from the curated lessons (knowledge_base/lessons). Asked first for a
-        # question that names no company: the corpus is mostly US forums, and "how does a SIP work" read from it
-        # was answered with Wikipedia's sales incentive plan.
+        # Optional: (question, how many) -> [(title, text)], best first, from the curated lessons (knowledge_base/lessons).
+        # Asked first for a question that names no company: the corpus is mostly US forums, and "how does a SIP work"
+        # read from it was answered with Wikipedia's sales incentive plan.
         self.lessons = lessons
-        # (question, texts) -> closeness of each, deciding a lesson against the news when a question has a move word
-        # in it: word rules sent "are bond yields going to rise" to the lesson on FCF yield
+        # (question, texts) -> closeness of each, deciding whether the first lesson answers well enough and better than
+        # the news: word rules sent "are bond yields going to rise" to the lesson on FCF yield
+        if lessons is not None and news is not None and judge is None:
+            raise ValueError("a Reference given both lessons and news needs a judge to choose between them; "
+                             "pass judge=, as ask.reference_from does with judge_from()")
         self.judge = judge
         self.index = index
         # Optional, and left out the path makes no network call, which is how the offline gate is still met
@@ -123,7 +140,7 @@ class Reference:
         self.top_p = top_p
         self.rng = rng
 
-    def look_up(self, question, as_of=None, subject=None, prices=None):
+    def look_up(self, question, as_of=None, subject=None, prices=None, lately=False):
         """A `Looked` for one question, or None when nothing we can read was about it.
 
         None rather than a refusal, so the caller keeps owning what silence sounds like.
@@ -134,44 +151,64 @@ class Reference:
         one company was answered out of a passage about another.
 
         `prices` is the subject's snapshot as (evidence, the figures it states, its date), from
-        `finance.Market.snapshot`, given by the caller that holds the price files.
+        `finance.Market.snapshot`, given by the caller that holds the price files. `lately` is the caller's
+        `asks_lately` answer, which can hold for a question with no time word in it.
         """
         query = f"{question} {' '.join(subject.names)}" if subject else question
-        news_first = self.news is not None and LATELY.search(question)
-        taught = self.lessons(question) if subject is None and self.lessons is not None else None
-        if taught and (not news_first or not RECENT.search(question) and self._teaches(question, taught[0], query, as_of)):
-            title, text = taught[0]
+        news_first = self.news is not None and (lately or LATELY.search(question))
+        taught = self._lesson(question, query, as_of, news_first) if subject is None and self.lessons is not None \
+            else None
+        if taught:
+            title, text = taught
             return Looked(text, f"document lesson:{title} ; published undated ; passage_1 {text}", LESSON_HOW,
-                          [], float("nan"), text, "")
+                          [], float("nan"), text, "", lesson=f"{title}. {text}")
         if news_first:
-            return self._recent(question, query, as_of, subject, prices)
+            # Filings are a network wait the price files do not need, so a question here for its route alone, with no
+            # time or news word ("how is AAPL doing", "over the past month"), is answered without them, as it was before.
+            return self._recent(question, query, as_of, subject, prices, not lately or RECENT.search(question))
         for arm in self._arms(subject, question):
             chunks = arm(query, as_of, subject)
             if chunks:
                 return self._read(question, chunks, subject)
         return None
 
-    def _teaches(self, question, lesson, query, as_of):
-        """Whether the lesson answers the question better than every headline does, and well enough to serve."""
-        headlines = self._newswire(query, as_of, None) or []
-        scores = self.judge(question, [f"{lesson[0]}. {lesson[1]}"] + [chunk.text for chunk in headlines])
-        return scores[0] >= LESSON_FLOOR and all(scores[0] > score for score in scores[1:])
+    def _lesson(self, question, query, as_of, news_first):
+        """The first of BM25's first few lessons in `lessons`' order, when it answers. With no move word, one BM25's
+        best section names is served as it is: right ones scored as low as 0.55 by the judge. Any other must clear the
+        judge's floor, and with a move word beat every headline too, so with no judge it is not served."""
+        if news_first and RECENT.search(question):
+            return None
+        lessons = self.lessons(question, LESSONS_RANKED)
+        if lessons and not news_first and self.lessons(question, 1):
+            return lessons[0]
+        if not lessons or self.judge is None:
+            return None
+        headlines = (self._newswire(query, as_of, None) or []) if news_first else []
+        scores = self.judge(question, [f"{lessons[0][0]}. {lessons[0][1]}"] + [chunk.text for chunk in headlines])
+        return lessons[0] if scores[0] >= LESSON_FLOOR and all(scores[0] > score for score in scores[1:]) else None
 
-    def asks_lately(self, question, moves):
-        """Whether a question says it is about now ("lately", "today", "news"), so prices, filings and headlines
-        answer it before the advisory path: "how is AAPL doing lately" was refused at ALFA's confidence cut,
-        while the price files and the newswire held its answer. A time word counts only when the question asks
-        how the price `moves`; for any other intent it takes a news word."""
-        return self.news is not None and (RECENT if moves else NEWS).search(question) is not None
+    def asks_lately(self, question, moves, sure):
+        """Whether prices, filings and headlines answer a question before the advisory path. Always when the router
+        is `sure` it asks how the price `moves`: our sentence from the price files states the 5- and 20-day figures
+        ALFA's answer would, without its confidence having to clear a cut that moves with every refit from feedback.
+        Unsure, it needs a time word or a window; any other intent needs a news word."""
+        return self.news is not None and (moves and (sure or LOOK_BACK.search(question) is not None)
+                                          or NEWS.search(question) is not None)
 
-    def _recent(self, question, query, as_of, subject, prices):
-        """What happened lately, from everything dated: the price snapshot, SEC filings and headlines.
+    def _recent(self, question, query, as_of, subject, prices, filed):
+        """What happened lately, from everything dated: the price snapshot, SEC filings when `filed`, and headlines.
 
         An encyclopedia is not asked: read for "why is infosys falling" it gave "falling because it is a
-        technology company". With nothing dated about it at all, the turn says so.
+        technology company". With nothing dated about it at all, the turn says so. Filings that could not be read
+        cost their own passages and not the turn, as a source does in `Live`: they are read only for a subject, which
+        always comes with its prices.
         """
-        found = (self._searched(query, as_of, subject, self.filings) or []) if self.filings and subject and subject.cik \
-            else []
+        found, refused = [], None
+        if filed and self.filings and subject and subject.cik:
+            try:
+                found = self._searched(query, as_of, subject, self.filings) or []
+            except SearchFailed as error:
+                refused = error
         found += self._newswire(query, as_of, subject) or []
         if not found and prices is None:
             return Looked("", "", UNANSWERED, [], float("nan"), "", "", "", "no recent news names it")
@@ -179,14 +216,16 @@ class Reference:
         day = prices[2] if prices else phrase.latest(found).day
         money = phrase.currency(subject.ticker) if subject else None
         # prices alone need no rewording: the plain answer already says all they do, and that nothing says why
-        written = phrase.recent(question, subject, prices, found, self.writer, money) if self.writer and found else None
+        written = phrase.recent(question, subject, prices, found, self.writer, self.entails, money) \
+            if self.writer and found else None
+        unread = f"sec filings unread: {refused}" if refused else ""
         if written is not None and written.text:
-            return Looked(written.text, evidence, RECENT_HOW, [], float("nan"), "", day, written.by, "")
+            return Looked(written.text, evidence, RECENT_HOW, [], float("nan"), "", day, written.by, "", unread=unread)
         if written is not None and written.because == phrase.NOT_ANSWERED and not prices:
             return Looked("", evidence, UNANSWERED, [], float("nan"), "", day, "", written.because)
-        plain = phrase.recent_plain(subject, prices, found)
+        plain = phrase.recent_plain(subject, prices, found, bool(unread))
         return Looked(plain, evidence, RECENT_HOW, [], float("nan"), plain, day, "",
-                      written.because if written is not None else "")
+                      written.because if written is not None else "", unread=unread)
 
     def _arms(self, subject, question):
         """The arms in the order they are asked, decided by whether the subject has an identity to ask by.

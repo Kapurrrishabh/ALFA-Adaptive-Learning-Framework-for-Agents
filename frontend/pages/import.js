@@ -48,7 +48,7 @@ async function pageImport(view, ctx) {
     finally { check.disabled = false; }
   };
   check.addEventListener("click", upload);
-  view.append(h("div", { class: "grid cols-4" }, ...IMPORT_SOURCES.map(([name, how], i) => h("div", { class: "card" }, h("h3", {}, name),
+  view.append(h("div", { class: "grid cols-4 import-sources" }, ...IMPORT_SOURCES.map(([name, how], i) => h("div", { class: "card" }, h("h3", {}, name),
       h("details", {}, h("summary", {}, "How do I download this?"), h("p", {}, how)),
       i === IMPORT_SOURCES.length - 1 ? h("a", { class: "btn small", href: "/static/import-template.csv", download: "stockintel-import.csv" }, "Download the template") : null))),
     h("div", { class: "card", style: "margin-top:18px" }, fileField, passwordBox, h("div", { class: "row", style: "margin-top:12px" }, check)), out);

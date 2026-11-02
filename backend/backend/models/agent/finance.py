@@ -17,6 +17,7 @@ from collections import namedtuple
 from backend.models.data import advisory, prices
 
 from backend.advisory.sentiment.feeds import feed
+from backend.knowledge_base import lessons
 
 # Questions are lowercased by the tokenizer anyway, and a ticker is the one token whose case a user
 # varies freely: "aapl", "Aapl", "AAPL" all name the same file.
@@ -44,12 +45,12 @@ MOVES = "performance"
 # dataset built it, and a second domain would cap its questions somewhere else.
 QUESTION_TOKENS = advisory.QUESTION_TOKENS
 
-NO_SUBJECT = "i need to know which instrument you are asking about."
+NO_SUBJECT = "i need to know which stock or index you are asking about."
 
-UNKNOWN_QUESTION = "i am not sure what you are asking. i can talk about price, momentum, volatility, " \
-                   "drawdown and week-ahead risk for one instrument."
+UNKNOWN_QUESTION = "i am not sure what you are asking. ask me about one stock or index: how its price has moved, " \
+                   "if it looks overbought, how much it swings, how far it is below its high, or how risky next week looks."
 
-OFF_TOPIC = "i can only help with money, markets, companies and the economy."
+OFF_TOPIC = "i can only help with money and markets. that means shares, companies and the economy."
 
 NOT_IN_SOURCES = "i read the recent news on that, and none of it answers the question."
 
@@ -244,10 +245,16 @@ _MONEY = re.compile(
     r"revenue|earnings|results?|quarter\w*|compan(y|ies)|business\w*|portfolio|risk\w*|volatil\w*|returns?|money|"
     r"salary|savings?|insurance|pension|ppf|epf|deposits?|credit|debt|interest|mortgage|emi|budget|financ\w*|"
     r"capital (gains?|markets?)|balance sheets?|real estate|property|propert(y|ies)|valuation|ratios?|brokers?|demat|futures|options|derivatives?|commodit\w*|crude|oil|sectors?|"
-    r"rall(y|ies)|crash\w*|bull\w*|bear\w*|stop[- ]loss|orders?|hedg\w*|etfs?|analysts?|ratings?|buyback|"
-    r"merger|acquisitions?|listing|momentum|drawdown|wealth|income|expense\w*|cash|spend\w*|economy)\b", re.I)
+    r"rall(y|ies|ied|ying)|crash\w*|bull\w*|bear\w*|stop[- ]loss|orders?|hedg\w*|etfs?|analysts?|ratings?|buyback|"
+    r"merger|acquisitions?|listing|momentum|drawdown|wealth|income|expense\w*|cash|spend\w*|economy|"
+    r"rsi|macd|bollinger|stochastic oscillators?|overbought|oversold|(small|mid|large)[- ]?caps?|fiis?|diis?|"
+    r"diversif\w*|candlesticks?|chart patterns?|doji|harami|sharpe|sortino|ebitda|ltcg|stcg|elss|cagr|xirr)\b", re.I)
+# Words about markets only beside another: "the volume of a sphere", "an acne breakout" and "a pie chart" are not.
+_PAIRED = re.compile(r"\b(volume|breakouts?|charts?|candles?|hammer)\b", re.I)
 
 
-def about_money(text):
-    """Whether a question is about money, markets, companies or the economy, by its words alone."""
-    return _MONEY.search(text) is not None
+def about_money(text, lesson=""):
+    """Whether a question is about money: by its words, or because the curated `lesson` found for it uses every one of
+    them. One shared word is not enough: "how do candles burn" found the lesson on candle anatomy."""
+    return (_MONEY.search(text) is not None or len(lessons.stems(" ".join(_PAIRED.findall(text)))) > 1
+            or bool(lesson) and lessons.covers(lesson, text))
