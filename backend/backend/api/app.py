@@ -27,7 +27,8 @@ from pydantic.networks import validate_email
 
 from backend.advisory import report as R
 from backend.advisory.calculators.backtest import strategies as S
-from backend.config import FORECAST_DAYS, resolve_symbol
+from backend.advisory.fusion.fusion import HORIZON_TEXT
+from backend.config import BUILDER_MIN_CAPITAL, BUILDER_STOCKS, FORECAST_DAYS, RISK_MODE, RISK_PROFILES, resolve_symbol
 from backend.database.sources import panel
 from backend.database.sources.provider import DataUnavailable
 from backend.database.sources.quality import DataQualityError
@@ -125,15 +126,15 @@ class FundTransactionIn(BaseModel):
 
 class PortfolioIn(BaseModel):
     cash: float = Field(ge=0)
-    risk_profile: Literal["conservative", "moderate", "aggressive"] = "moderate"
-    horizon: Literal["short", "medium", "long"] = "medium"
+    risk_profile: Literal["conservative", "moderate", "aggressive"]
+    horizon: Literal["short", "medium", "long"]
     transactions: List[TransactionIn]
 
 
 class CashIn(BaseModel):
     cash: float = Field(ge=0, lt=1e10)
-    risk_profile: Literal["conservative", "moderate", "aggressive"] = "moderate"
-    horizon: Literal["short", "medium", "long"] = "medium"
+    risk_profile: Literal["conservative", "moderate", "aggressive"]
+    horizon: Literal["short", "medium", "long"]
 
 
 class ImportIn(BaseModel):
@@ -149,6 +150,7 @@ class BuilderHolding(BaseModel):
 
 class BuilderApplyIn(BaseModel):
     holdings: List[BuilderHolding] = Field(min_length=1, max_length=30)
+    paid_from_cash: bool       # true takes the cost off the stored cash in the same save, so it is not counted twice
 
 
 class WhatIfIn(BaseModel):
@@ -241,6 +243,13 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
 
     def session(owner: str):
         return orch.session(owner, "api")
+
+    def require_set_up_portfolio(owner: str) -> Dict[str, Any]:
+        """No row means the user has not answered the setup questions, and there is no default to guess them."""
+        p = orch.store.portfolio(owner)
+        if p is None:
+            raise HTTPException(400, SET_UP_FIRST)
+        return p
 
     @app.get("/health")
     def health():
@@ -364,20 +373,35 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
         return FileResponse(FRONTEND / "sw.js", media_type="application/javascript")
 
     @app.get("/ui/builder", dependencies=[Depends(auth)])
-    def ui_builder(capital: float = Query(gt=999, lt=1e9), strategy: Literal["momentum", "lowvol", "blend"] = "momentum",
-                   risk: Literal["full", "balanced", "defensive"] = "balanced", n: int = Query(default=10, ge=3, le=25),
+    def ui_builder(capital: float = Query(ge=BUILDER_MIN_CAPITAL, lt=1e9),
+                   strategy: Literal["momentum", "lowvol", "blend"] = "momentum",
+                   risk: Literal["full", "balanced", "defensive"] = "balanced",
+                   n: int = Query(default=10, ge=BUILDER_STOCKS[0], le=BUILDER_STOCKS[1]),
                    exclude: str = ""):
         return ok(hub.build_portfolio(capital, strategy, risk, n, [x for x in exclude.split(",") if x]))
+
+    @app.get("/ui/profiles", dependencies=[Depends(auth)])
+    def ui_profiles():
+        return {"risk": {name: {"max_position_pct": round(p.max_position_weight * 100, 2),
+                                "max_sector_pct": round(p.max_sector_weight * 100, 2), "mode": RISK_MODE[name]}
+                         for name, p in RISK_PROFILES.items()},
+                "horizon": HORIZON_TEXT,
+                "builder": {"min_capital": BUILDER_MIN_CAPITAL, "min_stocks": BUILDER_STOCKS[0],
+                            "max_stocks": BUILDER_STOCKS[1]}}
 
     @app.post("/ui/builder/apply")
     def ui_builder_apply(body: BuilderApplyIn, owner: str = Depends(auth)):
         with orch.portfolio_lock(owner):
-            p = orch.store.portfolio(owner) or {"cash": 0.0, "risk_profile": "moderate",
-                                                "horizon": "medium", "transactions": []}
+            p = require_set_up_portfolio(owner)
             today = date.today().isoformat()
             txs = p["transactions"] + [{"symbol": h.symbol, "side": "BUY", "quantity": h.shares, "price": h.price,
                                         "trade_date": today} for h in body.holdings]
-            n = orch.save_portfolio(owner, p["cash"], p["risk_profile"], p["horizon"], txs)
+            cost = sum(h.shares * h.price for h in body.holdings)
+            cash = round(p["cash"] - cost, 2) if body.paid_from_cash else p["cash"]
+            if cash < 0:
+                raise HTTPException(400, f"These stocks cost ₹{cost:,.2f}, more than your ₹{p['cash']:,.2f} of cash. "
+                                         "Check the prices you typed, or raise your cash first.")
+            n = orch.save_portfolio(owner, cash, p["risk_profile"], p["horizon"], txs)
         return {"status": "saved", "transactions": n}
 
     @app.get("/ui/agent/status", dependencies=[Depends(auth)])
@@ -412,8 +436,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     @app.post("/portfolio/transactions")
     def add_transaction(tx: TransactionIn, owner: str = Depends(auth)):
         with orch.portfolio_lock(owner):
-            p = orch.store.portfolio(owner) or {"cash": 0.0, "risk_profile": "moderate",
-                                                "horizon": "medium", "transactions": []}
+            p = require_set_up_portfolio(owner)
             txs = p["transactions"] + [{**tx.model_dump(), "trade_date": tx.trade_date.isoformat()}]
             n = orch.save_portfolio(owner, p["cash"], p["risk_profile"], p["horizon"], txs)
         return {"status": "saved", "transactions": n}
@@ -469,10 +492,10 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
 
     @app.post("/portfolio/cash")
     def set_cash(body: CashIn, owner: str = Depends(auth)):
+        """The setup call: with no row yet, it makes one from the user's own answers."""
         with orch.portfolio_lock(owner):
-            p = orch.store.portfolio(owner) or {"risk_profile": "moderate", "horizon": "medium",
-                                                "transactions": []}
-            orch.save_portfolio(owner, body.cash, body.risk_profile, body.horizon, p["transactions"])
+            p = orch.store.portfolio(owner)
+            orch.save_portfolio(owner, body.cash, body.risk_profile, body.horizon, p["transactions"] if p else [])
         return {"status": "saved"}
 
     @app.post("/portfolio/import/preview")
@@ -500,9 +523,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     @app.post("/portfolio/import/confirm")
     def import_confirm(body: ImportIn, owner: str = Depends(auth)):
         with orch.portfolio_lock(owner):
-            p = orch.store.portfolio(owner)
-            if p is None:
-                raise HTTPException(400, SET_UP_FIRST)
+            p = require_set_up_portfolio(owner)
             kept = p["transactions"] if body.mode == "add" else []
             n = orch.save_portfolio(owner, p["cash"], p["risk_profile"], p["horizon"], kept + [
                 {**t.model_dump(), "trade_date": t.trade_date.isoformat()} for t in body.stocks])
@@ -667,9 +688,8 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
         from backend.api.nlu import Intent
         from backend.advisory.signals.advisor import render
         s = session(owner)
-        s.risk_profile = {"full": "aggressive", "defensive": "conservative"}.get(risk, "moderate")
         words = {"lowvol": "low volatility", "blend": "blend", "momentum": ""}[strategy]
-        p = orch._signal_plan(s, Intent(name="signals", amount=capital or None, raw=words))
+        p = orch._signal_plan(s, Intent(name="signals", amount=capital or None, raw=words), risk)
         payload = sanitize(p.to_dict())
         orch.store.save_plan(owner, payload)
         return ok({**payload, "text": render(p)})

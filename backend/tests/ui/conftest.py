@@ -13,6 +13,7 @@ from tests.app.conftest import EMAIL, PASSWORD, SECRET, FakeGoogle, Outbox
 from tests.app.test_portfolio_backtest import NSE_FILES
 from tests.app.test_funds import NAV_TEXT, growing, mfapi_json
 
+NEW_EMAIL = "new@example.com"       # a second user, who has not set up a portfolio
 RUN_REQUESTS = 700   # provisional: signed-in requests the pages sent in one full browser run (683 on 2026-11-01, 676 on 2026-11-02, 665 with 360 px added); recount when the suite grows
 STOCKS = pd.DataFrame({"symbol": ["TEST", "PEER"], "name": ["Test Industries Ltd.", "Peer Power Ltd."],
                        "sector": ["Industrials", "Energy"], "nifty200": [True, True]})
@@ -45,9 +46,9 @@ def track_record(dates):
                         {"test": "Same stocks on random dates (placebo)", "excess_20d": 0.1}]}
 
 
-def sign_in(context, base_url):
+def sign_in(context, base_url, email=EMAIL):
     """Sign a browser context in through the login form; the page's requests then carry its cookie."""
-    r = context.request.post(f"{base_url}/auth/cookie/login", form={"username": EMAIL, "password": PASSWORD})
+    r = context.request.post(f"{base_url}/auth/cookie/login", form={"username": email, "password": PASSWORD})
     assert r.ok, r.text()
 
 
@@ -124,6 +125,7 @@ def base_url(tmp_path_factory, outbox):
         # in another thread: Playwright's sync API runs an event loop here, and create_user starts its own
         with ThreadPoolExecutor(1) as pool:
             user = pool.submit(accounts.create_user, EMAIL, PASSWORD, verified=True).result()
+            pool.submit(accounts.create_user, NEW_EMAIL, PASSWORD, verified=True).result()
         orch = Orchestrator(provider, Store(":memory:"), use_rss_news=False, charges_model_calls=True)
         orch.save_portfolio(owner_of(user), 0.0, "moderate", "medium", [{"symbol": "TEST", "side": "BUY", "quantity": 10,
                                                          "price": float(prices["close"].iloc[-120]), "trade_date": str(prices.index[-120].date())}])

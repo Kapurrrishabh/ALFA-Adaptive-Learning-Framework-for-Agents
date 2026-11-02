@@ -1085,7 +1085,7 @@ function askCard(sym) {
     log, h("div", { class: "row" }, input, h("button", { class: "btn primary", onclick: () => send() }, "Ask")));
 }
 
-function addTxModal(ctx, sym, price) {
+function addTxModal(ctx, sym, price, saved = () => { if (location.hash.startsWith("#/portfolio")) route(); }) {
   const f = { symbol: h("input", { value: sym || "", placeholder: "Symbol, e.g. TCS" }), side: h("select", {}, h("option", {}, "BUY"), h("option", {}, "SELL")),
     quantity: h("input", { type: "number", min: "1", value: "1" }), price: h("input", { type: "number", step: "0.05", value: price ? price.toFixed(2) : "" }),
     trade_date: h("input", { type: "date", value: new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()) }),
@@ -1093,7 +1093,7 @@ function addTxModal(ctx, sym, price) {
   for (const [name, input] of Object.entries(f)) input.name = name;
   const save = async () => {
     await api("/portfolio/transactions", { method: "POST", body: JSON.stringify({ symbol: f.symbol.value.trim().toUpperCase(), side: f.side.value, quantity: +f.quantity.value, price: +f.price.value, trade_date: f.trade_date.value, fees: +f.fees.value }) });
-    toast("Saved to portfolio"); if (location.hash.startsWith("#/portfolio")) route();
+    toast("Saved to portfolio"); saved();
   };
   Dialog(ctx, "Add transaction", [
     Field("Stock", f.symbol), h("div", { class: "grid cols-2", style: "grid-template-columns:1fr 1fr" }, Field("Type", f.side), Field("Date", f.trade_date)),
@@ -1173,6 +1173,8 @@ async function pageSignals(view, ctx) {
   const cap = h("input", { type: "number", min: "0", value: localStorage.getItem("si-cap") || "100000", style: "width:150px" });
   const strat = h("select", {}, h("option", { value: "momentum" }, "Momentum (NSE method)"), h("option", { value: "lowvol" }, "Low volatility"), h("option", { value: "blend" }, "Blend 50/50"));
   const risk = h("select", {}, h("option", { value: "balanced" }, "Balanced"), h("option", { value: "full" }, "Full exposure"), h("option", { value: "defensive" }, "Defensive (trend + vol)"));
+  const [mine, profiles] = await Promise.all([portfolioOrNone(ctx), api("/ui/profiles", { signal: ctx.signal })]);
+  if (mine) risk.value = profiles.risk[mine.risk_profile].mode;
   const out = h("div", { class: "grid", style: "margin-top:18px" });
   const run = async () => {
     localStorage.setItem("si-cap", cap.value);
@@ -1439,6 +1441,7 @@ async function pageHome(view, ctx) {
     feature("chat", "Ask AI", "Chat with memory: “Should I buy ITC?”, “Why?”, “Compare it with HUL”. Optionally add your self-learning agent's view.", "#/chat"),
     feature("chart", "Track record", "How well each method did on data it never saw — including the ones that don't work.", "#/performance")));
   view.append(h("p", { class: "footer-note" }, "Decision support, not investment advice. Verify figures against NSE/BSE filings before acting."));
+  homeSummary(view, ctx);
   let d; try { d = await api("/ui/performance", { signal: ctx.signal }); } catch (e) { stats.replaceChildren(h("p", { class: "muted", style: "margin-top:14px" }, e.status !== 404 ? `Track record unavailable: ${errorWords(e)}` : "Run `stockintel build-performance` once to show the measured track record here.")); return; }
   const live = d.momentum.live_check, band = bandRecords(d.forecast.coverage)[0];
   const edge = d.patterns.filter((r) => Math.abs(r.z || 0) >= d.bonferroni_z).length, ch5 = d.open_models && d.open_models.chronos.horizons.find((x) => x.horizon === 5);
@@ -1492,7 +1495,7 @@ async function pageBuilder(view, ctx) {
     if (!b.holdings.length) { out.replaceChildren(EmptyState("layers", "No stock to buy with these settings", null, null), warn || ""); return; }
     const r = b.risk, maxW = Math.max(...b.holdings.map((x) => x.weight_pct));
     const apply = () => Dialog(ctx, "Add these stocks to your portfolio?", `This adds ${b.holdings.length} BUY transactions dated today. Do this after you have actually bought them.`, ["Add to portfolio", async () => {
-      await api("/ui/builder/apply", { method: "POST", body: JSON.stringify({ holdings: b.holdings.map((x) => ({ symbol: x.symbol, shares: x.shares, price: x.price })) }) });
+      await api("/ui/builder/apply", { method: "POST", body: JSON.stringify({ holdings: b.holdings.map((x) => ({ symbol: x.symbol, shares: x.shares, price: x.price })), paid_from_cash: false }) });
       toast("Added to your portfolio"); location.hash = "#/portfolio"; }]);
     const kpi = (k, v, sub, c = "") => h("div", { class: "stat kpi" }, h("div", { class: "k" }, k), h("div", { class: `v num ${c}` }, v), h("div", { class: "muted", style: "font-size:var(--fs-xs)" }, sub));
     const kpis = h("div", { class: "card" }, h("div", { class: "grid cols-4" }, kpi("Invested", inr(b.capital - b.cash_left, 0), `${b.holdings.length} stocks`), kpi("Cash left", inr(b.cash_left, 0), `plan invests ${Math.round(b.invest_fraction * 100)}% now`),
