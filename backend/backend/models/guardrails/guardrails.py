@@ -11,6 +11,9 @@ so it can sit in front of serving and in a test over the training set alike.
 
 import re
 
+from backend.knowledge_base.lessons import STOP
+from backend.knowledge_base.retrieval.chunk import sentences
+
 # Signed decimals and percentages, with thousands separators, which is every shape as_text produces.
 # The separated form is tried first and needs a real group, so "5 ," keeps its comma as punctuation
 # while a plain "1158.70" still matches whole instead of splitting into 115 and 8.70.
@@ -48,6 +51,63 @@ def unsupported_figures(answer, evidence):
     return [figure.lstrip("_") for figure in _windows_named(answer)
             if (figure[1:] not in windows if figure[:1] == "_"
                 else figure not in stated and (figure[:1] in "+-" or figure not in magnitudes))]
+
+
+BRACKETED = re.compile(r"\s*\(([^()]*)\)")
+# a run of capitalised words, which may hold "of"; "Reserve Bank of India (RBI)" is one name with two spellings
+_NAME = re.compile(r"[A-Z][\w&-]*(?:(?: of)? [A-Z][\w&-]*)*")
+_ALIAS = re.compile(rf"({_NAME.pattern}) \(([A-Z][A-Z&]+)\)")
+_MONTHS = frozenset("jan january feb february mar march apr april may jun june jul july aug august sep sept september "
+                    "oct october nov november dec december".split())
+
+
+def unbound_figures(answer, passages):
+    """(figure, name) for each figure the answer ties to a name no passage states it with, sentence by sentence.
+
+    A figure is tied to the nearest name before it, or after it when none is before. Only names and figures some
+    passage holds are read: one none holds is `unsupported_figures`' to catch. An entailment model does not tie a
+    number to what it measures: "TCS shares fell 1.2%" passed for passages where 1.2% was the Nifty's fall.
+    """
+    held = [passage.lower() for passage in passages]
+    unbound = []
+    for sentence in sentences(answer):
+        aliases = dict(_ALIAS.findall(sentence))
+        sentence = BRACKETED.sub("", sentence)
+        names = []
+        for found in _NAME.finditer(sentence):
+            spellings = _spellings(found.group(0), aliases.get(found.group(0)))
+            if spellings and any(_says(passage, spellings) for passage in held):
+                names.append((found.start(), spellings))
+        for found in _FIGURE.finditer(sentence):
+            stating = [passage for passage in held if _magnitude(found.group(0)) in map(_magnitude, figures(passage))]
+            before = [spellings for start, spellings in names if start < found.start()]
+            tied = before[-1] if before else names[0][1] if names else ()
+            if stating and tied and not any(_says(passage, tied) for passage in stating):
+                unbound.append((found.group(0), tied[0]))
+    return unbound
+
+
+def _spellings(run, alias):
+    """A name's spellings, without the everyday words and months a capital can start: "The Sensex" is "Sensex"."""
+    words = run.split()
+    while words and _everyday(words[0]):
+        words.pop(0)
+    while words and _everyday(words[-1]):
+        words.pop()
+    return tuple(filter(None, [" ".join(words), alias]))
+
+
+def _everyday(word):
+    """"The", "Oct" or a dangling "of", but not "IT" or "US", which are names in capitals."""
+    return word.lower() in STOP | _MONTHS | {"of"} and not (len(word) > 1 and word.isupper())
+
+
+def _says(passage, spellings):
+    return any(re.search(rf"(?<!\w){re.escape(spelling.lower())}(?!\w)", passage) for spelling in spellings)
+
+
+def _magnitude(figure):
+    return figure.lstrip("+-").replace(",", "")
 
 
 def _windows_named(text):

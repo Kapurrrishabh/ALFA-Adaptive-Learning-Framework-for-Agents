@@ -1152,6 +1152,16 @@ def test_a_passages_figure_in_brackets_after_another_subject_is_read_with_its_se
     assert "no passage says “Refinery stocks fell 3% after the RBI hike.”" in turn.unphrased_because
 
 
+def test_a_figure_the_reply_ties_to_another_name_than_its_passage_does_serves_the_plain_answer(market, router):
+    """"Infosys and Wipro each fell about 1.2%" passed the entailment model, though 1.2% was the Nifty's fall."""
+    from backend.models.agent import phrase
+    nifty = Chunk("ET, 7 Oct 2026: The Nifty fell 1.2% as refinery stocks dropped.", [], "https://n.test/n", "2026-10-07")
+    built = news_reference(FakeWriter("Reliance Industries shares fell 1.2% (ET, 7 Oct 2026)."), news=(NEWS, nifty))
+    turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
+    assert turn.served == phrase.recent_plain(None, None, [NEWS, nifty])
+    assert "it ties 1.2% to Reliance Industries" in turn.unphrased_because
+
+
 def test_a_reply_that_only_names_a_source_serves_the_plain_answer(market, router):
     from backend.models.agent import phrase
     turn = agent(market, router, reference=news_reference(FakeWriter("(Mint, 6 Oct 2026)"))).answer(ASKED_YES_NO)

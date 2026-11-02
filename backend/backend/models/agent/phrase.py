@@ -4,8 +4,8 @@ ALFA's generator, or the passage the reference path chose, decides what the answ
 only rewords it. Its words are served when they keep every figure the draft states, add no figure the
 evidence does not, and claim nothing the source does not (`guardrails.added_claims`, and for passages an
 entailment model reading each sentence). Otherwise the draft is served and the turn says why, so a reworded
-answer is never the only version of a fact. The entailment model does not tie a figure to what it measures:
-"Crude oil prices rose 4%" passed for a passage where 4% was Oil India's shares.
+answer is never the only version of a fact. The entailment model does not tie a figure to what it measures, so
+`guardrails.unbound_figures` does, for names a passage holds: "TCS shares fell 1.2%" passed it, 1.2% being the Nifty's.
 
 This is the setup that passed 22 of 24 analyst notes (advisory/analyst.py). Composing from raw evidence was
 the setup that failed there: a small model handed facts writes fluent misattributions.
@@ -14,7 +14,8 @@ import re
 from collections import namedtuple
 
 from backend.knowledge_base.retrieval.chunk import sentences
-from backend.models.guardrails import added_claims, figures, unsupported_figures
+from backend.models.guardrails import added_claims, figures, unbound_figures, unsupported_figures
+from backend.models.guardrails.guardrails import BRACKETED
 
 # `text` is empty exactly when the language model's words are not served; `because` then says why
 Phrased = namedtuple("Phrased", "text by because")
@@ -48,7 +49,6 @@ _BARE_VERDICT = re.compile(r"^\W*(yes|no)\s*([,.;:!]|$)", re.I)
 # Provisional, on sentence.entailment's scale. On 124 replies, 40 by the writer for user questions and 84 written to
 # test it, 0.5 to 0.7 were right on 115 and 0.85 on 117, too narrow a gain to fit; more writer replies would place it.
 ENTAILED = 0.5
-_BRACKETED = re.compile(r"\s*\(([^()]*)\)")
 # a size the draft never gives: "Infosys is quite volatile" for a draft that gave the figure alone
 _SIZES = re.compile(r"\b(a lot|quite|very|highly|extremely|fairly|significant(ly)?|moderate(ly)?|sharp(ly)?|little)\b",
                     re.I)
@@ -87,7 +87,9 @@ def from_passages(question, chunks, writer, entails, money=None):
     if _DECLINES.search(text):
         return Phrased("", "", NOT_ANSWERED)
     reasons = (["it answers yes or no"] if _BARE_VERDICT.match(text) else []) + \
-        _unentailed(text, chunks, entails) + _checked(text, passages, money, question)
+        _unentailed(text, chunks, entails) + _checked(text, passages, money, question) + \
+        [f"it ties {figure} to {name}, which no passage does" for figure, name in
+         unbound_figures(text, [chunk.text for chunk in chunks])]
     return Phrased("", "", "; ".join(reasons)) if reasons else Phrased(text, by, "")
 
 
@@ -157,7 +159,7 @@ def _unentailed(text, chunks, entails):
     cited = {_citation(chunk) for chunk in chunks}
     kept = lambda bracket: "" if all(part.strip() in cited for part in bracket.group(1).split(";")) \
         else f" {bracket.group(1)}"
-    claims = [claim for claim in (_BRACKETED.sub(kept, part).strip() for part in sentences(text))
+    claims = [claim for claim in (BRACKETED.sub(kept, part).strip() for part in sentences(text))
               if re.search(r"\w", claim)]
     if not claims:
         return ["it states nothing a passage could support"]

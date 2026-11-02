@@ -86,6 +86,29 @@ def test_a_refusal_has_nothing_to_support():
     assert guardrails.unsupported_figures(advisory.UNSUPPORTED, "") == []
 
 
+NIFTY_AND_TCS = ["ET, 27 Oct 2026: The Nifty fell 1.2% as IT stocks dropped on weak US cues.",
+                 "Mint, 26 Oct 2026: TCS shares slid 2% after its results missed estimates."]
+
+
+def test_a_figure_tied_to_a_name_no_passage_states_it_with_is_caught():
+    """"TCS shares fell 1.2%" passed the entailment model for passages where 1.2% was the Nifty's fall."""
+    assert guardrails.unbound_figures("TCS shares fell 1.2% on weak US cues.", NIFTY_AND_TCS) == [("1.2%", "TCS")]
+
+
+@pytest.mark.parametrize("answer", ["The Nifty fell 1.2% as IT stocks dropped (ET, 27 Oct 2026).",
+                                    "TCS shares slid 2%, and the Nifty fell 1.2%.",
+                                    "Down 1.2%, the Nifty fell as IT stocks dropped."])
+def test_a_figure_tied_to_the_name_its_passage_gives_it_is_bound(answer):
+    assert guardrails.unbound_figures(answer, NIFTY_AND_TCS) == []
+
+
+def test_a_name_with_its_short_form_in_brackets_is_bound_by_either_spelling():
+    """"The Reserve Bank of India (RBI) ... 5.5%" was refused for a passage that gave 5.5% under "RBI" alone."""
+    passages = ["Mint, 7 Oct 2026: RBI hikes the repo rate by 25 bps to 5.5%.",
+                "NDTV Profit, 7 Oct 2026: The Reserve Bank of India raised its growth forecast."]
+    assert guardrails.unbound_figures("The Reserve Bank of India (RBI) raised the repo rate to 5.5%.", passages) == []
+
+
 def test_screen_swaps_in_the_refusal_and_reports_why():
     text, unsupported = guardrails.screen("its target is 250.00 .", EVIDENCE, advisory.UNSUPPORTED)
     assert text == advisory.UNSUPPORTED
