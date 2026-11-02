@@ -25,7 +25,7 @@ async function pageFund(view, ctx) {
     h("div", { class: "spread stock-head" }, h("div", {}, h("h2", {}, sc.fund), h("div", { class: "muted" }, `${sc.amc} · ${sc.category}`), h("div", { class: "muted" }, planName(sc))),
       h("button", { class: "btn", onclick: () => addFundModal(ctx, sc) }, "+ Add to portfolio")),
     h("div", { class: "row", style: "margin-top:14px;align-items:baseline" }, h("div", { class: "price num" }, inr(sc.nav, 4)), h("div", { class: "muted" }, `NAV on ${sc.nav_date}`)),
-    h("div", { class: "muted", style: "font-size:12px;margin-top:8px" }, `Source: ${f.source.nav}`));
+    h("div", { class: "muted", style: "font-size:var(--fs-xs);margin-top:8px" }, `Source: ${f.source.nav}`));
   const plans = h("div", { class: "card" }, h("h3", {}, "Plans of this fund"),
     h("div", { class: "list" }, ...f.plans.map((p) => h("a", { href: fundHref(p.code), "aria-current": p.code === sc.code ? "page" : null },
       h("div", {}, h("div", { class: "t" }, planName(p)), h("div", { class: "s" }, p.is_ambiguous ? `Code ${p.code} · AMFI names another plan the same way` : `Code ${p.code}`)),

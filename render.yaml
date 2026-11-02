@@ -4,9 +4,16 @@ services:
     runtime: docker
     plan: free                      # 512 MB, sleeps after 15 idle minutes; state lives in a Hugging Face dataset
     healthCheckPath: /health
+    # No FORWARDED_ALLOW_IPS: Render's proxy address cannot be pinned, so the per-IP sign-in limit counts every caller as one
     envVars:
-      - key: STOCKINTEL_API_KEY
+      - key: STOCKINTEL_AUTH_SECRET
         generateValue: true
+      - key: STOCKINTEL_PUBLIC_URL    # https://<service>.onrender.com; the server will not start without it
+        sync: false
+      - key: GOOGLE_CLIENT_ID         # the Google Cloud console's OAuth client; leave both empty to keep Google sign-in off
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
       - key: STOCKINTEL_STATE_REPO    # e.g. you/stockintel-state (private dataset; created on first save)
         sync: false
       - key: STOCKINTEL_MODEL_SPACE   # e.g. you/stockintel-models (the ZeroGPU Space in deploy/hf-models-space)

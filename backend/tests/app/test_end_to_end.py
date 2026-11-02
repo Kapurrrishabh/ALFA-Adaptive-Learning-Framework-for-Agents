@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from backend.advisory import report as R
 from backend.user.portfolio.alerts import evaluate
 from backend.api.accounts import owner_of
-from backend.api.app import PUBLIC_PATHS, create_app
+from backend.api.app import HSTS, PUBLIC_PATHS, SECURITY_HEADERS, create_app
 from backend.config import DEFAULT_PORTFOLIO, FORECAST_DAYS
 from backend.api.orchestrator import Orchestrator
 from backend.advisory.calculators.screener import screen
@@ -24,6 +24,7 @@ from .test_funds import NAV_TEXT, growing, mfapi_json
 from .test_nlu_llm import _Picker
 
 ORACLE = Path(__file__).resolve().parents[3] / "deploy" / "oracle"
+SERVE_NEEDS = ["STOCKINTEL_AUTH_SECRET", "STOCKINTEL_PUBLIC_URL"]
 OTHER = "ravi@example.com"
 UNAUTHORIZED = (401, {"detail": "Unauthorized"})    # fastapi-users' own refusal, not a 401 of ours
 FUND_BUY = {"scheme_code": 118989, "side": "BUY", "units": 10, "nav": 200.0, "trade_date": "2025-01-02"}
@@ -340,7 +341,7 @@ def test_alert_explains_why_it_fired(service):
     assert alert is not None and any("classification changed" in r for r in alert.reasons)
 
 
-@pytest.mark.parametrize("missing", ["STOCKINTEL_AUTH_SECRET", "STOCKINTEL_PUBLIC_URL"])
+@pytest.mark.parametrize("missing", SERVE_NEEDS)
 def test_serve_will_not_start_without_its_sign_in_settings(monkeypatch, tmp_path, missing):
     import argparse
     import uvicorn
@@ -389,6 +390,14 @@ def anonymous_answers(app, headers):
 def test_every_private_route_refuses_anonymous_callers(orch, accounts, headers):
     answers = anonymous_answers(create_app(orch, accounts), headers)
     assert len(answers) > 50 and {k: v for k, v in answers.items() if v != UNAUTHORIZED} == {}
+
+
+def test_every_route_is_one_the_anonymous_walk_checks(orch, accounts):
+    """The walk above reads only APIRoutes, so a plain route or a websocket added later would escape it unnoticed."""
+    from fastapi.routing import APIRoute
+    from starlette.routing import Mount
+    assert [r.path for r in routes_of(create_app(orch, accounts))
+            if not isinstance(r.original_route, APIRoute) and not (isinstance(r.original_route, Mount) and r.path == "/static")] == []
 
 
 def test_every_public_path_is_a_route(orch, accounts):
@@ -456,10 +465,14 @@ def test_the_per_email_limit_counts_an_address_however_it_is_typed(orch, account
     monkeypatch.setattr(api_mod, "EMAIL_TRIES", 2)
     client = TestClient(create_app(orch, accounts), base_url=PUBLIC_URL)
     accounts.create_user(EMAIL, PASSWORD, verified=True)
-    typed = (EMAIL, EMAIL.upper(), EMAIL.title(), f" {EMAIL}", f"{EMAIL} ", f"Asha <{EMAIL}>", f"Ravi <{EMAIL}>")
-    tries = [client.post(path, data={"username": email, "password": PASSWORD}) if path.endswith("login")
-             else client.post(path, json={"email": email, "password": PASSWORD}) for email in typed]
-    assert [(r.status_code, "this email address" in r.text) for r in tries[2:]] == [(429, True)] * 5
+    login = path.endswith("login")
+    shouted = {"Content-Type": "Application/X-WWW-Form-Urlencoded" if login else "Application/JSON"}
+    typed = [(email, {}) for email in (EMAIL, EMAIL.upper(), EMAIL.title(), f" {EMAIL}", f"{EMAIL} ",
+                                       f"Asha <{EMAIL}>", f"Ravi <{EMAIL}>")] + [(EMAIL, shouted)]
+    tries = [client.post(path, data={"username": email, "password": PASSWORD}, headers=headers) if login
+             else client.post(path, json={"email": email, "password": PASSWORD}, headers=headers)
+             for email, headers in typed]
+    assert [(r.status_code, "this email address" in r.text) for r in tries[2:]] == [(429, True)] * 6
 
 
 def test_signing_out_with_a_json_header_and_no_body_works(orch, accounts):
@@ -484,6 +497,42 @@ def test_the_privacy_page_and_googles_return_page_open_signed_out(orch, accounts
 @pytest.mark.parametrize("path", [*PUBLIC_PATHS, "/static/app.js", "/static/app.css"])
 def test_every_public_path_and_the_app_files_open_signed_out(orch, accounts, path):
     assert TestClient(create_app(orch, accounts), base_url=PUBLIC_URL).get(path).status_code == 200
+
+
+@pytest.mark.parametrize("signed_in, path, status", [(False, "/", 200), (False, "/health", 200), (True, "/ui/usage", 200),
+                                                     (False, "/portfolio", 401), (False, "/static/app.js", 200)])
+def test_every_kind_of_answer_carries_the_security_headers(orch, accounts, signed_in, path, status):
+    client = signed_in_client(orch, accounts) if signed_in else TestClient(create_app(orch, accounts), base_url=PUBLIC_URL)
+    r = client.get(path)
+    assert (r.status_code, {k: r.headers.get(k) for k in SECURITY_HEADERS}) == (status, SECURITY_HEADERS)
+
+
+@pytest.mark.parametrize("public_url, hsts", [(PUBLIC_URL, HSTS), ("http://127.0.0.1:8931", None)], ids=["https", "http"])
+def test_browsers_are_told_to_keep_to_https_only_when_the_address_is_https(orch, db_path, public_url, hsts):
+    from backend.api.accounts import Accounts
+    from .conftest import SECRET
+    client = TestClient(create_app(orch, Accounts(db_path, public_url, SECRET, None, None)), base_url=public_url)
+    assert client.get("/health").headers.get("strict-transport-security") == hsts
+
+
+@pytest.mark.parametrize("signed_in, path", [(True, "/ui/usage"), (False, "/portfolio")], ids=["answer", "refusal"])
+def test_json_answers_are_never_stored_by_a_cache(orch, accounts, signed_in, path):
+    client = signed_in_client(orch, accounts) if signed_in else TestClient(create_app(orch, accounts), base_url=PUBLIC_URL)
+    assert client.get(path).headers.get("cache-control") == "no-store"
+
+
+@pytest.mark.parametrize("method, path", [("GET", "/health"), ("GET", "/ui/usage"), ("OPTIONS", "/ui/usage")])
+def test_no_answer_lets_another_site_read_it(orch, accounts, method, path):
+    r = signed_in_client(orch, accounts).request(method, path, headers={"Origin": "https://evil.example",
+                                                                        "Access-Control-Request-Method": "GET"})
+    assert "access-control-allow-origin" not in r.headers
+
+
+def test_the_install_screen_takes_its_colours_from_the_light_theme(orch, accounts):
+    from backend.paths import FRONTEND
+    light = (FRONTEND / "app.css").read_text().split(':root:not([data-theme="dark"]) {')[1].split("}")[0]
+    m = TestClient(create_app(orch, accounts), base_url=PUBLIC_URL).get("/manifest.webmanifest").json()
+    assert (f"--bg: {m['theme_color']};" in light, f"--bg-2: {m['background_color']};" in light) == (True, True)
 
 
 @pytest.mark.parametrize("on", [True, False])
@@ -628,6 +677,25 @@ def test_a_save_from_another_tab_while_the_account_is_deleted_is_removed_too(orc
     assert orch.store.portfolio(gone) is None
 
 
+def test_other_requests_are_served_while_an_account_is_erased(orch, accounts, monkeypatch):
+    import threading
+    started, served, waits, real_forget = threading.Event(), threading.Event(), [], orch.forget
+
+    def slow_forget(portfolio):
+        started.set()
+        waits.append(served.wait(20))       # times out if the erase holds the event loop that serves /health
+        real_forget(portfolio)
+    monkeypatch.setattr(orch, "forget", slow_forget)
+    with signed_in_client(orch, accounts) as client:       # one event loop for both requests
+        deleting = threading.Thread(target=client.delete, args=("/users/me",))
+        deleting.start()
+        started.wait(20)
+        client.get("/health")
+        served.set()
+        deleting.join()
+    assert waits == [True, True]
+
+
 def test_the_state_backup_holds_no_sign_in_while_the_live_database_keeps_it(orch, accounts, db_path, tmp_path):
     import sqlite3
     from contextlib import closing
@@ -695,6 +763,47 @@ def test_the_oracle_host_opens_only_https_to_the_internet():
     assert re.findall(r"^for port in (.*); do$", (ORACLE / "setup.sh").read_text(), re.M) == ["443"]
 
 
+def oracle_services(file="compose.yaml"):
+    return yaml.safe_load((ORACLE / file).read_text())["services"]
+
+
+def test_the_app_trusts_a_forwarded_caller_address_only_from_caddy():
+    services = oracle_services()
+    assert services["app"]["environment"]["FORWARDED_ALLOW_IPS"] == services["caddy"]["networks"]["edge"]["ipv4_address"]
+
+
+def test_caddy_cannot_reach_the_agent():
+    services = oracle_services()
+    assert set(services["caddy"]["networks"]) & set(services["agent"]["networks"]) == set()
+
+
+def test_only_the_app_gets_the_sign_in_secrets():
+    assert [name for name, s in oracle_services().items() if "auth.env" in s.get("env_file", [])] == ["app"]
+
+
+def test_setup_no_longer_makes_or_prints_the_shared_key():
+    setup = (ORACLE / "setup.sh").read_text()
+    assert ("#key=" in setup, "STOCKINTEL_API_KEY" in setup) == (False, False)
+
+
+def test_caddy_caps_the_request_body_size():
+    assert re.search(r"request_body \{\s*max_size \d+MB\s*\}", (ORACLE / "Caddyfile").read_text())
+
+
+def test_the_gate_check_boot_neither_restores_nor_saves_the_real_state():
+    assert oracle_services("gatecheck.yaml")["app"]["environment"]["STOCKINTEL_STATE_REPO"] == ""
+
+
+def test_the_gate_check_boot_opens_a_database_other_than_the_real_one():
+    real = re.search(r"STOCKINTEL_DB=(\S+)", (ORACLE.parents[1] / "Dockerfile").read_text())[1]
+    assert oracle_services("gatecheck.yaml")["app"]["environment"]["STOCKINTEL_DB"] not in (real, "")
+
+
+def test_render_asks_for_every_setting_serve_will_not_start_without():
+    render = yaml.safe_load((ORACLE.parents[1] / "render.yaml").read_text())
+    assert set(SERVE_NEEDS) - {v["key"] for v in render["services"][0]["envVars"]} == set()
+
+
 def test_api_analysis_and_domain_endpoints(orch, accounts):
     client = signed_in_client(orch, accounts)
     r = client.get("/stocks/TEST/analysis")
@@ -728,6 +837,15 @@ def test_api_rate_limit(orch, monkeypatch, accounts):
     client = signed_in_client(orch, accounts)
     codes = [client.get("/search?q=TE").status_code for _ in range(5)]
     assert codes[:3] == [200, 200, 200] and 429 in codes[3:]
+
+
+def test_one_users_requests_do_not_use_up_another_users_limit(orch, monkeypatch, accounts):
+    import backend.api.app as api_mod
+    monkeypatch.setattr(api_mod, "RATE_PER_MIN", 3)
+    app = create_app(orch, accounts)
+    first, second = signed_in_client(orch, accounts, app=app), signed_in_client(orch, accounts, "other@example.com", app=app)
+    assert 429 in [first.get("/search?q=TE").status_code for _ in range(5)]
+    assert second.get("/search?q=TE").status_code == 200
 
 
 def test_api_chat_round_trip(orch, accounts):

@@ -1,0 +1,8 @@
+# The first boot: an empty database, nothing restored from or saved to the Hugging Face dataset, so
+# check_gate.sh can see anonymous callers refused before real data is served.
+# sudo docker compose -f compose.yaml -f gatecheck.yaml up -d --build
+services:
+  app:
+    environment:
+      STOCKINTEL_DB: /data/gatecheck.db
+      STOCKINTEL_STATE_REPO: ""

@@ -395,7 +395,9 @@ named human. Pattern priors follow the same pattern (`validate-patterns --save`)
   limits (all PROVISIONAL). The server refuses to start without `STOCKINTEL_AUTH_SECRET` and
   `STOCKINTEL_PUBLIC_URL`. Pydantic schemas on every body; ticker regex on every path.
 - Deleting an account removes its portfolio and everything kept with it, its usage counts and its
-  sign-ins. The state backup keeps no sign-in sessions.
+  sign-ins. The state backup keeps no sign-in sessions. Known gap: a save already under way when the
+  account goes can still leave a portfolio or usage row; only a check that the user still exists on
+  every write would close it.
 - The server binds to 127.0.0.1 by default. Portfolio data stays in the local SQLite file.
 - The LLM receives computed evidence only; tools are read-only; tool output is size-capped.
 
