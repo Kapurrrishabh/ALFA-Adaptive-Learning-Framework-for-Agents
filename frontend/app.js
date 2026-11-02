@@ -1384,7 +1384,7 @@ async function signOut() {
 function forgetDevice() {
   me = null; drawAccount(); $("#ticker").replaceChildren();
   for (const k of ["si-cap", "si-builder", "si-agent"]) localStorage.removeItem(k);
-  for (const k of ["si-chat", "si-chat-log", "si-next"]) sessionStorage.removeItem(k);
+  for (const k of ["si-chat", "si-chat-log", "si-next", "si-welcomed"]) sessionStorage.removeItem(k);
   location.hash = "#/signin";
 }
 
