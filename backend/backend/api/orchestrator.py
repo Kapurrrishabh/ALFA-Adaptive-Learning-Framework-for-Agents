@@ -25,7 +25,7 @@ from backend.api import quota
 from backend.advisory.calculators import performance
 from backend.advisory import report as R
 from backend.user.portfolio.alerts import evaluate as evaluate_alert
-from backend.config import RISK_PROFILES, canonical_symbol
+from backend.config import RISK_MODE, RISK_PROFILES, canonical_symbol
 from backend.database.sources.provider import DataUnavailable, Provider
 from backend.database.sources.quality import DataQualityError
 from backend.advisory.fusion.evidence import utcnow_iso
@@ -45,6 +45,9 @@ ANALYSES_KEPT = 200
 # Provisional, not measured: far more open chats than one deployment has. A dropped session only loses
 # its chat context, so its next "why?" asks which stock.
 SESSIONS_KEPT = 2000
+# Provisional, not measured: anyone can sign up, so one portfolio may not grow the database without end.
+# A broker import refused at this size would show it is too low.
+MAX_TRANSACTIONS = 2000
 SYMBOL_RE = re.compile(r"^\^?[A-Z0-9&\-]{1,20}(\.(NS|BO))?$")
 DOMAINS = ("technical", "candlestick", "pattern", "fundamental", "news_sentiment", "risk",
            "regime", "forecast", "historical")
@@ -147,11 +150,17 @@ class Orchestrator:
     def session(self, portfolio: str, session_id: str) -> Session:
         key = (portfolio, session_id)
         with self._caches_guard:
-            s = self.sessions.pop(key, None) or Session(portfolio, session_id)
+            s = self.sessions.pop(key, None) or self._new_session(portfolio, session_id)
             self.sessions[key] = s
             if len(self.sessions) > SESSIONS_KEPT:
                 del self.sessions[next(iter(self.sessions))]
         return s
+
+    def _new_session(self, portfolio: str, session_id: str) -> Session:
+        p = self.store.portfolio(portfolio)
+        if p is None:
+            return Session(portfolio, session_id)
+        return Session(portfolio, session_id, horizon=p["horizon"], risk_profile=p["risk_profile"])
 
     def forget(self, portfolio: str) -> None:
         """Drop the portfolio's chat sessions, whose history quotes its holdings."""
@@ -187,11 +196,17 @@ class Orchestrator:
         """Validate (FIFO, no oversells) before anything is written."""
         if risk_profile not in RISK_PROFILES:
             raise ValueError(f"risk_profile must be one of {list(RISK_PROFILES)}, got {risk_profile!r}")
+        if len(transactions) > MAX_TRANSACTIONS:
+            raise ValueError(f"A portfolio holds at most {MAX_TRANSACTIONS} transactions, and this would make "
+                             f"{len(transactions)}. Delete ones you no longer need, then try again.")
         txs = [Transaction(**{k: t[k] for k in ("symbol", "side", "quantity", "price", "trade_date")},
                            fees=t.get("fees", 0.0), sector=t.get("sector")) for t in transactions]
         build_positions(txs)
         self.store.save_portfolio(portfolio, cash, risk_profile, horizon,
                                   [t.__dict__ for t in txs])
+        with self._caches_guard:        # open chats take the new answers, or a chat begun before setup ignores them
+            for s in [s for key, s in self.sessions.items() if key[0] == portfolio]:
+                s.risk_profile, s.horizon = risk_profile, horizon
         return len(txs)
 
     def holdings(self, portfolio: str) -> Tuple[Dict[str, Position], float, Dict[str, Any]]:
@@ -618,7 +633,7 @@ class Orchestrator:
                     "if there was one, the shares and cost used here are from before it."] if unchecked else []
         return holdings, cash, warnings
 
-    def _signal_plan(self, s: Session, i: Intent):
+    def _signal_plan(self, s: Session, i: Intent, risk_mode: str):
         from backend.database.sources.panel import index_constituents, universe_panel
         from backend.advisory.signals.advisor import plan
         panel = universe_panel("nifty500", "10y")
@@ -631,13 +646,12 @@ class Orchestrator:
         t = i.raw.lower()
         strategy = "lowvol" if re.search(r"low[- ]?vol|safe|defensive stocks|stable", t) else \
             "blend" if re.search(r"blend|mix|balanced portfolio", t) else "momentum"
-        risk = {"conservative": "defensive", "aggressive": "full"}.get(s.risk_profile, "balanced")
         from backend.database.sources import insider
         try:
             trades = insider.load()
         except DataUnavailable:
             trades = None
-        p = plan(panel, bench, float(capital or 0.0) or 1.0, holdings, strategy=strategy, risk_mode=risk,
+        p = plan(panel, bench, float(capital or 0.0) or 1.0, holdings, strategy=strategy, risk_mode=risk_mode,
                  universe=list(index_constituents("nifty200")["symbol"]), insider_trades=trades,
                  measured=performance.momentum_evidence(performance.track_record()))
         p.warnings += split_warnings
@@ -646,7 +660,7 @@ class Orchestrator:
     def _h_signals(self, s: Session, i: Intent) -> Reply:
         from backend.api.jsonutil import sanitize
         from backend.advisory.signals.advisor import render
-        p = self._signal_plan(s, i)
+        p = self._signal_plan(s, i, RISK_MODE[s.risk_profile])
         payload = sanitize(p.to_dict())
         self.store.save_plan(s.portfolio, payload)
         return Reply(render(p), "signals", {"payload": payload}, ["signal_plan"])

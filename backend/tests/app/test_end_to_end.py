@@ -26,6 +26,8 @@ from .test_nlu_llm import _Picker
 ORACLE = Path(__file__).resolve().parents[3] / "deploy" / "oracle"
 OTHER = "ravi@example.com"
 UNAUTHORIZED = (401, {"detail": "Unauthorized"})    # fastapi-users' own refusal, not a 401 of ours
+SETUP = {"risk_profile": "moderate", "horizon": "medium"}
+NOT_SET_UP = "Set up your portfolio first: choose your risk level, time horizon and cash."
 
 
 @pytest.fixture
@@ -49,6 +51,10 @@ def signed_in_client(orch, accounts, email=EMAIL, app=None):
 
 def owner(accounts, email=EMAIL):
     return owner_of(accounts.user(email))
+
+
+def set_up(client, cash=0):
+    assert client.post("/portfolio/cash", json={**SETUP, "cash": cash}).status_code == 200
 
 
 def test_full_analysis_produces_every_domain_with_provenance(service):
@@ -516,14 +522,14 @@ def asha_and_ravi(orch, accounts):
     app = create_app(orch, accounts)
     clients = signed_in_client(orch, accounts, EMAIL, app), signed_in_client(orch, accounts, OTHER, app)
     for client in clients:
-        client.post("/portfolio", json={"cash": 500, "transactions": [
+        client.post("/portfolio", json={**SETUP, "cash": 500, "transactions": [
             {"symbol": "TEST", "side": "BUY", "quantity": 5, "price": 100, "trade_date": "2025-06-02"}]})
     return clients
 
 
 def test_one_users_portfolio_is_not_anothers(orch, accounts):
     asha, ravi = signed_in_client(orch, accounts), signed_in_client(orch, accounts, OTHER)
-    asha.post("/portfolio/cash", json={"cash": 500})
+    set_up(asha, 500)
     assert ravi.get("/portfolio").status_code == 404
 
 
@@ -707,8 +713,8 @@ def test_api_validates_inputs(orch, accounts):
     client = signed_in_client(orch, accounts)
     assert client.get("/stocks/DROP;TABLE/analysis").status_code in (400, 404)
     assert client.post("/chat", json={"message": ""}).status_code == 422
-    bad = {"cash": 0, "transactions": [{"symbol": "TEST", "side": "SELL", "quantity": 5, "price": 10,
-                                        "trade_date": "2025-01-01"}]}
+    bad = {**SETUP, "cash": 0, "transactions": [{"symbol": "TEST", "side": "SELL", "quantity": 5, "price": 10,
+                                                  "trade_date": "2025-01-01"}]}
     assert client.post("/portfolio", json=bad).status_code == 400   # oversell rejected
     assert client.get("/screener?budget=-5").status_code == 422
 
@@ -741,11 +747,11 @@ def test_api_json_is_strict(orch, accounts):
 
 def test_rejected_portfolio_post_leaves_the_stored_portfolio_intact(orch, accounts):
     client = signed_in_client(orch, accounts)
-    good = {"cash": 100, "transactions": [{"symbol": "TEST", "side": "BUY", "quantity": 5, "price": 10,
-                                           "trade_date": "2025-01-01"}]}
+    good = {**SETUP, "cash": 100, "transactions": [{"symbol": "TEST", "side": "BUY", "quantity": 5, "price": 10,
+                                                     "trade_date": "2025-01-01"}]}
     assert client.post("/portfolio", json=good).status_code == 200
-    bad = {"cash": 0, "transactions": [{"symbol": "TEST", "side": "SELL", "quantity": 5, "price": 10,
-                                        "trade_date": "2025-01-01"}]}
+    bad = {**SETUP, "cash": 0, "transactions": [{"symbol": "TEST", "side": "SELL", "quantity": 5, "price": 10,
+                                                  "trade_date": "2025-01-01"}]}
     assert client.post("/portfolio", json=bad).status_code == 400
     stored = orch.store.portfolio(owner(accounts))
     assert stored["cash"] == 100 and len(stored["transactions"]) == 1
@@ -905,6 +911,7 @@ def test_ui_verdict_that_gives_a_stop_says_the_track_record_left_it_out(app_clie
 
 
 def test_portfolio_single_transaction_add_and_delete(app_client, orch, accounts):
+    set_up(app_client)
     tx = {"symbol": "TEST", "side": "BUY", "quantity": 3, "price": 100, "trade_date": "2025-01-02"}
     assert app_client.post("/portfolio/transactions", json=tx).status_code == 200
     assert app_client.post("/portfolio/transactions", json={**tx, "side": "SELL", "quantity": 9}).status_code == 400
@@ -916,6 +923,7 @@ def test_portfolio_single_transaction_add_and_delete(app_client, orch, accounts)
 def test_two_transactions_added_at_once_are_both_kept(app_client, orch, monkeypatch, accounts):
     """Each add reads the stored list and writes it back whole, so two at once could keep only the later one."""
     import threading
+    set_up(app_client)
     read, both_reading = orch.store.portfolio, threading.Barrier(2, timeout=1)
 
     def read_together(name):
@@ -933,6 +941,69 @@ def test_two_transactions_added_at_once_are_both_kept(app_client, orch, monkeypa
     for add in adds:
         add.join()
     assert len(read(owner(accounts))["transactions"]) == 2
+
+
+def test_a_new_users_portfolio_exists_once_the_setup_answers_are_saved(orch, accounts):
+    client = signed_in_client(orch, accounts)
+    before = client.get("/portfolio").status_code
+    set_up(client)
+    assert (before, client.get("/portfolio").status_code) == (404, 200)
+
+
+@pytest.mark.parametrize("missing", ["risk_profile", "horizon"])
+def test_cash_without_every_setup_answer_is_refused(orch, accounts, missing):
+    body = {k: v for k, v in {**SETUP, "cash": 0}.items() if k != missing}
+    assert signed_in_client(orch, accounts).post("/portfolio/cash", json=body).status_code == 422
+
+
+@pytest.mark.parametrize("path, body", [
+    ("/portfolio/transactions", {"symbol": "TEST", "side": "BUY", "quantity": 3, "price": 100, "trade_date": "2025-01-02"}),
+    ("/ui/builder/apply", {"holdings": [{"symbol": "TEST", "shares": 3, "price": 100}]})], ids=["add", "builder"])
+def test_adding_stocks_before_setup_says_to_set_up_first(app_client, path, body):
+    r = app_client.post(path, json=body)
+    assert (r.status_code, r.json()["detail"]) == (400, NOT_SET_UP)
+
+
+def test_the_setup_options_are_read_from_the_risk_profiles_horizons_and_builder_limits(app_client):
+    from backend.advisory.fusion.fusion import HORIZON_TEXT
+    from backend.config import BUILDER_MIN_CAPITAL, BUILDER_STOCKS, RISK_MODE, RISK_PROFILES
+    got = app_client.get("/ui/profiles").json()
+    assert got == {"risk": {name: {"max_position_pct": pytest.approx(p.max_position_weight * 100),
+                                   "max_sector_pct": pytest.approx(p.max_sector_weight * 100), "mode": RISK_MODE[name]}
+                            for name, p in RISK_PROFILES.items()},
+                   "horizon": HORIZON_TEXT,
+                   "builder": {"min_capital": BUILDER_MIN_CAPITAL, "min_stocks": BUILDER_STOCKS[0],
+                               "max_stocks": BUILDER_STOCKS[1]}}
+
+
+def test_setting_cash_keeps_the_transactions(app_client, orch, accounts):
+    set_up(app_client)
+    app_client.post("/portfolio/transactions", json={"symbol": "TEST", "side": "BUY", "quantity": 3, "price": 100,
+                                                     "trade_date": "2025-01-02"})
+    set_up(app_client, 500)
+    stored = orch.store.portfolio(owner(accounts))
+    assert (stored["cash"], len(stored["transactions"])) == (500, 1)
+
+
+@pytest.mark.parametrize("chat_first", [False, True], ids=["chat after setup", "chat begun before setup"])
+def test_a_stored_conservative_profile_makes_the_chat_plan_defensive(orch, signal_inputs, chat_first):
+    from backend.advisory.signals.advisor import exposure_for
+    if chat_first:
+        orch.handle("hello", DEFAULT_PORTFOLIO, "c")
+    orch.save_portfolio(DEFAULT_PORTFOLIO, 100000.0, "conservative", "medium", [])
+    plan = orch.handle("Rebalance my portfolio", DEFAULT_PORTFOLIO, "c").data["payload"]
+    # the test prices must tell the two modes apart, or a balanced plan would pass too
+    assert [plan["invest_fraction"] == exposure_for(mode, plan["market"]) for mode in ("defensive", "balanced")] \
+        == [True, False]
+
+
+def test_a_save_past_the_transaction_cap_is_refused(app_client, monkeypatch):
+    import backend.api.orchestrator as orch_mod
+    monkeypatch.setattr(orch_mod, "MAX_TRANSACTIONS", 1)
+    set_up(app_client)
+    tx = {"symbol": "TEST", "side": "BUY", "quantity": 3, "price": 100, "trade_date": "2025-01-02"}
+    codes = [app_client.post("/portfolio/transactions", json=tx).status_code for _ in range(2)]
+    assert codes == [200, 400]
 
 
 def test_ui_technical_chart_carries_geometry_markers_cone_and_records(app_client):
@@ -1106,6 +1177,7 @@ def test_performance_endpoint_reports_missing_build_cleanly(app_client, monkeypa
 
 def test_builder_spends_within_capital_and_apply_records_the_buys(app_client, orch, accounts):
     from datetime import date as _date
+    set_up(app_client)
     b = app_client.get("/ui/builder?capital=100000&n=3&risk=full").json()
     assert b["holdings"] and b["cash_left"] >= 0
     assert sum(x["value"] for x in b["holdings"]) + b["cash_left"] == pytest.approx(100000, abs=0.01)
@@ -1122,6 +1194,11 @@ def test_builder_leaves_out_excluded_sectors_and_rejects_bad_input(app_client):
     assert "PEER" not in [x["symbol"] for x in b["holdings"]]
     assert app_client.get("/ui/builder?capital=500").status_code == 422
     assert app_client.get("/ui/builder?capital=100000&n=2").status_code == 422
+
+
+def test_a_basket_of_more_stocks_than_the_builder_picks_is_refused(app_client):
+    from backend.config import BUILDER_STOCKS
+    assert app_client.get(f"/ui/builder?capital=100000&n={BUILDER_STOCKS[1] + 1}").status_code == 422
 
 
 def test_ai_forecast_says_why_when_models_are_switched_off(app_client, monkeypatch):

@@ -136,6 +136,11 @@ RISK_PROFILES: Dict[str, RiskProfile] = {
     "moderate": RiskProfile("moderate", 0.20, 0.35, 0.40, 1.0e8),
     "aggressive": RiskProfile("aggressive", 0.30, 0.50, 0.65, 3.0e7),
 }
+# The signal plan's risk mode for each profile, so the plan and the chat read one mapping
+RISK_MODE: Dict[str, str] = {"conservative": "defensive", "moderate": "balanced", "aggressive": "full"}
+
+BUILDER_MIN_CAPITAL = 1000
+BUILDER_STOCKS = (3, 25)        # fewest and most stocks the portfolio builder will pick
 
 # Backtest execution assumptions (India cash equities). PROVISIONAL: broker
 # dependent; measured round-trip cost for discount brokers is near this.

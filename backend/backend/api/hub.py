@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 from backend.advisory.calculators import performance
-from backend.config import BUSY_WAIT_S, FORECAST_DAYS
+from backend.config import BUILDER_STOCKS, BUSY_WAIT_S, FORECAST_DAYS
 from backend.database.sources.panel import CACHE_DIR, index_constituents, universe_panel
 from backend.database.sources.provider import DataUnavailable
 from backend.knowledge_base.lessons import knowledge_base
@@ -629,8 +629,8 @@ class Hub:
         and last year would have looked like (a backcast, not a forecast)."""
         from backend.user.portfolio.portfolio import Position, analyze as analyze_portfolio
         from backend.advisory.signals.advisor import plan
-        if not 3 <= n <= 25:
-            raise ValueError("number of stocks must be between 3 and 25")
+        if not BUILDER_STOCKS[0] <= n <= BUILDER_STOCKS[1]:
+            raise ValueError(f"number of stocks must be between {BUILDER_STOCKS[0]} and {BUILDER_STOCKS[1]}")
         names = self.names()
         excl = {x.lower() for x in exclude_sectors or []}
         uni = [r.symbol for r in names.itertuples() if r.nifty200 and r.sector.lower() not in excl]
