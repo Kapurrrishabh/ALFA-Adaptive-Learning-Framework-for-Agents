@@ -33,7 +33,7 @@ def service(local_provider):
 
 @pytest.fixture
 def orch(local_provider, store, monkeypatch):
-    o = Orchestrator(local_provider, store, use_rss_news=False)
+    o = Orchestrator(local_provider, store, use_rss_news=False, charges_model_calls=True)
     o.known.add("TEST")
     o.universe = pd.DataFrame({"symbol": ["TEST", "PEER"], "sector": ["Industrials", "Energy"]})
     return o
@@ -330,6 +330,11 @@ def test_alert_explains_why_it_fired(service):
 def test_api_requires_a_key_at_startup(orch):
     with pytest.raises(RuntimeError, match="STOCKINTEL_API_KEY"):
         create_app(orch, api_key="")
+
+
+def test_api_refuses_an_orchestrator_that_does_not_charge_model_calls(local_provider, store):
+    with pytest.raises(RuntimeError, match="charges_model_calls=True"):
+        create_app(Orchestrator(local_provider, store, use_rss_news=False, charges_model_calls=False), api_key=KEY)
 
 
 def test_api_rejects_missing_or_wrong_keys(orch):
@@ -870,11 +875,24 @@ def test_a_question_while_the_agent_is_busy_is_a_503_that_costs_nothing(orch, mo
     assert (busy.status_code, "answering someone else" in busy.json()["detail"], used) == (503, True, 1)
 
 
-def test_the_agent_status_does_not_give_out_the_agents_address(orch, monkeypatch):
+@pytest.mark.parametrize("reply", [None, 503], ids=["port closed", "error reply"])
+def test_the_agent_status_does_not_give_out_the_agents_address(orch, monkeypatch, reply):
+    import httpx
     port = _closed_port()
     monkeypatch.setenv("SELFAGENT_URL", f"http://127.0.0.1:{port}")
+    if reply:
+        monkeypatch.setattr(httpx, "get", lambda url, timeout: httpx.Response(reply, request=httpx.Request("GET", url)))
     client = TestClient(create_app(orch, api_key=KEY))
     assert str(port) not in client.get("/ui/agent/status", headers={"X-API-Key": KEY}).text
+
+
+def test_a_question_to_an_agent_that_is_down_does_not_give_out_its_address(orch, monkeypatch, tmp_path):
+    import backend.models.agent.client as sc
+    port = _closed_port()
+    monkeypatch.setattr(sc, "CREDENTIALS", tmp_path / "agent.json")
+    monkeypatch.setenv("SELFAGENT_URL", f"http://127.0.0.1:{port}")
+    client = TestClient(create_app(orch, api_key=KEY))
+    assert str(port) not in client.post("/ui/agent/ask", json={"message": "Why?"}, headers={"X-API-Key": KEY}).text
 
 
 def test_phone_install_manifest_and_service_worker_are_served(app_client):
@@ -1019,6 +1037,33 @@ def test_a_model_space_forecast_is_charged_once_and_only_when_it_answers(app_cli
     for _ in range(2):          # the second is a cache hit when the first answered
         app_client.get("/ui/stock/TEST/ai?model=chronos", headers={"X-API-Key": KEY})
     assert orch.usage(DEFAULT_PORTFOLIO)["used"] == used
+
+
+def test_a_forecast_asked_while_the_same_one_runs_on_the_space_runs_and_pays_once(app_client, orch, monkeypatch):
+    """The stock page's ALFA layer and its analyst note ask for one fan seconds apart, and the Space takes ~35 s."""
+    import json as _json
+    import threading
+    import time as _t
+    import backend.models.external.remote_models as rm
+    asking, release = threading.Event(), threading.Event()
+
+    class SlowSpace(_FakeSpace):
+        def predict(self, *args, api_name):
+            asking.set()
+            release.wait(5)
+            return super().predict(*args, api_name=api_name)
+    space = SlowSpace(_json.dumps({f"q{q}": [100.0 + q] * FORECAST_DAYS for q in (10, 25, 50, 75, 90)}))
+    monkeypatch.setenv("STOCKINTEL_MODEL_SPACE", "you/stockintel-models")
+    monkeypatch.setattr(rm, "_client", lambda: space)
+    ask = lambda: app_client.get("/ui/stock/TEST/ai?model=chronos", headers={"X-API-Key": KEY})
+    first, second = threading.Thread(target=ask), threading.Thread(target=ask)
+    first.start()
+    asking.wait(5)
+    second.start()
+    _t.sleep(0.3)               # time for the second request to reach the lock the first one holds
+    release.set()
+    first.join(), second.join()
+    assert (len(space.calls), orch.usage(DEFAULT_PORTFOLIO)["used"]) == (1, 1)
 
 
 def test_state_snapshot_copies_the_database_and_caches(tmp_path):
@@ -1463,6 +1508,19 @@ def test_a_question_routed_over_the_daily_limit_keeps_the_reply_and_says_why(orc
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: writer)
     reply = orch.handle("what is going on out there?", DEFAULT_PORTFOLIO, "route")
     assert (writer.prompts, reply.data["no_answer"], "AI answers for today" in reply.text) == ([], True, True)
+
+
+def test_the_cli_still_routes_questions_past_the_daily_limit(monkeypatch):
+    """eval_user_questions.py asks the CLI's orchestrator dozens of questions; each one refused past the
+    cap was scored as a wrong handler."""
+    from argparse import Namespace
+    from backend import cli
+    from backend.api import quota
+    orch, writer = cli._orchestrator(Namespace(db=":memory:", demo=True)), _Picker("market_regime")
+    monkeypatch.setitem(quota.USER_LIMITS, "lm", 0)
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: writer)
+    orch.handle("what is going on out there?", DEFAULT_PORTFOLIO, "route")
+    assert len(writer.prompts) == 1
 
 
 def test_an_unrecognised_question_is_routed_by_the_language_model(orch, monkeypatch):

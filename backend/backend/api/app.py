@@ -109,6 +109,9 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     if len(key) < 16:
         raise RuntimeError("STOCKINTEL_API_KEY must be set to a random string of at least 16 "
                            "characters before starting the API (e.g. `openssl rand -hex 24`).")
+    if not orch.charges_model_calls:
+        raise RuntimeError("The API serves many users, so build its Orchestrator with charges_model_calls=True; "
+                           "otherwise their model calls skip the daily allowance.")
     bucket = TokenBucket(RATE_PER_MIN)
     # No /openapi.json, /docs or /redoc: they skip the key check and would map every route to anyone
     app = FastAPI(title="StockIntel", version="0.1.0", openapi_url=None,

@@ -76,7 +76,7 @@ def base_url(tmp_path_factory):
         mp.setattr(alfa_fan, "WEIGHTS", missing / "alfa.npz")
         mp.setattr(gru_line, "WEIGHTS", missing / "path_gru.npz")
         mp.setattr(insider, "load", no_insider)
-        orch = Orchestrator(provider, Store(":memory:"), use_rss_news=False)
+        orch = Orchestrator(provider, Store(":memory:"), use_rss_news=False, charges_model_calls=True)
         orch.save_portfolio(DEFAULT_PORTFOLIO, 0.0, "moderate", "medium", [{"symbol": "TEST", "side": "BUY", "quantity": 10,
                                                          "price": float(prices["close"].iloc[-120]), "trade_date": str(prices.index[-120].date())}])
         app = create_app(orch, api_key=KEY)

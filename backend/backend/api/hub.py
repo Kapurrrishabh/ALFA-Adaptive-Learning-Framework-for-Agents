@@ -502,25 +502,26 @@ class Hub:
             future = lambda n: [str(d.date()) for d in pd.bdate_range(df.index[-1], periods=n + 1)[1:]]
             paid = model != "gru" and remote_models.on_space(model)
             # its own lock: a model call (or a queued Space) must not block the panel
-            with (self.__dict__.setdefault("_ai_lock", threading.Lock()),
-                  self.orch.model_call(owner) if paid else nullcontext()):
-                if model == "chronos":
-                    cache[key] = {"dates": future(FORECAST_DAYS),
-                                  **(remote_models.fan if remote_models.on_space("chronos") else tsfm.fan)(df["close"], FORECAST_DAYS)}
-                elif model == "gru":
-                    # aligned as in training: every stock bar kept, so the line starts from the last closed bar
-                    bars = df[["close", "high", "low"]].assign(market=self.bench().reindex(df.index).ffill()).dropna()
-                    if bars.index[-1] != df.index[-1]:
-                        raise DataUnavailable(f"{symbol}'s {df.index[-1].date()} bar has no high, low or Nifty close, so "
-                                              f"the GRU line would start from {bars.index[-1].date()}; retry once it is filled")
-                    cache[key] = {"dates": future(FORECAST_DAYS), **gru_line.line(bars.close.to_numpy(), bars.high.to_numpy(),
-                                                                                bars.low.to_numpy(), bars.market.to_numpy())}
-                elif model == "alfa":
-                    q = (remote_models.alfa_fan(df["close"], alfa_model.STEPS, alfa_model.PATHS) if remote_models.on_space("alfa")
-                         else alfa_model.fan(df["close"]))
-                    cache[key] = {"dates": future(alfa_model.STEPS), **q}
-                else:
-                    cache[key] = (remote_models.next_candles if remote_models.on_space("kronos") else kronos_model.next_candles)(df, pred_len=5, samples=8)
+            with self.__dict__.setdefault("_ai_lock", threading.Lock()):
+                if key not in cache:            # written while this request waited
+                    with self.orch.model_call(owner) if paid else nullcontext():
+                        if model == "chronos":
+                            cache[key] = {"dates": future(FORECAST_DAYS),
+                                          **(remote_models.fan if remote_models.on_space("chronos") else tsfm.fan)(df["close"], FORECAST_DAYS)}
+                        elif model == "gru":
+                            # aligned as in training: every stock bar kept, so the line starts from the last closed bar
+                            bars = df[["close", "high", "low"]].assign(market=self.bench().reindex(df.index).ffill()).dropna()
+                            if bars.index[-1] != df.index[-1]:
+                                raise DataUnavailable(f"{symbol}'s {df.index[-1].date()} bar has no high, low or Nifty close, so "
+                                                      f"the GRU line would start from {bars.index[-1].date()}; retry once it is filled")
+                            cache[key] = {"dates": future(FORECAST_DAYS), **gru_line.line(bars.close.to_numpy(), bars.high.to_numpy(),
+                                                                                        bars.low.to_numpy(), bars.market.to_numpy())}
+                        elif model == "alfa":
+                            q = (remote_models.alfa_fan(df["close"], alfa_model.STEPS, alfa_model.PATHS) if remote_models.on_space("alfa")
+                                 else alfa_model.fan(df["close"]))
+                            cache[key] = {"dates": future(alfa_model.STEPS), **q}
+                        else:
+                            cache[key] = (remote_models.next_candles if remote_models.on_space("kronos") else kronos_model.next_candles)(df, pred_len=5, samples=8)
         if model == "gru":
             rec = cache[key]["record"]
             day = next(d for d in rec["test"]["days"] if d["day"] == FORECAST_DAYS)

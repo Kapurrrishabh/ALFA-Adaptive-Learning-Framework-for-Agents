@@ -109,11 +109,14 @@ class Reply:
 
 class Orchestrator:
     def __init__(self, provider: Provider, store: Store,
-                 llm_mode: str = "off", use_rss_news: bool = True, llm_client: Any = None):
+                 llm_mode: str = "off", use_rss_news: bool = True, llm_client: Any = None, *, charges_model_calls: bool):
         if llm_mode not in ("off", "narrate", "agent"):
             raise ValueError(f"llm_mode must be off, narrate or agent; got {llm_mode!r}")
         self.provider, self.store = provider, store
         self.llm_mode = llm_mode
+        # only a served app charges: the CLI and offline scripts run on the developer's own account, and an eval
+        # past the daily cap would score each refused routing as a wrong handler
+        self.charges_model_calls = charges_model_calls
         self.use_rss_news = use_rss_news
         self._services: Dict[str, AnalysisService] = {}
         self.sessions: Dict[Tuple[str, str], Session] = {}
@@ -157,6 +160,9 @@ class Orchestrator:
     @contextmanager
     def model_call(self, portfolio: str):
         """Charge one call to the Space, Claude or the agent to the portfolio's day; a call that fails is refunded."""
+        if not self.charges_model_calls:
+            yield
+            return
         now = datetime.now(timezone.utc)
         quota.charge(self.store, portfolio, "lm", now)
         try:

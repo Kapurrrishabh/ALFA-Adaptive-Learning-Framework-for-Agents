@@ -54,6 +54,8 @@ class SelfAgentClient:
             r = httpx.get(self.url + "/model", timeout=2)
             r.raise_for_status()
             return {"available": True, **r.json()}
+        except httpx.HTTPStatusError as exc:        # its message names the agent's internal address
+            return {"available": False, "reason": f"HTTP {exc.response.status_code}"}
         except (httpx.HTTPError, ValueError) as exc:
             return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
 
@@ -111,4 +113,4 @@ class SelfAgentClient:
                         if frame.get("stage") == "refused":
                             raise AgentUnavailable(frame.get("because", "refused"))
             except (OSError, TimeoutError, WebSocketException, httpx.HTTPError) as exc:
-                raise AgentUnavailable(f"self-learning agent not reachable at {self.url}: {exc}") from exc
+                raise AgentUnavailable(f"self-learning agent not reachable: {exc}") from exc
