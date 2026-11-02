@@ -8,6 +8,7 @@ import pytest
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="Playwright is not installed: pip install -e '.[dev]'")
 
+from backend.paths import FRONTEND  # noqa: E402
 from .conftest import KEY, RUN_REQUESTS  # noqa: E402
 
 pytestmark = pytest.mark.ui
@@ -17,18 +18,21 @@ THEMES = ["dark", "light"]
 SECTIONS = ["Home", "Markets", "Portfolio", "Ask", "Learn"]
 NO_PAGE = ["nowhere", "stock", "stock/%E0%A4"]
 PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signals", "builder", "chat", "learn",
-         "performance", "reports", *NO_PAGE]
+         "performance", "reports", "guide", *NO_PAGE]
 # Chrome logs a failed fetch without its address, so failures are read from the responses; an API 404 is how a missing model shows up,
 # and a 429 means the run outgrew the test key's rate limit, which otherwise shows only as a click that times out
 UNNAMED_FETCH_ERROR = "Failed to load resource"
 LONG_NAME = "Parag Parikh Flexi Cap Fund Direct Plan Growth"
 EMOJI = re.compile("[\u2600-\u27bf\U0001f300-\U0001faff]")
+CUT_LABELS = """() => [...document.querySelectorAll("#view svg[viewBox] text")].filter((t) => t.getClientRects().length).flatMap((t) => {
+  const v = t.ownerSVGElement.viewBox.baseVal, b = t.getBBox(), slack = 0.5;
+  return b.x < v.x - slack || b.y < v.y - slack || b.x + b.width > v.x + v.width + slack || b.y + b.height > v.y + v.height + slack ? [t.textContent] : []; })"""
 
 
 class Tab:
-    """One signed-in browser tab on the app, counting its requests in flight and the errors it logs."""
+    """One browser tab on the app, signed in unless told otherwise, counting its requests in flight and the errors it logs."""
 
-    def __init__(self, browser, base_url, width, **context_options):
+    def __init__(self, browser, base_url, width, signed_in=True, **context_options):
         self.context = browser.new_context(viewport={"width": width, "height": 900}, **context_options)
         self.page = self.context.new_page()
         self.inflight, self.requests, self.errors = 0, [], []
@@ -38,7 +42,7 @@ class Tab:
         self.page.on("pageerror", lambda e: self.errors.append(str(e)))
         self.page.on("console", lambda m: self.errors.append(m.text) if m.type == "error" and not m.text.startswith(UNNAMED_FETCH_ERROR) else None)
         self.page.on("response", lambda r: self.errors.append(f"{r.status} {r.url}") if r.status >= 500 or r.status == 429 or (r.status >= 400 and "/static/" in r.url) else None)
-        self.page.goto(f"{base_url}/#key={KEY}")
+        self.page.goto(f"{base_url}/#key={KEY}" if signed_in else base_url)
         self.settle()
 
     def _started(self, request):
@@ -88,7 +92,7 @@ def close_tabs(browser):
 @pytest.fixture(scope="module")
 def visits(browser, base_url):
     """What each page showed at each width: its h1 texts, the errors it logged, whether it scrolled sideways,
-    the text of its empty states and banners, and the names of its charts."""
+    the text of its empty states and banners, the names of its charts, and the chart labels cut off at a chart's edge."""
     out = {}
     for width in WIDTHS:
         tab = Tab(browser, base_url, width)
@@ -99,7 +103,8 @@ def visits(browser, base_url):
             out[(width, name)] = {"h1": tab.page.locator("h1").all_inner_texts(), "errors": tab.errors[seen:],
                                   "sideways": tab.page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"),
                                   "states": tab.page.locator("#view .empty, #view .banner").all_inner_texts(),
-                                  "charts": tab.page.locator("#view svg[role=img]").evaluate_all("els => els.map((el) => el.getAttribute('aria-label'))")}
+                                  "charts": tab.page.locator("#view svg[role=img]").evaluate_all("els => els.map((el) => el.getAttribute('aria-label'))"),
+                                  "cut": tab.page.evaluate(CUT_LABELS)}
         tab.context.close()
     return out
 
@@ -137,6 +142,19 @@ def test_an_address_with_no_page_says_so(visits, name):
 def test_every_chart_is_named_from_its_data(visits):
     unnamed = {name: [c for c in visits[(1366, name)]["charts"] if not c or re.search(r"undefined|NaN|\[object", c)] for name in PAGES}
     assert {name: charts for name, charts in unnamed.items() if charts} == {}
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+def test_no_chart_label_is_cut_off_at_the_chart_edge(visits, width):
+    assert {name: visits[(width, name)]["cut"] for name in PAGES if visits[(width, name)]["cut"]} == {}
+
+
+@pytest.mark.parametrize("chart_tab", ["Technical", "Intraday", "Price & projection"])
+def test_no_stock_chart_label_is_cut_off_on_a_phone(browser, base_url, chart_tab):
+    tab = Tab(browser, base_url, 390)
+    tab.go("#/stock/TEST")
+    show_chart_tab(tab, chart_tab)
+    assert tab.page.evaluate(CUT_LABELS) == []
 
 
 def test_each_pattern_chart_names_its_proven_edges(visits):
@@ -214,6 +232,20 @@ def test_cleanup_a_page_registers_after_it_was_left_still_runs(browser, base_url
     tab.go("#/late")
     tab.go("#/learn")
     assert tab.page.evaluate("async () => { finishLate(); await new Promise((r) => setTimeout(r)); return window.cleanedUp === true; }")
+
+
+def test_the_guide_shows_its_sections_to_someone_not_signed_in(browser, base_url):
+    tab = Tab(browser, base_url, 1366, signed_in=False)
+    tab.go("#/guide")
+    sections = [line.removeprefix("# ") for line in (FRONTEND / "guide.md").read_text().splitlines() if line.startswith("# ")]
+    assert tab.page.locator("#view h2").all_inner_texts() == sections
+
+
+def test_a_page_link_in_the_guide_opens_that_page_in_the_same_tab(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/guide")
+    tab.page.locator("#view .md").get_by_role("link", name="Holdings", exact=True).click()
+    assert tab.page.evaluate("location.hash") == "#/portfolio"
 
 
 def test_tab_from_the_page_title_reaches_the_sub_nav(browser, base_url):
@@ -436,6 +468,31 @@ def test_theme_toggle_sends_no_request(browser, base_url):
     tab.page.click("#theme")
     tab.settle()
     assert tab.requests[sent:] == []
+
+
+def before_the_app_script(tab, expression):
+    """What a JavaScript expression gives just before app.js runs, on a reload."""
+    def note_it_first(route):
+        script = route.fetch()
+        route.fulfill(response=script, body=f"window.atStart = {expression};\n" + script.text())
+    tab.page.route("**/static/app.js", note_it_first)
+    tab.page.reload()
+    tab.settle()
+    return tab.page.evaluate("window.atStart")
+
+
+@pytest.mark.parametrize("scheme, chosen", [("light", None), ("dark", None), ("light", "dark"), ("dark", "light")])
+def test_the_chosen_or_else_the_system_theme_is_in_place_before_the_app_script_runs(browser, base_url, scheme, chosen):
+    tab = Tab(browser, base_url, 1366, color_scheme=scheme, service_workers="block")
+    if chosen:
+        tab.page.click("#theme")
+    assert before_the_app_script(tab, "document.documentElement.dataset.theme") == (chosen or scheme)
+
+
+def test_the_theme_button_has_its_final_size_before_its_icon_arrives(browser, base_url):
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    size = "(({ width, height }) => [width, height])(document.querySelector('#theme').getBoundingClientRect())"
+    assert before_the_app_script(tab, size) == tab.page.evaluate(size)
 
 
 THEME_COLOURS = """() => { const names = new Set();

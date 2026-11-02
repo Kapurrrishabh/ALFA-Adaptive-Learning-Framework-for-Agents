@@ -1,20 +1,18 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>StockIntel — invest with evidence</title>
-<meta name="theme-color" content="#06080b">
+<meta name="theme-color">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="StockIntel">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/static/icon.svg">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Instrument+Serif&display=swap">
 <link rel="stylesheet" href="/static/app.css">
+<script src="/static/theme.js"></script>
 </head>
 <body>
 <header class="topbar">
@@ -22,12 +20,12 @@
     <a class="logo" href="#/home"><span class="logo-mark">S</span><span class="logo-word">StockIntel</span></a>
     <nav class="nav" id="nav" aria-label="Main"></nav>
     <div class="search">
-      <span class="icon">⌕</span>
+      <span class="icon"></span>
       <input id="q" placeholder="Search stocks — e.g. Reliance, TCS, HDFC Bank" autocomplete="off" aria-label="Search stocks"
         role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggest">
       <div class="suggest" id="suggest" role="listbox" aria-label="Matching stocks"></div>
     </div>
-    <button class="icon-btn" id="theme" title="Toggle theme" aria-label="Toggle theme">◐</button>
+    <button class="icon-btn" id="theme" title="Toggle theme" aria-label="Toggle theme"></button>
   </div>
 </header>
 <section class="ticker" id="ticker" aria-label="Market ticker"></section>
