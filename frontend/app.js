@@ -26,7 +26,7 @@ const cls = (v) => v > 0 ? "up" : v < 0 ? "down" : "";
 const compactInr = (v) => v == null ? "—" : "₹" + Intl.NumberFormat("en-IN", { notation: "compact", maximumFractionDigits: 2 }).format(v);
 const initials = (sym) => (sym || "?").replace(/[^A-Z0-9]/gi, "").slice(0, 2).toUpperCase();
 const skel = (hgt = 16, w = "100%") => h("div", { class: "skeleton", style: `height:${hgt}px;width:${w}` });
-// The small markdown the answers use (### title, - bullets, **bold**, [label](https://…)), built as
+// The small markdown the answers and the guide use (# section, ### title, - bullets, **bold**, [label](https://…)), built as
 // nodes like everything else, so an answer can never inject markup; links go only to http(s) or to the app's own #/ pages.
 function inline(text) {
   const out = [];
@@ -44,6 +44,7 @@ function md(text) {
     if (t.startsWith("- ")) { flush(); if (!list) { list = h("ul"); box.append(list); } list.append(h("li", {}, ...inline(t.slice(2)))); continue; }
     list = null;
     if (!t) { flush(); continue; }
+    if (t.startsWith("# ")) { flush(); box.append(h("h2", {}, ...inline(t.slice(2)))); continue; }
     if (t.startsWith("### ")) { flush(); box.append(h("h4", {}, ...inline(t.slice(4)))); continue; }
     para.push(t);
   }

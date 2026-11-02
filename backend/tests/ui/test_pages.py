@@ -210,8 +210,8 @@ def test_cleanup_a_page_registers_after_it_was_left_still_runs(browser, base_url
 def test_the_guide_shows_its_sections_to_someone_not_signed_in(browser, base_url):
     tab = Tab(browser, base_url, 1366, signed_in=False)
     tab.go("#/guide")
-    sections = [line.removeprefix("### ") for line in (FRONTEND / "guide.md").read_text().splitlines() if line.startswith("### ")]
-    assert tab.page.locator("#view h4").all_inner_texts() == sections
+    sections = [line.removeprefix("# ") for line in (FRONTEND / "guide.md").read_text().splitlines() if line.startswith("# ")]
+    assert tab.page.locator("#view h2").all_inner_texts() == sections
 
 
 def test_a_page_link_in_the_guide_opens_that_page_in_the_same_tab(browser, base_url):
