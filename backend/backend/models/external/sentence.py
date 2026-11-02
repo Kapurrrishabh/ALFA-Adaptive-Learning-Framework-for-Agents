@@ -19,7 +19,9 @@ ENCODER_ID = os.environ.get("STOCKINTEL_ENCODER", "BAAI/bge-small-en-v1.5")
 RERANKER_ID = os.environ.get("STOCKINTEL_RERANKER", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 # Not settable like the two above: phrase.ENTAILED was measured on this model's scale. Not Vectara's HHEM either, which
 # is the independent judge eval_user_questions grades the same replies with. 142M parameters: 568 MB on disk, about
-# 400 MB more resident once it has scored a reply; loaded at start for a writer with news to check (ask.entails_from).
+# 570 MB more resident once it has scored a reply; loaded at start for a writer with news to check (ask.entails_from).
+# Not FactCG-DeBERTa-v3-Large, LLM-AggreFact's best under 1B: on the 298 replies ENTAILED was read on it refused 58 of
+# 166 good ones to this model's 36, served as many bad ones, and took 7 to 13 times as long per reply.
 NLI_ID = "cross-encoder/nli-deberta-v3-small"
 
 
