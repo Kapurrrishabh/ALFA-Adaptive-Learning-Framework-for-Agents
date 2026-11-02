@@ -59,35 +59,34 @@ const toasts = h("div", { class: "toasts", role: "status" }); document.body.appe
 function toast(msg) { const t = h("div", { class: "toast" }, msg); toasts.append(t); setTimeout(() => t.remove(), 2600); }
 
 // ---------- auth + api ----------
-// a header carries plain ASCII only; Render shows a hidden secret as "••••" until it is revealed
-const KEY_RE = /^[\x21-\x7E]+$/;
-const KEY_HINT = "Your key is printed in the terminal by `stockintel app`, or is STOCKINTEL_API_KEY in your server's settings (reveal it before copying).";
-function saveKey(k) {
-  if (!KEY_RE.test(k)) { toast(k ? "That is not the key: reveal STOCKINTEL_API_KEY and copy it again (no dots or spaces)" : "Paste the key first"); return false; }
-  localStorage.setItem("si-key", k); return true;
-}
-(function captureKey() {
-  const m = location.hash.match(/key=([^&]+)/);
-  if (m) { saveKey(decodeURIComponent(m[1])); history.replaceState(null, "", location.pathname + "#/home"); }
-})();
+let me = null;      // the signed-in user from /users/me, or null when signed out
+localStorage.removeItem("si-key");    // the shared key from before sign-in existed
+// fastapi-users answers with codes; these are the words people read
+const AUTH_WORDS = {
+  LOGIN_BAD_CREDENTIALS: "That email and password do not match an account.",
+  LOGIN_USER_NOT_VERIFIED: "Confirm your email first: open the link we sent you.",
+  REGISTER_USER_ALREADY_EXISTS: "There is already an account with this email. Sign in instead.",
+  VERIFY_USER_BAD_TOKEN: "This link does not work any more. It may be old or already used.",
+  VERIFY_USER_ALREADY_VERIFIED: "Your email is already confirmed. You can sign in.",
+  RESET_PASSWORD_BAD_TOKEN: "This link does not work any more. Ask for a new one.",
+  OAUTH_NOT_AVAILABLE_EMAIL: "Google has not confirmed the email address of that account.",
+  OAUTH_USER_ALREADY_EXISTS: "This email already has an account with a password. Sign in with your email and password.",
+  OAUTH_INVALID_STATE: "This sign-in started in another tab or browser. Start again here.",
+  ACCESS_TOKEN_DECODE_ERROR: "This sign-in link is broken. Start again.",
+  ACCESS_TOKEN_ALREADY_EXPIRED: "This sign-in took too long. Start again.",
+  access_denied: "Signing in with Google was cancelled.",
+};
+// only a page of this app: '#/' and then anything but a second '/'
+const safeNext = (next) => /^#\/(?!\/)/.test(next || "") ? next : "#/home";
+const signInHash = () => "#/signin?next=" + encodeURIComponent(location.hash || "#/home");
 async function api(path, opts = {}) {
   if (opts.method && opts.signal) throw new Error(`${opts.method} ${path}: a write is never cancelled, so it takes no signal`);
-  const key = localStorage.getItem("si-key") || "";
-  if (key && !KEY_RE.test(key)) { localStorage.removeItem("si-key"); askKey(); throw Object.assign(new Error("The saved key is not a valid key; please paste it again"), { status: 401 }); }
-  const res = await fetch(path, { ...opts, headers: { "X-API-Key": key, "Content-Type": "application/json", ...(opts.headers || {}) } });
+  const res = await fetch(path, { credentials: "same-origin", ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } });
   const body = await res.json().catch(() => ({}));
-  if (res.status === 401) askKey();
-  const detail = Array.isArray(body.detail) ? body.detail.map((d) => d.msg).join("; ") : body.detail;
-  if (!res.ok) throw Object.assign(new Error(detail || body.error || `HTTP ${res.status}`), { status: res.status, detail: body.detail });
+  if (res.status === 401 && me) { me = null; drawAccount(); location.replace(signInHash()); }
+  const detail = Array.isArray(body.detail) ? body.detail.map((d) => d.msg).join("; ") : body.detail?.reason || body.detail;
+  if (!res.ok) throw Object.assign(new Error(AUTH_WORDS[detail] || detail || body.error || `HTTP ${res.status}`), { status: res.status, detail: body.detail });
   return body;
-}
-function askKey() {
-  if ($(".modal-bg")) return;
-  const input = h("input", { placeholder: "Paste your StockIntel key", type: "password" });
-  const bg = h("div", { class: "modal-bg" }, h("div", { class: "modal form" },
-    h("h2", {}, "Log in"), h("p", { class: "muted" }, KEY_HINT), input,
-    h("button", { class: "btn primary", onclick: () => { if (saveKey(input.value.trim())) { bg.remove(); route(); } } }, "Continue")));
-  document.body.append(bg); input.focus();
 }
 
 // ---------- theme ----------
@@ -134,7 +133,8 @@ const ICONS = { home: "M3 11l9-8 9 8M5 10v10h14V10", compass: "M12 3a9 9 0 1 0 0
   pie: "M12 3v9h9a9 9 0 1 1-9-9zM15 3.5A9 9 0 0 1 20.5 9H15z", candles: "M7 3v18M17 3v18M5 7h4v9H5zM15 5h4v7h-4z",
   chat: "M4 5h16v11H9l-5 4z", chart: "M4 20V4M4 20h16M7 15l4-5 3 3 6-7", book: "M12 6.5C10 5 7 4.5 4 5v14c3-.5 6 0 8 1.5 2-1.5 5-2 8-1.5V5c-3-.5-6 0-8 1.5zM12 6.5v14",
   falling: "M4 20V4M4 20h16M7 6l4 5 3-3 6 7", alert: "M12 3.5L2.5 20h19zM12 10v4M12 17h.01",
-  search: "M10.5 4a6.5 6.5 0 1 0 0 13a6.5 6.5 0 1 0 0-13zM20 20l-4.8-4.8", theme: "M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" };
+  search: "M10.5 4a6.5 6.5 0 1 0 0 13a6.5 6.5 0 1 0 0-13zM20 20l-4.8-4.8", theme: "M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z",
+  user: "M12 4a4 4 0 1 0 0 8a4 4 0 1 0 0-8zM4 21a8 8 0 0 1 16 0" };
 function icon(name) { const svg = s("svg", { viewBox: "0 0 24 24", width: 22, height: 22, fill: "none", stroke: "currentColor", "stroke-width": 1.7, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" });
   svg.append(s("path", { d: ICONS[name] })); return svg; }
 function ring(frac, label, color = css("--brand"), size = 84) {
@@ -775,14 +775,15 @@ const stockRow = (r, right) => h("a", { href: `#/stock/${encodeURIComponent(r.sy
   h("div", { class: "right" }, right));
 const priceChange = (price, chgPct) => [h("div", { class: "num" }, inr(price)), h("div", { class: `num ${cls(chgPct)}`, style: "font-size:var(--fs-sm)" }, pct(chgPct))];
 const onOurSide = (e) => !e.status || e.status >= 500;
+// fastapi-users refuses an unconfirmed user with a bare "Forbidden"; the same-site check says what to do
 function errorWords(e) {
-  return e.status === 401 ? "Please sign in." : e.status === 403 ? "Confirm your email first." : onOurSide(e) ? "Something went wrong on our side." : e.message;
+  return e.status === 401 ? "Please sign in." : e.status === 403 && e.message === "Forbidden" ? "Confirm your email first." : onOurSide(e) ? "Something went wrong on our side." : e.message;
 }
 function ErrorState(e, retry) {
   const words = errorWords(e), raw = e.message || String(e);
   return h("div", { class: "card empty" }, h("div", { class: "big" }, icon("alert")), h("p", {}, words),
     words !== raw ? h("details", {}, h("summary", {}, "Details"), h("p", {}, raw)) : null,
-    e.status === 401 ? h("button", { class: "btn primary", onclick: () => askKey() }, "Sign in")
+    e.status === 401 ? h("a", { class: "btn primary", href: signInHash() }, "Sign in")
       : onOurSide(e) ? h("button", { class: "btn", onclick: () => retry() }, "Try again") : null);
 }
 function EmptyState(ic, title, text, actions) {
@@ -814,6 +815,36 @@ function Tabs(className, label, names, onPick) {
     if (step) { e.preventDefault(); const i = (tabs.indexOf(e.target) + step + tabs.length) % tabs.length; pick(i); tabs[i].focus(); } } }, ...tabs);
   return { list, panel, show: (k) => pick(names.indexOf(k)) };
 }
+function showRefusal(form, err, problem) {
+  const refused = [], unplaced = [];
+  for (const d of Array.isArray(err.detail) ? err.detail : []) {
+    const input = d.loc && form.elements.namedItem(String(d.loc.at(-1)));
+    if (input) { input.closest(".field").showError(d.msg); refused.push(input); } else unplaced.push(d.msg);
+  }
+  problem.textContent = refused.length ? unplaced.join("; ") : errorWords(err);
+  return refused[0];
+}
+function AuthForm(fields, label, run) {
+  const button = h("button", { class: "btn primary", type: "submit" }, label), problem = h("p", { class: "dialog-error", role: "alert" });
+  const form = h("form", { class: "form", novalidate: true, onsubmit: async (e) => {
+    e.preventDefault(); button.disabled = true; problem.textContent = ""; for (const f of form.querySelectorAll(".field")) f.showError(null);
+    try { await run(form); } catch (err) { (showRefusal(form, err, problem) || button).focus(); } finally { button.disabled = false; } } },
+    ...fields, problem, button);
+  form.problem = problem;
+  return form;
+}
+const emailInput = (name) => h("input", { type: "email", name, autocomplete: "email", required: true });
+const passwordInput = (autocomplete) => h("input", { type: "password", name: "password", autocomplete, required: true });
+// recovers an account whose confirmation email failed to send, or whose link ran out
+function ResendLink(email) {
+  const note = h("span", { role: "status" });
+  const button = h("button", { class: "btn small", type: "button", onclick: async () => {
+    button.disabled = true; note.textContent = "";
+    try { await api("/auth/request-verify-token", { method: "POST", body: JSON.stringify({ email: email.value }) });
+      note.textContent = "If this email still needs confirming, a new link is on its way."; }
+    catch (err) { note.textContent = errorWords(err); } finally { button.disabled = false; } } }, "Send the link again");
+  return h("div", { class: "row" }, button, note);
+}
 function Dialog(ctx, title, body, [label, run]) {
   const opener = document.activeElement, titleId = uid("dialog"), text = typeof body === "string" ? h("p", { id: `${titleId}-text` }, body) : null;
   const main = h("button", { class: "btn primary", type: "submit" }, label), problem = h("p", { class: "dialog-error", role: "alert" });
@@ -824,13 +855,7 @@ function Dialog(ctx, title, body, [label, run]) {
     try { await run(); close(); } catch (err) {
       if (!bg.isConnected) return toast(`${label} failed: ${errorWords(err)}`);
       main.disabled = false;
-      const refused = [], unplaced = [];
-      for (const d of Array.isArray(err.detail) ? err.detail : []) {
-        const input = d.loc && form.elements.namedItem(String(d.loc.at(-1)));
-        if (input) { input.closest(".field").showError(d.msg); refused.push(input); } else unplaced.push(d.msg);
-      }
-      problem.textContent = refused.length ? unplaced.join("; ") : errorWords(err);
-      (refused[0] || main).focus();
+      (showRefusal(form, err, problem) || main).focus();
     } } },
     h("h2", { id: titleId }, title), text || body, problem,
     h("div", { class: "row", style: "justify-content:flex-end" }, cancel, main));
@@ -1208,6 +1233,102 @@ async function pageReport(view, ctx) {
     h("div", { class: "row" }, h("a", { class: "btn small", href: `#/stock/${encodeURIComponent(r.symbol)}` }, `Open ${r.symbol}`), h("button", { class: "btn small", onclick: () => window.print() }, "Print / PDF"))), ...mdToNodes(r.body)));
 }
 
+// ---------- sign-in ----------
+const PASSWORD_HINT = "Choose a long password. A short sentence is easy to remember. Do not put the first part of your email in it.";
+let googleProblem = "";     // why the last Google sign-in failed, for the sign-in page to say once
+async function finishGoogleSignIn() {
+  const next = safeNext(sessionStorage.getItem("si-next")); sessionStorage.removeItem("si-next");
+  // same origin, so the CSRF cookie /authorize set goes along; replaceState then drops Google's code from the address
+  try { await api("/auth/google/callback" + location.search); history.replaceState(null, "", "/" + next); }
+  catch (e) { googleProblem = `Signing in with Google did not finish. ${e.status === 400 && !e.detail ? "Start again." : errorWords(e)}`;
+    history.replaceState(null, "", "/#/signin?next=" + encodeURIComponent(next)); }
+}
+async function pageSignIn(view, ctx) {
+  const next = safeNext(ctx.params.get("next"));
+  if (me) return location.replace(next);
+  const methods = await api("/auth/methods", { signal: ctx.signal });
+  const email = emailInput("username"), resend = h("div");
+  const form = AuthForm([Field("Email", email), Field("Password", passwordInput("current-password"))], "Sign in", async (f) => {
+    try { await api("/auth/cookie/login", { method: "POST", body: new URLSearchParams(new FormData(f)), headers: { "Content-Type": "application/x-www-form-urlencoded" } }); }
+    catch (err) { resend.replaceChildren(err.detail === "LOGIN_USER_NOT_VERIFIED" ? ResendLink(email) : ""); throw err; }
+    me = await api("/users/me"); drawAccount(); location.replace(next);
+  });
+  form.problem.textContent = googleProblem; googleProblem = ""; form.problem.after(resend);
+  const google = h("button", { class: "btn", type: "button", onclick: async () => {
+    sessionStorage.setItem("si-next", next);
+    try { location.assign((await api("/auth/google/authorize")).authorization_url); } catch (err) { form.problem.textContent = errorWords(err); } } }, "Continue with Google");
+  view.append(h("div", { class: "card auth" }, h("p", { style: "margin-top:0" }, "StockIntel helps you study NSE stocks and make up your own mind. Sign in to see your portfolio and the app's calls."),
+    methods.google ? google : null, form,
+    methods.signup ? h("p", {}, h("a", { href: "#/reset" }, "Forgot your password?"), " · ", h("a", { href: "#/signup" }, "Create an account")) : null,
+    h("p", { class: "muted" }, "New here? Read the ", h("a", { href: "#/guide" }, "guide"), ", and see ", h("a", { href: "/privacy" }, "what the app keeps about you"), ".")));
+}
+async function pageSignUp(view, ctx) {
+  const methods = await api("/auth/methods", { signal: ctx.signal });
+  if (!methods.signup) { view.append(EmptyState("alert", "Sign-up by email is not open", methods.google ? "You can sign in with Google instead." : null, h("a", { class: "btn primary", href: "#/signin" }, "Go to sign in"))); return; }
+  const email = emailInput("email"), resend = h("div"), card = h("div", { class: "card auth" });
+  const form = AuthForm([Field("Email", email), Field("Password", passwordInput("new-password"), PASSWORD_HINT)], "Create account", async (f) => {
+    try { await api("/auth/register", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(f))) }); }
+    catch (err) { resend.replaceChildren(err.detail === "REGISTER_USER_ALREADY_EXISTS" ? ResendLink(email) : ""); throw err; }
+    card.replaceChildren(h("p", { role: "status" }, `We sent a link to ${email.value}. Open it to confirm your email, then sign in.`), h("a", { class: "btn primary", href: "#/signin" }, "Go to sign in"));
+  });
+  form.problem.after(resend);
+  card.append(form, h("p", {}, "Already have an account? ", h("a", { href: "#/signin" }, "Sign in")));
+  view.append(card);
+}
+async function pageVerify(view, ctx) {
+  let words = "Your email is confirmed. You can sign in now.", email = null;
+  try { await api("/auth/verify", { method: "POST", body: JSON.stringify({ token: ctx.params.get("token") || "" }) }); }
+  catch (err) {
+    if (err.detail === "VERIFY_USER_BAD_TOKEN") { words = `${errorWords(err)} Enter your email to get a new one.`; email = emailInput("email"); }
+    else if (err.detail === "VERIFY_USER_ALREADY_VERIFIED") words = errorWords(err);
+    else throw err;
+  }
+  view.append(h("div", { class: "card auth" }, h("p", { style: "margin-top:0" }, words), email && [Field("Email", email), ResendLink(email)],
+    h("a", { class: "btn primary", href: "#/signin" }, "Go to sign in")));
+}
+async function pageReset(view, ctx) {
+  const token = ctx.params.get("token"), card = h("div", { class: "card auth" });
+  view.append(card);
+  if (!token) {
+    const email = emailInput("email");
+    card.append(h("p", { style: "margin-top:0" }, "Enter the email you sign in with, and we will send it a link to choose a new password."),
+      AuthForm([Field("Email", email)], "Send the link", async () => {
+        await api("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email: email.value }) });
+        card.replaceChildren(h("p", { role: "status" }, `If ${email.value} has an account, we sent it a link. Open it soon, as it stops working after a while.`)); }));
+    return;
+  }
+  card.append(h("p", { style: "margin-top:0" }, "Choose a new password. It signs you out on every device."),
+    AuthForm([Field("New password", passwordInput("new-password"), PASSWORD_HINT)], "Save the new password", async (f) => {
+      await api("/auth/reset-password", { method: "POST", body: JSON.stringify({ token, password: f.elements.password.value }) });
+      card.replaceChildren(h("p", { role: "status" }, "Your password is changed. Sign in with the new one."), h("a", { class: "btn primary", href: "#/signin" }, "Go to sign in")); }),
+    h("p", {}, h("a", { href: "#/reset" }, "Ask for a new link")));
+}
+
+// ---------- account menu ----------
+function drawAccount() {
+  if (!me) return $("#account").replaceChildren();
+  $("#account").replaceChildren(h("details", { class: "account-menu" }, h("summary", { title: "Account" }, icon("user"), h("span", { class: "hide-sm" }, "Account")),
+    h("div", { class: "menu" }, h("p", { class: "muted" }, me.email), h("a", { href: "#/guide" }, "Guide"), h("a", { href: "/privacy" }, "Privacy"),
+      h("button", { type: "button", onclick: deleteAccount }, "Delete my account"), h("button", { type: "button", onclick: signOut }, "Sign out"))));
+}
+document.addEventListener("click", (e) => { const menu = $("#account details"); if (menu && !e.target.closest("#account summary")) menu.open = false; });
+document.addEventListener("keydown", (e) => { const menu = $("#account details[open]"); if (menu && e.key === "Escape") { menu.open = false; menu.firstChild.focus(); } });
+// the header outlives every page, so its dialog closes with whichever page is open
+const deleteAccount = () => Dialog({ onLeave: (fn) => visit.leaves.push(fn) }, "Delete your account?",
+  `This deletes your account (${me.email}), your sign-ins, your portfolio with its trades, plans, reports and dismissed alerts, and your count of AI answers. It cannot be undone.`,
+  ["Delete my account", async () => { await api("/users/me", { method: "DELETE" }); forgetDevice(); toast("Your account is deleted."); }]);
+async function signOut() {
+  try { await api("/auth/cookie/logout", { method: "POST" }); } catch (e) { if (e.status !== 401) return toast(`Sign out failed: ${errorWords(e)}`); }
+  forgetDevice();
+}
+// so the next person on this device starts clean; the theme belongs to the device
+function forgetDevice() {
+  me = null; drawAccount(); $("#ticker").replaceChildren();
+  for (const k of ["si-cap", "si-builder", "si-agent"]) localStorage.removeItem(k);
+  for (const k of ["si-chat", "si-chat-log", "si-next"]) sessionStorage.removeItem(k);
+  location.hash = "#/signin";
+}
+
 // ---------- home + builder ----------
 function isoArt() {
   // decorative only: a row of glass cards with a gold one in the middle, no data. Its colours are CSS variables
@@ -1243,18 +1364,12 @@ function isoArt() {
 }
 
 async function pageHome(view, ctx) {
-  const keyInput = h("input", { type: "password", placeholder: "Paste your StockIntel key", autocomplete: "current-password" });
-  const login = () => { if (saveKey(keyInput.value.trim())) route(); };
-  keyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
-  const hasKey = !!localStorage.getItem("si-key");
   const floatA = h("div", { class: "float-card a", hidden: true }), floatB = h("div", { class: "float-card b", hidden: true });
   view.append(h("section", { class: "hero-banner" },
     h("div", {}, h("span", { class: "hero-kicker" }, h("i"), "Your personal NSE stock assistant"),
       h("h2", { class: "display" }, "Invest with evidence, built for ", h("em", {}, "Indian markets.")),
       h("p", {}, "Search any NSE stock and get a plain buy / wait / don't-buy call with the reasons on both sides. Build a portfolio in seconds, see patterns and AI forecast ranges on the chart, and ask questions in plain English. Every method shows its tested track record."),
-      hasKey ? h("div", { class: "row", style: "margin-top:22px" }, h("a", { class: "btn primary", href: "#/builder" }, "Get started"), h("a", { class: "btn", href: "#/explore" }, "Explore the market"))
-        : h("div", { class: "login-box" }, h("b", {}, "Log in"), h("p", {}, KEY_HINT),
-          h("div", { class: "row" }, keyInput, h("button", { class: "btn primary", onclick: login }, "Continue")))),
+      h("div", { class: "row", style: "margin-top:22px" }, h("a", { class: "btn primary", href: "#/builder" }, "Get started"), h("a", { class: "btn", href: "#/explore" }, "Explore the market"))),
     h("div", { class: "hero-visual" }, isoArt(), floatA, floatB)));
   const stats = h("div");
   view.append(stats);
@@ -1267,7 +1382,6 @@ async function pageHome(view, ctx) {
     feature("chat", "Ask AI", "Chat with memory: “Should I buy ITC?”, “Why?”, “Compare it with HUL”. Optionally add your self-learning agent's view.", "#/chat"),
     feature("chart", "Track record", "How well each method did on data it never saw — including the ones that don't work.", "#/performance")));
   view.append(h("p", { class: "footer-note" }, "Decision support, not investment advice. Verify figures against NSE/BSE filings before acting."));
-  if (!hasKey) return;
   let d; try { d = await api("/ui/performance", { signal: ctx.signal }); } catch (e) { stats.replaceChildren(h("p", { class: "muted", style: "margin-top:14px" }, e.status !== 404 ? `Track record unavailable: ${errorWords(e)}` : "Run `stockintel build-performance` once to show the measured track record here.")); return; }
   const live = d.momentum.live_check, band = bandRecords(d.forecast.coverage)[0];
   const edge = d.patterns.filter((r) => Math.abs(r.z || 0) >= d.bonferroni_z).length, ch5 = d.open_models && d.open_models.chronos.horizons.find((x) => x.horizon === 5);
@@ -1346,7 +1460,7 @@ async function pageBuilder(view, ctx) {
 }
 
 function loadTicker() {
-  const bar = $("#ticker"); if (bar.childElementCount || !localStorage.getItem("si-key")) return;
+  const bar = $("#ticker"); if (bar.childElementCount || !me) return;
   bar.append(h("span", { class: "ticker-item" }, "Loading prices…"));
   api("/ui/ticker").then((items) => { const row = () => items.map((x) => h(x.index ? "span" : "a", { class: "ticker-item", href: x.index ? null : `#/stock/${encodeURIComponent(x.symbol)}` },
     h("b", {}, x.symbol), num(x.price), h("span", { class: cls(x.change_pct) }, pct(x.change_pct))));
@@ -1370,7 +1484,11 @@ const ROUTES = [
   { path: "performance", title: "Track record", section: "Learn", label: "Track record", render: pagePerformance },
   { path: "reports", title: "My reports", section: "Learn", label: "My reports", render: pageReports },
   { path: "report", title: "Report", section: "Learn", render: pageReport },
-  { path: "guide", title: "How to use StockIntel", section: "Learn", label: "Guide", render: pageGuide },
+  { path: "guide", title: "How to use StockIntel", section: "Learn", label: "Guide", public: true, render: pageGuide },
+  { path: "signin", title: "Sign in", public: true, render: pageSignIn },
+  { path: "signup", title: "Create an account", public: true, render: pageSignUp },
+  { path: "verify", title: "Confirm your email", public: true, render: pageVerify },
+  { path: "reset", title: "Reset your password", public: true, render: pageReset },
 ];
 const NOT_FOUND = { title: "Page not found", render: (view) => view.append(EmptyState("compass", `There is no page at ${location.hash}.`, null,
   h("a", { class: "btn primary", href: "#/home" }, "Go to Home"))) };
@@ -1387,6 +1505,7 @@ async function route() {
   const [path, query] = location.hash.slice(2).split("?"), parts = (path || "home").split("/");
   let arg; try { arg = decodeURIComponent(parts[1] || ""); } catch { arg = null; }
   const r = (arg !== null && ROUTES.find((x) => x.path === parts[0] && (arg || !x.needsArg))) || NOT_FOUND;
+  if (!me && !r.public) return location.replace(signInHash());
   for (const fn of visit.leaves) fn();
   const ctl = new AbortController(), thisVisit = { redraws: [], leaves: [() => ctl.abort()] };
   visit = thisVisit;
@@ -1409,5 +1528,10 @@ async function route() {
   ro.observe(view); thisVisit.leaves.push(() => ro.disconnect());
   try { await r.render(view, ctx); } catch (e) { if (ctx.live()) view.replaceChildren(ErrorState(e, route)); }
 }
+async function start() {
+  if (location.pathname === "/login/google") await finishGoogleSignIn();
+  try { me = await api("/users/me"); } catch (e) { if (e.status !== 401) return $("#view").replaceChildren(ErrorState(e, start)); }
+  drawAccount(); route();
+}
 window.addEventListener("hashchange", route);
-document.addEventListener("DOMContentLoaded", () => { $("#theme").append(icon("theme")); $(".search .icon").append(icon("search")); drawNavs(); route(); });
+document.addEventListener("DOMContentLoaded", () => { $("#theme").append(icon("theme")); $(".search .icon").append(icon("search")); drawNavs(); start(); });

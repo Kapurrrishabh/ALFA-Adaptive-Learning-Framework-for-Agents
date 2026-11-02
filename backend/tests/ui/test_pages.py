@@ -2,7 +2,7 @@
 the search box, the theme toggle, the shared dialog, toasts, and error and empty states, and what a keyboard
 or screen reader user gets."""
 import re
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -10,7 +10,7 @@ import pytest
 sync_api = pytest.importorskip("playwright.sync_api", reason="Playwright is not installed: pip install -e '.[dev]'")
 
 from backend.paths import FRONTEND  # noqa: E402
-from .conftest import EMAIL, KEY, PASSWORD, RUN_REQUESTS, sign_in  # noqa: E402
+from .conftest import EMAIL, PASSWORD, RUN_REQUESTS, sign_in  # noqa: E402
 
 pytestmark = pytest.mark.ui
 WIDTHS = [360, 390, 800, 1366]   # provisional: a small phone, a phone, the nav breakpoint itself, a laptop
@@ -20,6 +20,7 @@ SECTIONS = ["Home", "Markets", "Portfolio", "Ask", "Learn"]
 NO_PAGE = ["nowhere", "stock", "stock/%E0%A4"]
 PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signals", "builder", "chat", "learn",
          "performance", "reports", "guide", *NO_PAGE]
+SIGNED_OUT_PAGES = ["signin", "signup", "verify?token=old", "reset", "reset?token=old"]
 # Chrome logs a failed fetch without its address, so failures are read from the responses; an API 404 is how a missing model shows up,
 # and a 429 means the run outgrew the test key's rate limit, which otherwise shows only as a click that times out
 UNNAMED_FETCH_ERROR = "Failed to load resource"
@@ -54,7 +55,7 @@ class Tab:
         self.page.on("response", lambda r: self.errors.append(f"{r.status} {r.url}") if r.status >= 500 or r.status == 429 or (r.status >= 400 and "/static/" in r.url) else None)
         if signed_in:
             sign_in(self.context, base_url)
-        self.page.goto(f"{base_url}/#key={KEY}" if signed_in else base_url)
+        self.page.goto(base_url)
         self.settle()
 
     def _started(self, request):
@@ -267,15 +268,16 @@ def axe_findings(browser, base_url):
     out = {}
     for theme in THEMES:
         for width in AXE_WIDTHS:
-            tab = Tab(browser, base_url, width)
-            if tab.page.evaluate("document.documentElement.dataset.theme") != theme:
-                tab.page.click("#theme")
-            for name in PAGES:
-                tab.go(f"#/{name}")
-                tab.open_every_disclosure()
-                out[(theme, width, name)] = {v["id"]: [n["target"] for n in v["nodes"]] for v in axe.run(tab.page).response["violations"]
-                                             if v["impact"] in ("serious", "critical")}
-            tab.context.close()
+            for signed_in, names in [(True, PAGES), (False, SIGNED_OUT_PAGES)]:
+                tab = Tab(browser, base_url, width, signed_in=signed_in)
+                if tab.page.evaluate("document.documentElement.dataset.theme") != theme:
+                    tab.page.click("#theme")
+                for name in names:
+                    tab.go(f"#/{name}")
+                    tab.open_every_disclosure()
+                    out[(theme, width, name)] = {v["id"]: [n["target"] for n in v["nodes"]] for v in axe.run(tab.page).response["violations"]
+                                                 if v["impact"] in ("serious", "critical")}
+                tab.context.close()
     return out
 
 
@@ -283,6 +285,12 @@ def axe_findings(browser, base_url):
 @pytest.mark.parametrize("theme", THEMES)
 def test_no_page_has_a_serious_accessibility_finding(axe_findings, theme, width):
     assert {name: axe_findings[(theme, width, name)] for name in PAGES if axe_findings[(theme, width, name)]} == {}
+
+
+@pytest.mark.parametrize("width", AXE_WIDTHS)
+@pytest.mark.parametrize("theme", THEMES)
+def test_no_sign_in_page_has_a_serious_accessibility_finding(axe_findings, theme, width):
+    assert {name: axe_findings[(theme, width, name)] for name in SIGNED_OUT_PAGES if axe_findings[(theme, width, name)]} == {}
 
 
 def test_leaving_explore_mid_load_keeps_the_new_page(browser, base_url):
@@ -344,6 +352,230 @@ def test_a_page_link_in_the_guide_opens_that_page_in_the_same_tab(browser, base_
     tab.go("#/guide")
     tab.page.locator("#view .md").get_by_role("link", name="Holdings", exact=True).click()
     assert tab.page.evaluate("location.hash") == "#/portfolio"
+
+
+PRIVATE_PAGES = [p for p in PAGES if p != "guide"]
+NEW_PASSWORD = "a kettle sings on the stove"
+
+
+def signed_out_at(browser, base_url, hash_):
+    tab = Tab(browser, base_url, 1366, signed_in=False)
+    tab.go(hash_)
+    return tab
+
+
+def sign_in_with_the_form(tab, email=EMAIL, password=PASSWORD):
+    tab.page.get_by_label("Email").fill(email)
+    tab.page.get_by_label("Password").fill(password)
+    tab.page.click("#view button[type=submit]")
+    tab.settle()
+
+
+def token_sent(outbox):
+    return next(word for word in outbox.sent[-1].get_content().split() if "token=" in word).split("token=", 1)[1]
+
+
+def new_account(base_url, outbox, email, verified=True):
+    """An account of its own, made through the sign-up routes, so a test can change it without touching the shared one."""
+    with httpx.Client(base_url=base_url) as client:
+        client.post("/auth/register", json={"email": email, "password": PASSWORD}).raise_for_status()
+        if verified:
+            client.post("/auth/verify", json={"token": token_sent(outbox)}).raise_for_status()
+
+
+def test_signed_out_every_private_page_lands_on_sign_in(browser, base_url):
+    tab = Tab(browser, base_url, 1366, signed_in=False)
+    landed = {}
+    for name in PRIVATE_PAGES:
+        tab.go(f"#/{name}")
+        landed[name] = tab.page.evaluate("location.hash").split("?")[0]
+    assert landed == {name: "#/signin" for name in PRIVATE_PAGES}
+
+
+def test_signing_in_with_email_reaches_home(browser, base_url):
+    tab = Tab(browser, base_url, 1366, signed_in=False)
+    sign_in_with_the_form(tab)
+    assert tab.page.locator("h1").all_inner_texts() == ["Home"]
+
+
+def test_signing_in_returns_to_the_page_that_asked_for_it(browser, base_url):
+    tab = signed_out_at(browser, base_url, "#/portfolio")
+    sign_in_with_the_form(tab)
+    assert tab.page.evaluate("location.hash") == "#/portfolio"
+
+
+def test_a_session_that_ends_mid_visit_sends_the_next_request_to_sign_in(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.context.clear_cookies()
+    tab.go("#/explore")
+    assert tab.page.evaluate("location.hash") == "#/signin?next=%23%2Fexplore"
+
+
+def test_a_wrong_password_is_refused_in_plain_words(browser, base_url):
+    tab = signed_out_at(browser, base_url, "#/signin")
+    sign_in_with_the_form(tab, password="not the password at all")
+    assert tab.page.inner_text("#view .dialog-error") == "That email and password do not match an account."
+
+
+def test_a_next_page_off_the_site_is_never_followed(browser, base_url):
+    tab = signed_out_at(browser, base_url, "#/signin?next=%2F%2Fevil.example")
+    sign_in_with_the_form(tab)
+    assert tab.page.evaluate("location.href") == f"{base_url}/#/home"
+
+
+def signed_out_by_the_menu(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/chat")
+    tab.page.evaluate("sessionStorage.setItem('si-chat-log', '[]')")
+    tab.page.click("#account summary")
+    tab.page.click("#account button:text-is('Sign out')")
+    tab.settle()
+    return tab
+
+
+def test_sign_out_returns_to_sign_in(browser, base_url):
+    assert signed_out_by_the_menu(browser, base_url).page.evaluate("location.hash") == "#/signin"
+
+
+def test_sign_out_clears_the_chat_log(browser, base_url):
+    assert signed_out_by_the_menu(browser, base_url).page.evaluate("sessionStorage.getItem('si-chat-log')") is None
+
+
+def test_sign_out_ends_the_session_on_the_server(browser, base_url):
+    tab = signed_out_by_the_menu(browser, base_url)
+    assert tab.context.request.get(f"{base_url}/users/me").status == 401
+
+
+def test_the_account_menu_holds_what_the_guide_says(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.page.click("#account summary")
+    assert tab.page.locator("#account .menu > *").all_inner_texts() == [EMAIL, "Guide", "Privacy", "Delete my account", "Sign out"]
+
+
+def test_the_account_menu_closes_on_escape(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.page.click("#account summary")
+    tab.page.keyboard.press("Escape")
+    assert tab.page.locator("#account details[open]").count() == 0
+
+
+def test_the_sign_in_page_links_to_the_guide(browser, base_url):
+    tab = signed_out_at(browser, base_url, "#/signin")
+    tab.page.get_by_role("link", name="guide", exact=True).click()
+    tab.settle()
+    assert tab.page.locator("h1").all_inner_texts() == ["How to use StockIntel"]
+
+
+def test_deleting_the_account_says_what_goes(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.page.click("#account summary")
+    tab.page.click("#account button:text-is('Delete my account')")
+    text = tab.page.inner_text("[role=dialog]")
+    assert [word for word in [EMAIL, "portfolio", "trades", "plans", "reports", "cannot be undone"] if word not in text] == []
+
+
+def test_a_deleted_account_can_no_longer_sign_in(browser, base_url, outbox):
+    new_account(base_url, outbox, "leaving@example.com")
+    tab = signed_out_at(browser, base_url, "#/signin")
+    sign_in_with_the_form(tab, "leaving@example.com")
+    tab.page.click("#account summary")
+    tab.page.click("#account button:text-is('Delete my account')")
+    tab.page.click("[role=dialog] button[type=submit]")
+    tab.settle()
+    sign_in_with_the_form(tab, "leaving@example.com")
+    assert tab.page.inner_text("#view .dialog-error") == "That email and password do not match an account."
+
+
+def test_a_bad_google_sign_in_link_shows_a_plain_error(browser, base_url):
+    tab = Tab(browser, base_url, 1366, signed_in=False)
+    tab.page.goto(f"{base_url}/login/google?code=bad&state=bad")
+    tab.settle()
+    assert tab.page.inner_text("#view .dialog-error") == "Signing in with Google did not finish. This sign-in link is broken. Start again."
+
+
+def test_a_bad_google_sign_in_link_leaves_no_code_in_the_address(browser, base_url):
+    tab = Tab(browser, base_url, 1366, signed_in=False)
+    tab.page.goto(f"{base_url}/login/google?code=bad&state=bad")
+    tab.settle()
+    assert "code=" not in tab.page.evaluate("location.href")
+
+
+def test_continue_with_google_comes_back_signed_in_to_the_page_asked_for(browser, base_url):
+    tab = signed_out_at(browser, base_url, "#/portfolio")
+    # Google's page answers at once, sending the browser back with a code and the state it was given
+    tab.page.route("https://accounts.example/**", lambda route: route.fulfill(status=302, headers={
+        "Location": f"{base_url}/login/google?code=ok&state={parse_qs(urlsplit(route.request.url).query)['state'][0]}"}))
+    tab.page.click("#view button:text-is('Continue with Google')")
+    tab.page.wait_for_url(f"{base_url}/#/portfolio")
+    tab.settle()
+    assert tab.page.locator("h1").all_inner_texts() == ["Holdings"]
+
+
+def test_a_new_account_confirmed_by_its_emailed_link_can_sign_in(browser, base_url, outbox):
+    tab = signed_out_at(browser, base_url, "#/signup")
+    tab.page.get_by_label("Email").fill("newcomer@example.com")
+    tab.page.get_by_label("Password").fill(PASSWORD)
+    tab.page.click("#view button[type=submit]")
+    tab.settle()
+    tab.go(f"#/verify?token={token_sent(outbox)}")
+    tab.go("#/signin")
+    sign_in_with_the_form(tab, "newcomer@example.com")
+    assert tab.page.locator("h1").all_inner_texts() == ["Home"]
+
+
+def test_a_short_password_is_refused_with_the_servers_rule(browser, base_url):
+    tab = signed_out_at(browser, base_url, "#/signup")
+    tab.page.get_by_label("Email").fill("brief@example.com")
+    tab.page.get_by_label("Password").fill("short words")
+    tab.page.click("#view button[type=submit]")
+    tab.settle()
+    assert tab.page.inner_text("#view .dialog-error").startswith("Use ")
+
+
+def resent_from(tab, outbox):
+    sent = len(outbox.sent)
+    tab.page.click("#view button:text-is('Send the link again')")
+    tab.settle()
+    return outbox.sent[sent:]
+
+
+def test_an_unconfirmed_sign_in_can_send_the_link_again(browser, base_url, outbox):
+    new_account(base_url, outbox, "unsure@example.com", verified=False)
+    tab = signed_out_at(browser, base_url, "#/signin")
+    sign_in_with_the_form(tab, "unsure@example.com")
+    assert [m["To"] for m in resent_from(tab, outbox)] == ["unsure@example.com"]
+
+
+def test_signing_up_again_with_an_unconfirmed_email_can_send_the_link_again(browser, base_url, outbox):
+    new_account(base_url, outbox, "again@example.com", verified=False)
+    tab = signed_out_at(browser, base_url, "#/signup")
+    tab.page.get_by_label("Email").fill("again@example.com")
+    tab.page.get_by_label("Password").fill(PASSWORD)
+    tab.page.click("#view button[type=submit]")
+    tab.settle()
+    assert [m["To"] for m in resent_from(tab, outbox)] == ["again@example.com"]
+
+
+def test_a_broken_confirmation_link_can_send_the_link_again(browser, base_url, outbox):
+    new_account(base_url, outbox, "expired@example.com", verified=False)
+    tab = signed_out_at(browser, base_url, "#/verify?token=old")
+    tab.page.get_by_label("Email").fill("expired@example.com")
+    assert [m["To"] for m in resent_from(tab, outbox)] == ["expired@example.com"]
+
+
+def test_a_forgotten_password_is_replaced_through_the_emailed_link(browser, base_url, outbox):
+    new_account(base_url, outbox, "forgetful@example.com")
+    tab = signed_out_at(browser, base_url, "#/reset")
+    tab.page.get_by_label("Email").fill("forgetful@example.com")
+    tab.page.click("#view button[type=submit]")
+    tab.settle()
+    tab.go(f"#/reset?token={token_sent(outbox)}")
+    tab.page.get_by_label("New password").fill(NEW_PASSWORD)
+    tab.page.click("#view button[type=submit]")
+    tab.settle()
+    tab.go("#/signin")
+    sign_in_with_the_form(tab, "forgetful@example.com", NEW_PASSWORD)
+    assert tab.page.locator("h1").all_inner_texts() == ["Home"]
 
 
 def test_tab_from_the_page_title_reaches_the_sub_nav(browser, base_url):
@@ -881,13 +1113,6 @@ def test_try_again_after_a_server_error_loads_the_page(browser, base_url):
     tab.page.click("#view button:text-is('Try again')")
     tab.settle()
     assert tab.page.locator("#view .welcome").count() == 1
-
-
-def test_a_saved_key_that_is_not_a_key_asks_to_sign_in(browser, base_url):
-    tab = Tab(browser, base_url, 1366)
-    tab.page.evaluate("localStorage.setItem('si-key', 'not a key')")
-    tab.go("#/explore")
-    assert "Please sign in." in tab.page.inner_text("#view")
 
 
 def test_a_rate_limit_shows_the_servers_words_with_the_limit(browser, base_url):
