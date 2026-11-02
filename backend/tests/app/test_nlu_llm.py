@@ -78,8 +78,8 @@ def test_horizon_risk_and_sector_parsing():
     ("how are rate cuts priced in by the market?", False, "help"),
     ("how are its margins calculated?", True, "domain"),
     ("is Infosys overbought?", False, "domain"),
-    ("is TCS a better buy than Infosys?", False, "compare"),
-    ("which of TCS and Infosys is a better buy?", False, "compare"),
+    ("is TCS a better buy than Infosys?", False, "analyze"),
+    ("which of TCS and Infosys is a better buy?", False, "analyze"),
 ])
 def test_intent_classification(text, session, intent):
     phrases = ["fundamentally strong", "improving earnings", "positive momentum"]

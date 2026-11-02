@@ -295,7 +295,7 @@ def classify(text: str, known_symbols: Sequence[str], short_forms: Set[str], has
         if re.search(r"sentiment", t):
             return intent("portfolio_sentiment")
         return intent("portfolio_summary")
-    if re.search(r"\bcompare\b|\bvs\.?\b|\bversus\b", t) or (len(symbols) > 1 and re.search(r"\bthan\b|\bbetter buy\b", t)):
+    if re.search(r"\bcompare\b|\bvs\.?\b|\bversus\b", t):
         return intent("compare")
     if not symbols and any(p in t for p in research_phrases) and re.search(r"\b(find|show|which|list|screen)\b", t):
         return intent("research_query")
