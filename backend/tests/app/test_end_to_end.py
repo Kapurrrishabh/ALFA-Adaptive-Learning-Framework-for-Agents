@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from backend.advisory import report as R
 from backend.user.portfolio.alerts import evaluate
 from backend.api.accounts import owner_of
-from backend.api.app import PUBLIC_PATHS, create_app
+from backend.api.app import HSTS, PUBLIC_PATHS, SECURITY_HEADERS, create_app
 from backend.config import DEFAULT_PORTFOLIO, FORECAST_DAYS
 from backend.api.orchestrator import Orchestrator
 from backend.advisory.calculators.screener import screen
@@ -484,6 +484,42 @@ def test_the_privacy_page_and_googles_return_page_open_signed_out(orch, accounts
 @pytest.mark.parametrize("path", [*PUBLIC_PATHS, "/static/app.js", "/static/app.css"])
 def test_every_public_path_and_the_app_files_open_signed_out(orch, accounts, path):
     assert TestClient(create_app(orch, accounts), base_url=PUBLIC_URL).get(path).status_code == 200
+
+
+@pytest.mark.parametrize("signed_in, path, status", [(False, "/", 200), (False, "/health", 200), (True, "/ui/usage", 200),
+                                                     (False, "/portfolio", 401), (False, "/static/app.js", 200)])
+def test_every_kind_of_answer_carries_the_security_headers(orch, accounts, signed_in, path, status):
+    client = signed_in_client(orch, accounts) if signed_in else TestClient(create_app(orch, accounts), base_url=PUBLIC_URL)
+    r = client.get(path)
+    assert (r.status_code, {k: r.headers.get(k) for k in SECURITY_HEADERS}) == (status, SECURITY_HEADERS)
+
+
+@pytest.mark.parametrize("public_url, hsts", [(PUBLIC_URL, HSTS), ("http://127.0.0.1:8931", None)], ids=["https", "http"])
+def test_browsers_are_told_to_keep_to_https_only_when_the_address_is_https(orch, db_path, public_url, hsts):
+    from backend.api.accounts import Accounts
+    from .conftest import SECRET
+    client = TestClient(create_app(orch, Accounts(db_path, public_url, SECRET, None, None)), base_url=public_url)
+    assert client.get("/health").headers.get("strict-transport-security") == hsts
+
+
+@pytest.mark.parametrize("signed_in, path", [(True, "/ui/usage"), (False, "/portfolio")], ids=["answer", "refusal"])
+def test_json_answers_are_never_stored_by_a_cache(orch, accounts, signed_in, path):
+    client = signed_in_client(orch, accounts) if signed_in else TestClient(create_app(orch, accounts), base_url=PUBLIC_URL)
+    assert client.get(path).headers.get("cache-control") == "no-store"
+
+
+@pytest.mark.parametrize("method, path", [("GET", "/health"), ("GET", "/ui/usage"), ("OPTIONS", "/ui/usage")])
+def test_no_answer_lets_another_site_read_it(orch, accounts, method, path):
+    r = signed_in_client(orch, accounts).request(method, path, headers={"Origin": "https://evil.example",
+                                                                        "Access-Control-Request-Method": "GET"})
+    assert "access-control-allow-origin" not in r.headers
+
+
+def test_the_install_screen_takes_its_colours_from_the_light_theme(orch, accounts):
+    from backend.paths import FRONTEND
+    light = (FRONTEND / "app.css").read_text().split(':root:not([data-theme="dark"]) {')[1].split("}")[0]
+    m = TestClient(create_app(orch, accounts), base_url=PUBLIC_URL).get("/manifest.webmanifest").json()
+    assert (f"--bg: {m['theme_color']};" in light, f"--bg-2: {m['background_color']};" in light) == (True, True)
 
 
 @pytest.mark.parametrize("on", [True, False])
