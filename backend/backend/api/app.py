@@ -12,11 +12,12 @@ from __future__ import annotations
 import json
 import threading
 import time
+from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -25,6 +26,7 @@ from pydantic.networks import validate_email
 from backend.advisory import report as R
 from backend.advisory.calculators.backtest import strategies as S
 from backend.config import FORECAST_DAYS, resolve_symbol
+from backend.database.sources import panel
 from backend.database.sources.provider import DataUnavailable
 from backend.database.sources.quality import DataQualityError
 from backend.api.accounts import Accounts, owner_of
@@ -34,6 +36,7 @@ from backend.knowledge_base.lessons import knowledge_base
 from backend.paths import FRONTEND
 from backend.api.nlu import ALIASES
 from backend.api.orchestrator import DOMAINS, Orchestrator, SYMBOL_RE
+from backend.user.portfolio import cas, importers
 from backend.user.portfolio.portfolio import what_if
 from backend.advisory.calculators.screener import screen
 
@@ -44,6 +47,8 @@ SIGN_INS_PER_MIN = 10       # PROVISIONAL, per IP; behind a proxy the real IP ne
 # probing which addresses have accounts (forgot-password answers a known one more slowly; sign-up tells anyway)
 EMAIL_TRIES, EMAIL_WINDOW_S = 10, 900
 MAX_KEYS = 10_000           # PROVISIONAL: past this many callers, buckets that have refilled are dropped
+MAX_UPLOAD = 10_000_000     # PROVISIONAL: room for a long CAS PDF; check against real statements
+SET_UP_FIRST = "Set up your portfolio first: choose your risk level, time horizon and cash."
 PUBLIC_PATHS = ("/", "/health", "/manifest.webmanifest", "/sw.js", "/login/google", "/privacy")
 DOMAIN_ALIASES = {"fundamentals": "fundamental", "news": "news_sentiment", "patterns": "pattern",
                   "candlesticks": "candlestick", "analogues": "historical"}
@@ -104,6 +109,11 @@ class CashIn(BaseModel):
     cash: float = Field(ge=0, lt=1e10)
     risk_profile: Literal["conservative", "moderate", "aggressive"] = "moderate"
     horizon: Literal["short", "medium", "long"] = "medium"
+
+
+class ImportIn(BaseModel):
+    mode: Literal["add", "replace"]
+    stocks: List[TransactionIn] = Field(min_length=1)
 
 
 class BuilderHolding(BaseModel):
@@ -173,6 +183,10 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     @app.exception_handler(ValueError)
     async def _value(_: Request, exc: ValueError):
         return JSONResponse(status_code=400, content={"error": "bad_request", "detail": str(exc)})
+
+    @app.exception_handler(importers.ImportUnsupported)
+    async def _unsupported(_: Request, exc: importers.ImportUnsupported):
+        return JSONResponse(status_code=501, content={"error": "unsupported", "detail": str(exc)})
 
     @app.exception_handler(QuotaExceeded)
     async def _quota(_: Request, exc: QuotaExceeded):
@@ -384,6 +398,39 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
                                                 "transactions": []}
             orch.save_portfolio(owner, body.cash, body.risk_profile, body.horizon, p["transactions"])
         return {"status": "saved"}
+
+    @app.post("/portfolio/import/preview")
+    def import_preview(file: UploadFile, password: str = Form(""), owner: str = Depends(auth)):
+        # read here, never saved: CACHE_DIR is backed up to Hugging Face, and these files name what a person owns
+        data = file.file.read(MAX_UPLOAD + 1)
+        if len(data) > MAX_UPLOAD:
+            raise HTTPException(413, f"This file is over {MAX_UPLOAD // 1_000_000} MB. {importers.SHORTER_RANGE}")
+        statement = cas.statement(cas.read(data, password)) if data.startswith(b"%PDF") else importers.parse(data)
+        names = panel.company_names()
+        matches = importers.match(statement.rows, panel.isin_directory(), names)
+        positions, _, _ = orch.holdings(owner)
+        funds = [f"This file's {len(statement.funds)} mutual fund rows are left out: a portfolio here holds only "
+                 "shares, ETFs and REITs for now."] if statement.funds else []
+
+        def listed(listing):
+            return {**listing._asdict(), "name": names.get(listing.symbol)}
+        return ok({"source": statement.source, "as_of": statement.as_of, "counts": importers.counts(matches),
+                   "warnings": statement.warnings + funds,
+                   "held": {m.listing.symbol: positions[m.listing.symbol].quantity for m in matches
+                            if m.listing and m.listing.symbol in positions},
+                   "rows": [{**asdict(m.row), "state": m.state, "listing": m.listing and listed(m.listing),
+                             "choices": [listed(c) for c in m.choices]} for m in matches]})
+
+    @app.post("/portfolio/import/confirm")
+    def import_confirm(body: ImportIn, owner: str = Depends(auth)):
+        with orch.portfolio_lock(owner):
+            p = orch.store.portfolio(owner)
+            if p is None:
+                raise HTTPException(400, SET_UP_FIRST)
+            kept = p["transactions"] if body.mode == "add" else []
+            n = orch.save_portfolio(owner, p["cash"], p["risk_profile"], p["horizon"], kept + [
+                {**t.model_dump(), "trade_date": t.trade_date.isoformat()} for t in body.stocks])
+        return {"status": "saved", "transactions": n}
 
     @app.get("/search", dependencies=[Depends(auth)])
     def search(q: str = Query(min_length=1, max_length=40)):
