@@ -10,10 +10,12 @@ import pandas as pd
 import pytest
 
 from tests.app.conftest import EMAIL, PASSWORD, SECRET
+from tests.app.test_funds import NAV_TEXT, growing, mfapi_json
 
 KEY = "k" * 24      # the web app asks for a key until its sign-in screens ship; the server ignores it
 STOCKS = pd.DataFrame({"symbol": ["TEST", "PEER"], "name": ["Test Industries Ltd.", "Peer Power Ltd."],
                        "sector": ["Industrials", "Energy"], "nifty200": [True, True]})
+FUND = 118989       # HDFC Mid Cap Fund, Direct Growth: the one scheme in NAV_TEXT with a NAV history here
 
 
 def track_record(dates):
@@ -57,7 +59,7 @@ def base_url(tmp_path_factory):
     from backend.api.app import create_app
     from backend.api.orchestrator import Orchestrator
     from backend.config import resolve_symbol
-    from backend.database.sources import insider
+    from backend.database.sources import amfi, insider
     from backend.database.sources.panel import panel_from_frames
     from backend.database.sources.provider import DataUnavailable
     from backend.database.sources.synthetic import SyntheticProvider
@@ -66,6 +68,14 @@ def base_url(tmp_path_factory):
 
     def no_insider():
         raise DataUnavailable("no insider file in the browser tests")
+
+    fund_pages = {amfi.NAV_URL: NAV_TEXT,
+                  amfi.HISTORY_URL.format(code=FUND): mfapi_json(FUND, growing(6) * (210.512 / growing(6).iloc[-1]))}
+
+    def download(url):
+        if url not in fund_pages:
+            raise DataUnavailable(f"could not download {url}: the browser tests have no copy")
+        return fund_pages[url]
 
     class Provider(SyntheticProvider):
         def intraday(self, symbol, period="5d", interval="15m"):
@@ -87,9 +97,14 @@ def base_url(tmp_path_factory):
         mp.setattr(alfa_fan, "WEIGHTS", missing / "alfa.npz")
         mp.setattr(gru_line, "WEIGHTS", missing / "path_gru.npz")
         mp.setattr(insider, "load", no_insider)
+        funds_dir = tmp_path_factory.mktemp("funds")
+        mp.setattr(amfi, "NAV_FILE", funds_dir / "NAVAll.txt")
+        mp.setattr(amfi, "HISTORY_DIR", funds_dir / "mfapi")
+        mp.setattr(amfi, "_download", download)
         # every browser tab signs in as the same user, and all of them from 127.0.0.1
         mp.setattr(app_module, "SIGN_INS_PER_MIN", 10_000)
         mp.setattr(app_module, "EMAIL_TRIES", 10_000)
+        mp.setattr(app_module, "RATE_PER_MIN", 10_000)
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         url = f"http://127.0.0.1:{sock.getsockname()[1]}"

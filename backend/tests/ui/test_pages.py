@@ -7,7 +7,7 @@ import pytest
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="Playwright is not installed: pip install -e '.[dev]'")
 
-from .conftest import KEY, sign_in  # noqa: E402
+from .conftest import FUND, KEY, sign_in  # noqa: E402
 
 pytestmark = pytest.mark.ui
 WIDTHS = [390, 800, 1366]   # provisional: a phone, the nav breakpoint itself, a laptop
@@ -16,7 +16,7 @@ THEMES = ["dark", "light"]
 SECTIONS = ["Home", "Markets", "Portfolio", "Ask", "Learn"]
 NO_PAGE = ["nowhere", "stock", "stock/%E0%A4"]
 PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signals", "builder", "chat", "learn",
-         "performance", "reports", *NO_PAGE]
+         "performance", "reports", f"fund/{FUND}", *NO_PAGE]
 # Chrome logs a failed fetch without its address, so failures are read from the responses; an API 404 is how a missing model shows up
 UNNAMED_FETCH_ERROR = "Failed to load resource"
 LONG_NAME = "Parag Parikh Flexi Cap Fund Direct Plan Growth"
@@ -742,3 +742,41 @@ def test_toasts_on_a_phone_leave_the_bottom_nav_uncovered(browser, base_url):
     tab.page.evaluate("() => { toast('Saved to portfolio'); toast('Added to your portfolio'); }")
     toasts, nav = tab.page.locator(".toasts").bounding_box(), tab.page.locator("#bnav").bounding_box()
     assert toasts["y"] + toasts["height"] <= nav["y"], (toasts, nav)
+
+
+def test_typing_a_funds_name_lists_it_under_mutual_funds(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.page.fill("#q", "hdfc mid")
+    funds = tab.page.locator("#suggest [role=group][aria-label='Mutual funds'] [role=option]")
+    funds.first.wait_for()
+    assert funds.first.inner_text().startswith("HDFC Mid Cap Fund")
+
+
+def test_the_search_page_lists_stocks_and_funds_apart(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/search?q=hdfc%20mid")
+    assert tab.page.locator("#view h3").all_inner_texts() == ["Stocks", "Mutual funds"]
+    assert tab.page.locator("#view a[href^='#/fund/']").first.inner_text().startswith("HDFC Mid Cap Fund")
+
+
+def test_the_fund_page_shows_the_nav_with_its_date_and_source(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go(f"#/fund/{FUND}")
+    text = tab.page.inner_text("#view")
+    assert "₹210.5120" in text and "NAV on 2026-10-29" in text and "Source: AMFI" in text
+
+
+def test_a_fund_added_from_its_page_shows_in_the_portfolio_and_its_total(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go(f"#/fund/{FUND}")
+    tab.page.click("text=+ Add to portfolio")
+    tab.page.fill("input[name=units]", "10")
+    tab.page.click(".modal button[type=submit]")
+    tab.settle()
+    try:
+        tab.go("#/portfolio")
+        view = tab.page.inner_text("#view")
+        assert "Mutual funds (1)" in view and "₹2,105.12" in view and "With your mutual funds:" in view
+    finally:       # the other tests share this user's portfolio
+        for tx in tab.context.request.get(f"{base_url}/portfolio/funds").json()["transactions"]:
+            tab.context.request.delete(f"{base_url}/portfolio/funds/transactions/{tx['id']}")
