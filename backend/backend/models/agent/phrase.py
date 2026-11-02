@@ -13,6 +13,8 @@ the setup that failed there: a small model handed facts writes fluent misattribu
 import re
 from collections import namedtuple
 
+from backend.advisory.sentiment.feeds.sentiment import NEGATORS
+from backend.knowledge_base import lessons
 from backend.knowledge_base.retrieval.chunk import sentences
 from backend.models.guardrails import added_claims, figures, unbound_figures, unsupported_figures
 from backend.models.guardrails.guardrails import BRACKETED
@@ -86,7 +88,7 @@ def from_passages(question, chunks, writer, entails, money=None):
     text, by = reply
     if _DECLINES.search(text):
         return Phrased("", "", NOT_ANSWERED)
-    reasons = (["it answers yes or no"] if _BARE_VERDICT.match(text) else []) + \
+    reasons = (["it answers yes or no"] if _BARE_VERDICT.match(text) else []) + _denials(question, text) + \
         _unentailed(text, chunks, entails) + _checked(text, passages, money, question) + \
         [f"it ties {figure} to {name}, which no passage does" for figure, name in
          unbound_figures(text, [chunk.text for chunk in chunks])]
@@ -170,6 +172,18 @@ def _unentailed(text, chunks, entails):
         claims = [claim for at, claim in enumerate(claims)
                   if max(scores[at * len(premises):(at + 1) * len(premises)]) < ENTAILED]
     return [f"no passage says “{claim}”" for claim in claims]
+
+
+def _denials(question, text):
+    """Why `text` gives its own verdict: a sentence that is the question's words and a negation, and nothing else. "The
+    market is not crashing." passed the entailment model, which fails on negation (Geiger et al., BlackBoxNLP 2020)."""
+    asked = lessons.stems(question)
+    denials = []
+    for part in sentences(BRACKETED.sub("", text)):
+        said = re.sub(r"n['’]t\b", " not", part)
+        if NEGATORS & set(re.findall(r"[a-z]+", said.lower())) and asked <= lessons.stems(said) <= asked | NEGATORS:
+            denials.append(f"it gives its own verdict: “{part}”")
+    return denials
 
 
 def _citation(chunk):

@@ -1162,6 +1162,20 @@ def test_a_figure_the_reply_ties_to_another_name_than_its_passage_does_serves_th
     assert "it ties 1.2% to Reliance Industries" in turn.unphrased_because
 
 
+@pytest.mark.parametrize("reply", ["Refinery stocks are not falling.", "Refinery stocks aren't falling (Mint, 6 Oct 2026)."])
+def test_a_reply_that_only_denies_the_question_serves_the_plain_answer(market, router, reply):
+    """"The market is not crashing." passed the entailment model, which reads negation badly, and no passage said it."""
+    from backend.models.agent import phrase
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply))).answer(ASKED_YES_NO)
+    assert turn.served == phrase.recent_plain(None, None, [NEWS]) and "gives its own verdict" in turn.unphrased_because
+
+
+def test_a_denial_that_goes_on_to_report_the_passages_is_left_to_the_entailment_model(market, router):
+    reply = "Refinery stocks are not falling; Reliance Industries commissioned its new refinery unit (Mint, 6 Oct 2026)."
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply))).answer(ASKED_YES_NO)
+    assert turn.served == reply and turn.phrased_by == "test-lm"
+
+
 def test_a_reply_that_only_names_a_source_serves_the_plain_answer(market, router):
     from backend.models.agent import phrase
     turn = agent(market, router, reference=news_reference(FakeWriter("(Mint, 6 Oct 2026)"))).answer(ASKED_YES_NO)
