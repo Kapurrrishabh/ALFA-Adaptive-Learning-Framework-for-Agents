@@ -153,6 +153,12 @@ class Orchestrator:
                 del self.sessions[next(iter(self.sessions))]
         return s
 
+    def forget(self, portfolio: str) -> None:
+        """Drop the portfolio's chat sessions, whose history quotes its holdings."""
+        with self._caches_guard:
+            for key in [key for key in self.sessions if key[0] == portfolio]:
+                del self.sessions[key]
+
     def portfolio_lock(self, portfolio: str):
         """Held around a read-modify-write of one portfolio, so two requests cannot drop each other's change."""
         return self._key_lock("portfolio:" + portfolio)

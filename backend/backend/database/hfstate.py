@@ -15,6 +15,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import List, Tuple
 
+from backend.database.accounts import scrub_copy
 from backend.database.sources.panel import CACHE_DIR
 
 log = logging.getLogger("stockintel.state")
@@ -42,11 +43,14 @@ def cache_files(cache_dir: Path = CACHE_DIR) -> List[Path]:
 
 def snapshot(db: Path, out: Path, cache_dir: Path = CACHE_DIR) -> None:
     """A consistent copy of the database (SQLite's backup API is safe while the app
-    writes, and includes the WAL) plus the cache files."""
+    writes, and includes the WAL) plus the cache files. The copy keeps accounts but no
+    sign-in sessions, so a restore signs everyone out."""
     (out / "cache").mkdir(parents=True, exist_ok=True)
     if db.exists():
         with closing(sqlite3.connect(db)) as src, closing(sqlite3.connect(out / DB_NAME)) as dst:
             src.backup(dst)
+            scrub_copy(dst)
+            dst.execute("VACUUM")   # deleted rows stay readable in free pages until the file is rebuilt
     for f in cache_files(cache_dir):
         shutil.copy2(f, out / "cache" / f.name)
 

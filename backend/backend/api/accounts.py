@@ -19,7 +19,7 @@ from httpx_oauth.clients.openid import OpenID
 from httpx_oauth.oauth2 import BaseOAuth2
 from pwdlib import PasswordHash
 from pwdlib.hashers.argon2 import Argon2Hasher
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.mail import SMTP_SETTINGS, SmtpMailer, mailer_from_env
@@ -181,3 +181,15 @@ class Accounts:
                 return await self._manager(session).create(
                     schemas.BaseUserCreate(email=email, password=password, is_verified=verified))
         return asyncio.run(create())
+
+    def user(self, email: str) -> Optional[User]:
+        async def find() -> Optional[User]:
+            async with self._sessions() as session:
+                return await SQLAlchemyUserDatabase(session, User, OAuthAccount).get_by_email(email)
+        return asyncio.run(find())
+
+    def has_users(self) -> bool:
+        async def any_user() -> bool:
+            async with self._sessions() as session:
+                return await session.scalar(select(User.id).limit(1)) is not None
+        return asyncio.run(any_user())

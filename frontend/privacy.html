@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your data in StockIntel</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="page">
+<h1>Your data in StockIntel</h1>
+
+<h2>What the app keeps about you</h2>
+<ul>
+  <li><b>Your account:</b> your email address and whether you have confirmed it. If you sign in with a password,
+    the app keeps a scrambled form of it that cannot be turned back into the password. If you sign in with Google,
+    it keeps Google's ID for your account, but not Google's keys to your account.</li>
+  <li><b>Your sign-ins:</b> one record for each device you are signed in on. It ends when you sign out, or when it
+    runs out.</li>
+  <li><b>Your portfolio:</b> your cash, risk level and time horizon; your transactions (stock, buy or sell,
+    quantity, price, fees, date and sector); the portfolio values the app records; the reports you make; your buy
+    and sell plans; and the alerts you dismiss.</li>
+  <li><b>Your daily count of AI answers,</b> so the app can keep to the daily limit.</li>
+  <li><b>Your chat:</b> while you chat, the app remembers the conversation so that follow-up questions work. It
+    is kept in the server's memory only, not saved, and is gone when the server restarts.</li>
+  <li><b>Server logs:</b> the server writes down the address each request came from, what it asked for and when.</li>
+</ul>
+<p>Questions you send to the self-learning agent ("Also ask my self-learning agent") are kept by the agent, with
+  its answers, so it can learn which answers were right. They are kept under the app's name, not yours, and they
+  stay when you delete your account.</p>
+
+<h2>Who can see it</h2>
+<p>You, when you are signed in, and the person who runs this copy of the app.</p>
+
+<h2>Who else gets some of it</h2>
+<ul>
+  <li><b>The email service</b> the app sends mail through gets your email address and the emails the app sends
+    you, such as the link to confirm your address or to reset your password.</li>
+  <li><b>Google,</b> if you sign in with Google. Google then knows you use this app, and it tells the app your
+    email address and its ID for your account.</li>
+  <li><b>AI services,</b> when the person who runs the app turns them on. Your chat questions, with the figures
+    the app worked out to answer them, can go to Anthropic's Claude, directly or through Amazon Bedrock. Those
+    figures can include your portfolio. A question the app does not understand can go to the app's own language
+    model, which may run on Hugging Face, so that it can choose how to answer. That model also writes the stock
+    notes, and a note can say whether you hold the stock. These services do not get your email address.</li>
+</ul>
+
+<h2>The backup</h2>
+<p>So that a restart does not lose anything, the app copies its database to a private Hugging Face dataset every
+  few minutes. The copy holds the accounts and portfolios, but no sign-ins. Only the person who runs the app can
+  read it.</p>
+
+<h2>How to delete your data</h2>
+<p>While signed in, open the account menu and choose <b>Delete my account</b>. This removes your account, your
+  sign-ins, your portfolio and everything listed under it, and your counts of AI answers, at once. The next backup
+  no longer has them. Older versions of the backup still do until the person who runs the app removes them.</p>
+
+<p><a href="/">Back to StockIntel</a></p>
+</main>
+</body>
+</html>

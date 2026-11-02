@@ -10,7 +10,7 @@ import pytest
 sync_api = pytest.importorskip("playwright.sync_api", reason="Playwright is not installed: pip install -e '.[dev]'")
 
 from backend.paths import FRONTEND  # noqa: E402
-from .conftest import KEY, RUN_REQUESTS  # noqa: E402
+from .conftest import EMAIL, KEY, PASSWORD, RUN_REQUESTS, sign_in  # noqa: E402
 
 pytestmark = pytest.mark.ui
 WIDTHS = [360, 390, 800, 1366]   # provisional: a small phone, a phone, the nav breakpoint itself, a laptop
@@ -52,6 +52,8 @@ class Tab:
         self.page.on("pageerror", lambda e: self.errors.append(str(e)))
         self.page.on("console", lambda m: self.errors.append(m.text) if m.type == "error" and not m.text.startswith(UNNAMED_FETCH_ERROR) else None)
         self.page.on("response", lambda r: self.errors.append(f"{r.status} {r.url}") if r.status >= 500 or r.status == 429 or (r.status >= 400 and "/static/" in r.url) else None)
+        if signed_in:
+            sign_in(self.context, base_url)
         self.page.goto(f"{base_url}/#key={KEY}" if signed_in else base_url)
         self.settle()
 
@@ -893,8 +895,9 @@ def test_a_rate_limit_shows_the_servers_words_with_the_limit(browser, base_url):
     assert limit in explore_answered_with(browser, base_url, status=429, json={"detail": limit}).page.inner_text("#view")
 
 
-def test_the_shared_test_key_is_never_refused_in_a_whole_runs_requests(base_url):
-    with httpx.Client(base_url=base_url, headers={"X-API-Key": KEY}) as client:
+def test_the_signed_in_test_user_is_never_refused_in_a_whole_runs_requests(base_url):
+    with httpx.Client(base_url=base_url) as client:
+        assert client.post("/auth/cookie/login", data={"username": EMAIL, "password": PASSWORD}).is_success
         codes = {client.get("/search", params={"q": "TE"}).status_code for _ in range(RUN_REQUESTS)}
     assert codes == {200}
 

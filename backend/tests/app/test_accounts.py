@@ -11,67 +11,17 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from fastapi_users import InvalidPasswordException
-from httpx_oauth.oauth2 import BaseOAuth2, OAuth2Token
 
-from backend.api.accounts import Accounts, GoogleOIDC, owner_of
-from backend.api.mail import SMTP_TIMEOUT_S, SmtpMailer, mailer_from_env
+from backend.api.accounts import Accounts, owner_of
+from backend.api.mail import SMTP_TIMEOUT_S, mailer_from_env
 from backend.database.accounts import scrub_copy
 
-# https, because the client only sends a Secure cookie back over https
-PUBLIC_URL = "https://testserver"
-SECRET = "s" * 32
-EMAIL = "asha@example.com"
-PASSWORD = "tea at four on the terrace"
+from .conftest import EMAIL, PASSWORD, PUBLIC_URL, SECRET, sign_in
+
 GOOD_ENV = {"STOCKINTEL_AUTH_SECRET": SECRET, "STOCKINTEL_PUBLIC_URL": "https://you.duckdns.org"}
 SMTP_ENV = {"STOCKINTEL_SMTP_HOST": "smtp.example.com", "STOCKINTEL_SMTP_PORT": "465",
             "STOCKINTEL_SMTP_USER": "apikey", "STOCKINTEL_SMTP_PASSWORD": "smtp-password",
             "STOCKINTEL_SMTP_FROM": "StockIntel <noreply@example.com>"}
-
-
-class FakeGoogle(GoogleOIDC):
-    """Our Google client with the network parts canned: discovery, code exchange and profile."""
-
-    def __init__(self):
-        BaseOAuth2.__init__(self, "client-id", "client-secret", "https://accounts.example/auth",
-                            "https://accounts.example/token", name="google")
-        self.profile = {"sub": "google-1", "email": "asha@gmail.com", "email_verified": True}
-
-    async def get_access_token(self, code, redirect_uri, code_verifier=None):
-        return OAuth2Token({"access_token": "google-access", "refresh_token": "google-refresh", "expires_in": 3600})
-
-    async def get_profile(self, token):
-        return self.profile
-
-
-class Outbox(SmtpMailer):
-    """Our mailer with the SMTP connection replaced by a list."""
-
-    def __init__(self):
-        super().__init__(host="", port=0, user="", password="", sender="")
-        self.sent = []
-
-    def _deliver(self, message):
-        self.sent.append(message)
-
-
-@pytest.fixture
-def db_path(tmp_path):
-    return str(tmp_path / "stockintel.db")
-
-
-@pytest.fixture
-def google():
-    return FakeGoogle()
-
-
-@pytest.fixture
-def outbox():
-    return Outbox()
-
-
-@pytest.fixture
-def accounts(db_path, google, outbox):
-    return Accounts(db_path, PUBLIC_URL, SECRET, google, outbox)
 
 
 def client_for(accounts):
@@ -92,11 +42,6 @@ def client_for(accounts):
 @pytest.fixture
 def client(accounts):
     return client_for(accounts)
-
-
-def sign_in(client, accounts, email=EMAIL):
-    accounts.create_user(email, PASSWORD, verified=True)
-    return client.post("/auth/cookie/login", data={"username": email, "password": PASSWORD})
 
 
 def google_sign_in(client):

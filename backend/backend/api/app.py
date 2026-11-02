@@ -1,32 +1,34 @@
 """REST API + dashboard host.
 
-Auth: every endpoint except /health and the static dashboard requires the
-X-API-Key header to equal STOCKINTEL_API_KEY (compared in constant time).
-The server refuses to start without a key. Rate limit: token bucket per key.
+Auth: fastapi-users sign-in (a session cookie naming a database row). Every route outside
+PUBLIC_PATHS and /auth/ needs a verified user, a request from our own site, and stays under
+a per-user rate limit; the sign-in routes have per-IP and per-email limits.
 All handlers are read-only over market data; the only writes are the user's
 own portfolio, reports, alert acknowledgements and daily model-call counts in
 the local database.
 """
 from __future__ import annotations
 
-import hmac
-import os
+import json
 import threading
 import time
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from pydantic.networks import validate_email
 
 from backend.advisory import report as R
 from backend.advisory.calculators.backtest import strategies as S
-from backend.config import DEFAULT_PORTFOLIO, FORECAST_DAYS, resolve_symbol
+from backend.config import FORECAST_DAYS, resolve_symbol
 from backend.database.sources.provider import DataUnavailable
 from backend.database.sources.quality import DataQualityError
+from backend.api.accounts import Accounts, owner_of
 from backend.api.jsonutil import sanitize
 from backend.api.quota import QuotaExceeded
 from backend.knowledge_base.lessons import knowledge_base
@@ -38,20 +40,28 @@ from backend.advisory.calculators.screener import screen
 
 
 RATE_PER_MIN = 120          # PROVISIONAL: generous for one user, blocks runaway scripts
+SIGN_INS_PER_MIN = 10       # PROVISIONAL, per IP; behind a proxy the real IP needs FORWARDED_ALLOW_IPS
+# PROVISIONAL, per email: NIST allows up to 100 failed tries. It also bounds the emails one address can trigger, and
+# probing which addresses have accounts (forgot-password answers a known one more slowly; sign-up tells anyway)
+EMAIL_TRIES, EMAIL_WINDOW_S = 10, 900
+MAX_KEYS = 10_000           # PROVISIONAL: past this many callers, buckets that have refilled are dropped
+PUBLIC_PATHS = ("/", "/health", "/manifest.webmanifest", "/sw.js", "/login/google", "/privacy")
 DOMAIN_ALIASES = {"fundamentals": "fundamental", "news": "news_sentiment", "patterns": "pattern",
                   "candlesticks": "candlestick", "analogues": "historical"}
 
 
 class TokenBucket:
-    def __init__(self, rate_per_min: int):
-        self.capacity = float(rate_per_min)
-        self.rate = rate_per_min / 60.0
+    def __init__(self, capacity: int, per_seconds: float):
+        self.capacity = float(capacity)
+        self.rate = capacity / per_seconds
         self.state: Dict[str, List[float]] = {}
         self.lock = threading.Lock()
 
     def allow(self, key: str) -> bool:
         now = time.monotonic()
         with self.lock:
+            if len(self.state) > MAX_KEYS:
+                self.state = {k: v for k, v in self.state.items() if v[0] + (now - v[1]) * self.rate < self.capacity}
             tokens, last = self.state.get(key, [self.capacity, now])
             tokens = min(self.capacity, tokens + (now - last) * self.rate)
             if tokens < 1:
@@ -59,6 +69,14 @@ class TokenBucket:
                 return False
             self.state[key] = [tokens - 1, now]
             return True
+
+
+def email_key(email: str) -> str:
+    """The address as the sign-in routes read it: their EmailStr drops spaces and a 'Name <...>' wrapper."""
+    try:
+        return validate_email(email)[1].lower()
+    except ValueError:      # the route refuses it too, so it only needs a bucket of its own
+        return email.lower()
 
 
 class ChatIn(BaseModel):
@@ -104,25 +122,46 @@ class WhatIfIn(BaseModel):
     symbols: List[str] = Field(min_length=1, max_length=6)
 
 
-def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool = False) -> FastAPI:
-    key = api_key if api_key is not None else os.environ.get("STOCKINTEL_API_KEY", "")
-    if len(key) < 16:
-        raise RuntimeError("STOCKINTEL_API_KEY must be set to a random string of at least 16 "
-                           "characters before starting the API (e.g. `openssl rand -hex 24`).")
+def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) -> FastAPI:
     if not orch.charges_model_calls:
         raise RuntimeError("The API serves many users, so build its Orchestrator with charges_model_calls=True; "
                            "otherwise their model calls skip the daily allowance.")
-    bucket = TokenBucket(RATE_PER_MIN)
-    # No /openapi.json, /docs or /redoc: they skip the key check and would map every route to anyone
+    bucket, per_ip, per_email = (TokenBucket(RATE_PER_MIN, 60), TokenBucket(SIGN_INS_PER_MIN, 60),
+                                 TokenBucket(EMAIL_TRIES, EMAIL_WINDOW_S))
+    # No /openapi.json, /docs or /redoc: they skip sign-in and would map every route to anyone
     app = FastAPI(title="StockIntel", version="0.1.0", openapi_url=None,
                   description="Evidence-first stock research API. Decision-support only.")
 
-    def auth(x_api_key: str = Header(default="")) -> str:
-        if not hmac.compare_digest(x_api_key.encode(), key.encode()):
-            raise HTTPException(401, "missing or invalid X-API-Key header")
-        if not bucket.allow(x_api_key):
+    def same_origin(request: Request) -> None:
+        # The browser sends our cookie with requests another site starts; these headers say who started it
+        site, origin = request.headers.get("sec-fetch-site"), request.headers.get("origin")
+        if site in ("cross-site", "same-site") or origin not in (None, accounts.public_url):
+            raise HTTPException(403, f"This request came from another site. Open {accounts.public_url} and try there.")
+
+    def auth(request: Request, user=Depends(accounts.current_user)) -> str:
+        same_origin(request)
+        if not bucket.allow(str(user.id)):
             raise HTTPException(429, f"rate limit of {RATE_PER_MIN} requests/minute exceeded")
-        return DEFAULT_PORTFOLIO
+        return owner_of(user)
+
+    def limit_ip(request: Request) -> None:
+        if not per_ip.allow(request.client.host):
+            raise HTTPException(429, f"More than {SIGN_INS_PER_MIN} sign-in requests a minute came from your "
+                                     "network. Wait a minute and try again.")
+
+    async def limit_email(request: Request) -> None:
+        email = (await request.form()).get("username")      # the login form; an empty form for other bodies
+        if "json" in request.headers.get("content-type", "").lower() and (raw := await request.body()):
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                raise HTTPException(400, "The request body is not valid JSON.") from None
+            email = body.get("email") if isinstance(body, dict) else None
+        if isinstance(email, str) and not per_email.allow(email_key(email)):
+            raise HTTPException(429, f"More than {EMAIL_TRIES} tries for this email address in "
+                                     f"{EMAIL_WINDOW_S // 60} minutes. Wait a few minutes and try again.")
+
+    accounts.include(app, dependencies=[Depends(limit_ip), Depends(limit_email), Depends(same_origin)])
 
     @app.exception_handler(DataUnavailable)
     async def _unavailable(_: Request, exc: DataUnavailable):
@@ -165,8 +204,34 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     app.mount("/static", StaticFiles(directory=FRONTEND), name="static")
 
     @app.get("/")
+    @app.get("/login/google")
     def home():
         return FileResponse(FRONTEND / "index.html")
+
+    @app.get("/privacy")
+    def privacy():
+        return FileResponse(FRONTEND / "privacy.html")
+
+    @app.get("/auth/methods")
+    def auth_methods():
+        return {"google": accounts.google is not None, "signup": accounts.mailer is not None}
+
+    @app.get("/users/me")
+    def me(_: str = Depends(auth), user=Depends(accounts.current_user)):
+        return {"email": user.email, "is_verified": user.is_verified, "google": bool(user.oauth_accounts)}
+
+    @app.delete("/users/me", status_code=204)
+    async def delete_me(owner: str = Depends(auth), user=Depends(accounts.current_user),
+                        manager=Depends(accounts.users.get_user_manager)):
+        # India's DPDP Act gives a right to erasure. Erase before the account goes, so a failure part-way can be
+        # retried, and after, because another tab's request that signed in just before may have saved since
+        def erase():
+            orch.store.delete_portfolio(owner)
+            orch.store.delete_usage(owner)
+            orch.forget(owner)
+        await run_in_threadpool(erase)
+        await manager.delete(user)
+        await run_in_threadpool(erase)
 
     @app.get("/ui/search", dependencies=[Depends(auth)])
     def ui_search(q: str = Query(min_length=1, max_length=40)):

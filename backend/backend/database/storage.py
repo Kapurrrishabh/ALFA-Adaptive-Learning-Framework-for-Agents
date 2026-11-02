@@ -329,6 +329,18 @@ class Store:
             " WHERE portfolio_id = ? ORDER BY trade_date, id", (row["id"],))]
         return {**dict(row), "transactions": tx}
 
+    def delete_portfolio(self, name: str) -> None:
+        """Its transactions, snapshots, reports, plans and alert acknowledgements go with it (ON DELETE CASCADE)."""
+        with self.conn:
+            self.conn.execute("DELETE FROM portfolios WHERE name = ?", (name,))
+
+    def rename_portfolio(self, old: str, new: str) -> None:
+        if self._portfolio_id(new) is not None:
+            raise ValueError(f"Portfolio {new!r} already exists, so {old!r} cannot take its name.")
+        with self.conn:
+            if self.conn.execute("UPDATE portfolios SET name = ? WHERE name = ?", (new, old)).rowcount == 0:
+                raise ValueError(f"There is no portfolio {old!r} to rename.")
+
     def save_snapshot(self, portfolio: str, value: float, payload: Dict[str, Any]) -> None:
         pid = self._portfolio_id(portfolio)
         with self.conn:
@@ -371,6 +383,10 @@ class Store:
     def _lower_one(self, who: str, kind: str, day: str) -> bool:
         return self.conn.execute("UPDATE usage SET count = count - 1 WHERE who = ? AND day = ? AND kind = ?"
                                  " AND count > 0", (who, day, kind)).rowcount > 0
+
+    def delete_usage(self, who: str) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM usage WHERE who = ?", (who,))
 
     def usage(self, who: str, day: str) -> Dict[str, int]:
         return {r["kind"]: r["count"] for r in self.conn.execute(

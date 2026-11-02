@@ -3,7 +3,10 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 import pytest
+from httpx_oauth.oauth2 import BaseOAuth2, OAuth2Token
 
+from backend.api.accounts import Accounts, GoogleOIDC
+from backend.api.mail import SmtpMailer
 from backend.database.sources import synthetic
 from backend.database.sources.local import LocalProvider
 from backend.database.sources.provider import NewsItem
@@ -12,6 +15,62 @@ from backend.database.storage import Store
 
 NOW = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
 END = "2026-09-25"
+# https, because the client only sends a Secure cookie back over https
+PUBLIC_URL = "https://testserver"
+SECRET = "s" * 32
+EMAIL = "asha@example.com"
+PASSWORD = "tea at four on the terrace"
+
+
+class FakeGoogle(GoogleOIDC):
+    """Our Google client with the network parts canned: discovery, code exchange and profile."""
+
+    def __init__(self):
+        BaseOAuth2.__init__(self, "client-id", "client-secret", "https://accounts.example/auth",
+                            "https://accounts.example/token", name="google")
+        self.profile = {"sub": "google-1", "email": "asha@gmail.com", "email_verified": True}
+
+    async def get_access_token(self, code, redirect_uri, code_verifier=None):
+        return OAuth2Token({"access_token": "google-access", "refresh_token": "google-refresh", "expires_in": 3600})
+
+    async def get_profile(self, token):
+        return self.profile
+
+
+class Outbox(SmtpMailer):
+    """Our mailer with the SMTP connection replaced by a list."""
+
+    def __init__(self):
+        super().__init__(host="", port=0, user="", password="", sender="")
+        self.sent = []
+
+    def _deliver(self, message):
+        self.sent.append(message)
+
+
+@pytest.fixture
+def db_path(tmp_path):
+    return str(tmp_path / "stockintel.db")
+
+
+@pytest.fixture
+def google():
+    return FakeGoogle()
+
+
+@pytest.fixture
+def outbox():
+    return Outbox()
+
+
+@pytest.fixture
+def accounts(db_path, google, outbox):
+    return Accounts(db_path, PUBLIC_URL, SECRET, google, outbox)
+
+
+def sign_in(client, accounts, email=EMAIL):
+    accounts.create_user(email, PASSWORD, verified=True)
+    return client.post("/auth/cookie/login", data={"username": email, "password": PASSWORD})
 
 
 def bars(closes, spread=0.01, volume=1e6, end=END):

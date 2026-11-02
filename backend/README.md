@@ -20,7 +20,7 @@ each time it runs. This is decision support, not a guarantee.
 ## The app (recommended)
 
 ```bash
-.venv/bin/stockintel app          # opens http://127.0.0.1:8931 in your browser, logged in
+.venv/bin/stockintel app          # opens http://127.0.0.1:8931 in your browser; sign in there
 ```
 
 A Groww-style web app for personal use:
@@ -58,8 +58,8 @@ A Groww-style web app for personal use:
 - **Reports:** 18-section research reports you can print to PDF.
 
 Light and dark themes; works on phones (bottom tab bar) and can be added to the home screen. The
-login key is created once, saved in `~/.stockintel/app_key` and passed in the link; the server
-listens only on your machine unless you add `--lan`.
+first run asks for an email and a password, which make your account; you sign in with them. The
+app listens only on this computer, because sign-in cookies need HTTPS anywhere else.
 
 ## Quick start
 
@@ -78,9 +78,17 @@ python3 -m venv .venv                               # Python 3.11 or newer
 Dashboard and REST API:
 
 ```bash
-export STOCKINTEL_API_KEY=$(openssl rand -hex 24)    # required; the server refuses to start without it
-.venv/bin/stockintel serve --port 8931               # open http://127.0.0.1:8931 and paste the key
+export STOCKINTEL_AUTH_SECRET=$(openssl rand -hex 32)      # required, with the next line; keep it between runs
+export STOCKINTEL_PUBLIC_URL=http://127.0.0.1:8931          # the address people open (https anywhere but here)
+.venv/bin/stockintel accounts add --email you@example.com  # asks for a password
+.venv/bin/stockintel serve --port 8931                     # open http://127.0.0.1:8931 and sign in
 ```
+
+Google sign-in needs `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (an OAuth client whose redirect is
+`$STOCKINTEL_PUBLIC_URL/login/google`). Email sign-up needs all of `STOCKINTEL_SMTP_HOST`, `_PORT`, `_USER`,
+`_PASSWORD` and `_FROM`, so the app can send the confirmation link. Without them, those ways in stay off.
+`stockintel accounts claim --email you@example.com` moves the portfolio the old shared key wrote to
+(named `default`, which the other commands still use) into that account; `accounts release` moves it back.
 
 ## Signal system (v2) — what to buy, sell and when
 
@@ -176,20 +184,14 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 ```
 
 Windows: use `.venv\Scripts\pip` and `.venv\Scripts\stockintel`. Your data (portfolio, reports,
-cache) stays in `backend/database/data/` on your machine; the login key and the agent's credentials
+cache) and your account stay in `backend/database/data/` on your machine; the agent's credentials
 stay in `~/.stockintel/`, outside the project folder.
 
 ## Use it on your phone
 
-**Same Wi-Fi as your computer (simplest):**
-```bash
-.venv/bin/stockintel app --lan
-```
-It prints a second link, `http://<your-computer's-IP>:8931/#key=…`. Open it on the phone, then
-use *Share → Add to Home Screen* (iPhone) or *⋮ → Install app* (Android). Use this on your home
-network only: the traffic is not encrypted, and anyone on the network who sees the key can log in.
-
-**Anywhere:** deploy it (next section) and open the `https://…onrender.com/#key=…` link on the phone.
+Deploy it (next section), open its `https://…` address on the phone and sign in, then use
+*Share → Add to Home Screen* (iPhone) or *⋮ → Install app* (Android). `stockintel app` does not
+serve your Wi-Fi: over plain HTTP anyone on the network could copy your sign-in.
 
 ## Optional: open-source AI models and the self-learning agent
 
@@ -270,8 +272,10 @@ export STOCKINTEL_STATE_REPO=<you>/stockintel-state HF_TOKEN=<write token>
 
 **3. Render.** Sign in at render.com with GitHub → *New → Blueprint* → pick this repository. It reads
 `render.yaml`. Fill in `STOCKINTEL_STATE_REPO`, `STOCKINTEL_MODEL_SPACE` (`<you>/stockintel-models`),
-`ALFA_MODELS_REPO` (`<you>/alfa-weights`) and `HF_TOKEN`. When it is live, copy `STOCKINTEL_API_KEY` from *Environment* and open
-`https://<service>.onrender.com/#key=<that key>` on your phone, then *Add to Home Screen*.
+`ALFA_MODELS_REPO` (`<you>/alfa-weights`) and `HF_TOKEN`, and the sign-in settings above with
+`STOCKINTEL_PUBLIC_URL` set to `https://<service>.onrender.com`. When it is live, run
+`stockintel accounts add --email you@example.com` in its *Shell*, then open the address on your phone,
+sign in and *Add to Home Screen*.
 
 Things to know:
 - **Data sources:** Yahoo Finance sometimes rate-limits cloud servers (the app uses `curl_cffi`, which
@@ -279,14 +283,16 @@ Things to know:
   `stockintel state push`. Their terms restrict redistribution; keep the site for your own use.
 - **The self-learning agent** needs about 5 GB of RAM, which no free host offers. It stays on your
   computer; the Ask AI toggle appears only when the app can reach it.
-- **Keep the key secret:** it is the only login. One portfolio per copy of the app.
+- **One portfolio per account:** each person signs in and sees only their own data. `/privacy` lists
+  what is kept and how to delete it; review it before others sign up.
 - **Not investment advice:** the app says this on every verdict; keep that if you publish it.
 
 Any Docker host works too. Keep the port on the host's loopback and put HTTPS in front of it, as
 `deploy/oracle/` does with Caddy:
 ```bash
 docker build -t financial-advisor .
-docker run -p 127.0.0.1:8000:8000 -e STOCKINTEL_API_KEY=$(openssl rand -hex 24) -v advisor-data:/data financial-advisor
+docker run -p 127.0.0.1:8000:8000 -e STOCKINTEL_AUTH_SECRET=<openssl rand -hex 32, kept> \
+  -e STOCKINTEL_PUBLIC_URL=https://<your address> -v advisor-data:/data financial-advisor
 ```
 
 ## Tests

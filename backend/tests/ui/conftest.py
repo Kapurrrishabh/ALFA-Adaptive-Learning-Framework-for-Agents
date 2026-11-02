@@ -1,14 +1,17 @@
-"""A real app server on 127.0.0.1 for the browser tests: synthetic prices, no outside calls, the test key,
-a small track record and one holding."""
+"""A real app server on 127.0.0.1 for the browser tests: synthetic prices, no outside calls, one user who
+signs in through the login form, a small track record and one holding."""
 import json
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import pytest
 
-KEY = "k" * 24
+from tests.app.conftest import EMAIL, PASSWORD, SECRET
+
+KEY = "k" * 24      # the web app asks for a key until its sign-in screens ship; the server ignores it
 RUN_REQUESTS = 700   # provisional: keyed requests the pages sent in one full browser run (683 on 2026-11-01, 676 on 2026-11-02, 665 with 360 px added); recount when the suite grows
 STOCKS = pd.DataFrame({"symbol": ["TEST", "PEER"], "name": ["Test Industries Ltd.", "Peer Power Ltd."],
                        "sector": ["Industrials", "Energy"], "nifty200": [True, True]})
@@ -40,14 +43,21 @@ def track_record(dates):
                         {"test": "Same stocks on random dates (placebo)", "excess_20d": 0.1}]}
 
 
+def sign_in(context, base_url):
+    """Sign a browser context in through the login form; the page's requests then carry its cookie."""
+    r = context.request.post(f"{base_url}/auth/cookie/login", form={"username": EMAIL, "password": PASSWORD})
+    assert r.ok, r.text()
+
+
 @pytest.fixture(scope="module")
 def base_url(tmp_path_factory):
     import uvicorn
     import backend.advisory.calculators.performance as perf
     import backend.api.app as api_mod
+    from backend.api.accounts import Accounts, owner_of
     from backend.api.app import create_app
     from backend.api.orchestrator import Orchestrator
-    from backend.config import DEFAULT_PORTFOLIO, resolve_symbol
+    from backend.config import resolve_symbol
     from backend.database.sources import insider
     from backend.database.sources.panel import panel_from_frames
     from backend.database.sources.provider import DataUnavailable
@@ -78,16 +88,24 @@ def base_url(tmp_path_factory):
         mp.setattr(alfa_fan, "WEIGHTS", missing / "alfa.npz")
         mp.setattr(gru_line, "WEIGHTS", missing / "path_gru.npz")
         mp.setattr(insider, "load", no_insider)
-        mp.setattr(api_mod, "RATE_PER_MIN", 20 * RUN_REQUESTS)   # every test shares KEY's one bucket: 10x a run's total, the pages' RUN_REQUESTS and as many again from the test of it
+        mp.setattr(api_mod, "RATE_PER_MIN", 20 * RUN_REQUESTS)   # every tab signs in as one user, so all share its one bucket: 10x a run's requests
+        # every browser tab signs in as the same user, and all of them from 127.0.0.1
+        mp.setattr(api_mod, "SIGN_INS_PER_MIN", 10_000)
+        mp.setattr(api_mod, "EMAIL_TRIES", 10_000)
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+        accounts = Accounts(str(tmp_path_factory.mktemp("accounts") / "stockintel.db"), url, SECRET, None, None)
+        # in another thread: Playwright's sync API runs an event loop here, and create_user starts its own
+        with ThreadPoolExecutor(1) as pool:
+            user = pool.submit(accounts.create_user, EMAIL, PASSWORD, verified=True).result()
         orch = Orchestrator(provider, Store(":memory:"), use_rss_news=False, charges_model_calls=True)
-        orch.save_portfolio(DEFAULT_PORTFOLIO, 0.0, "moderate", "medium", [{"symbol": "TEST", "side": "BUY", "quantity": 10,
+        orch.save_portfolio(owner_of(user), 0.0, "moderate", "medium", [{"symbol": "TEST", "side": "BUY", "quantity": 10,
                                                          "price": float(prices["close"].iloc[-120]), "trade_date": str(prices.index[-120].date())}])
-        app = create_app(orch, api_key=KEY)
+        app = create_app(orch, accounts)
         hub = app.state.hub
         hub._panel, hub._panel_at = panel_from_frames({s: provider.ohlcv(resolve_symbol(s)) for s in STOCKS["symbol"]}), time.time()
         hub._names = STOCKS
-        sock = socket.socket()
-        sock.bind(("127.0.0.1", 0))
         server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
         thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
         thread.start()
@@ -96,6 +114,6 @@ def base_url(tmp_path_factory):
             if not thread.is_alive() or time.monotonic() > deadline:
                 raise RuntimeError("the browser tests' app server did not start on 127.0.0.1")
             time.sleep(0.05)
-        yield f"http://127.0.0.1:{sock.getsockname()[1]}"
+        yield url
         server.should_exit = True
         thread.join(timeout=10)

@@ -40,7 +40,7 @@ MARKETS: Dict[str, Market] = {
 }
 
 DEFAULT_MARKET = "NSE"
-DEFAULT_PORTFOLIO = "default"      # the one portfolio the shared API key and the CLI use
+DEFAULT_PORTFOLIO = "default"      # the CLI's portfolio, and the old shared key's; `accounts claim` moves it to a user
 # PROVISIONAL: how long a request waits for the one note writer or agent before it is told they are busy. Each waiting
 # request holds one of the server's 40 worker threads; confirm against how long one note takes on the Space.
 BUSY_WAIT_S = 5.0
