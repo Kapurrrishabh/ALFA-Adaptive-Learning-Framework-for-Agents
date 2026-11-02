@@ -12,6 +12,7 @@ import pytest
 from tests.app.conftest import EMAIL, PASSWORD, SECRET
 
 KEY = "k" * 24      # the web app asks for a key until its sign-in screens ship; the server ignores it
+NEW_EMAIL = "new@example.com"       # a second user, who has not set up a portfolio
 STOCKS = pd.DataFrame({"symbol": ["TEST", "PEER"], "name": ["Test Industries Ltd.", "Peer Power Ltd."],
                        "sector": ["Industrials", "Energy"], "nifty200": [True, True]})
 
@@ -42,9 +43,9 @@ def track_record(dates):
                         {"test": "Same stocks on random dates (placebo)", "excess_20d": 0.1}]}
 
 
-def sign_in(context, base_url):
+def sign_in(context, base_url, email=EMAIL):
     """Sign a browser context in through the login form; the page's requests then carry its cookie."""
-    r = context.request.post(f"{base_url}/auth/cookie/login", form={"username": EMAIL, "password": PASSWORD})
+    r = context.request.post(f"{base_url}/auth/cookie/login", form={"username": email, "password": PASSWORD})
     assert r.ok, r.text()
 
 
@@ -87,9 +88,11 @@ def base_url(tmp_path_factory):
         mp.setattr(alfa_fan, "WEIGHTS", missing / "alfa.npz")
         mp.setattr(gru_line, "WEIGHTS", missing / "path_gru.npz")
         mp.setattr(insider, "load", no_insider)
-        # every browser tab signs in as the same user, and all of them from 127.0.0.1
+        # every browser tab signs in as the same user, and all of them from 127.0.0.1; one user's 120 requests a
+        # minute ran dry once Home asked for the user's summary, and the pages that drew a 429 timed out
         mp.setattr(app_module, "SIGN_INS_PER_MIN", 10_000)
         mp.setattr(app_module, "EMAIL_TRIES", 10_000)
+        mp.setattr(app_module, "RATE_PER_MIN", 10_000)
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         url = f"http://127.0.0.1:{sock.getsockname()[1]}"
@@ -97,6 +100,7 @@ def base_url(tmp_path_factory):
         # in another thread: Playwright's sync API runs an event loop here, and create_user starts its own
         with ThreadPoolExecutor(1) as pool:
             user = pool.submit(accounts.create_user, EMAIL, PASSWORD, verified=True).result()
+            pool.submit(accounts.create_user, NEW_EMAIL, PASSWORD, verified=True).result()
         orch = Orchestrator(provider, Store(":memory:"), use_rss_news=False, charges_model_calls=True)
         orch.save_portfolio(owner_of(user), 0.0, "moderate", "medium", [{"symbol": "TEST", "side": "BUY", "quantity": 10,
                                                          "price": float(prices["close"].iloc[-120]), "trade_date": str(prices.index[-120].date())}])

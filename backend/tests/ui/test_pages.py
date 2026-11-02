@@ -7,7 +7,7 @@ import pytest
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="Playwright is not installed: pip install -e '.[dev]'")
 
-from .conftest import KEY, sign_in  # noqa: E402
+from .conftest import EMAIL, KEY, NEW_EMAIL, sign_in  # noqa: E402
 
 pytestmark = pytest.mark.ui
 WIDTHS = [390, 800, 1366]   # provisional: a phone, the nav breakpoint itself, a laptop
@@ -16,7 +16,7 @@ THEMES = ["dark", "light"]
 SECTIONS = ["Home", "Markets", "Portfolio", "Ask", "Learn"]
 NO_PAGE = ["nowhere", "stock", "stock/%E0%A4"]
 PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signals", "builder", "chat", "learn",
-         "performance", "reports", *NO_PAGE]
+         "performance", "reports", "welcome", *NO_PAGE]
 # Chrome logs a failed fetch without its address, so failures are read from the responses; an API 404 is how a missing model shows up
 UNNAMED_FETCH_ERROR = "Failed to load resource"
 LONG_NAME = "Parag Parikh Flexi Cap Fund Direct Plan Growth"
@@ -26,7 +26,7 @@ EMOJI = re.compile("[\u2600-\u27bf\U0001f300-\U0001faff]")
 class Tab:
     """One signed-in browser tab on the app, counting its requests in flight and the errors it logs."""
 
-    def __init__(self, browser, base_url, width, **context_options):
+    def __init__(self, browser, base_url, width, email=EMAIL, **context_options):
         self.context = browser.new_context(viewport={"width": width, "height": 900}, **context_options)
         self.page = self.context.new_page()
         self.inflight, self.requests, self.errors = 0, [], []
@@ -36,7 +36,7 @@ class Tab:
         self.page.on("pageerror", lambda e: self.errors.append(str(e)))
         self.page.on("console", lambda m: self.errors.append(m.text) if m.type == "error" and not m.text.startswith(UNNAMED_FETCH_ERROR) else None)
         self.page.on("response", lambda r: self.errors.append(f"{r.status} {r.url}") if r.status >= 500 or (r.status >= 400 and "/static/" in r.url) else None)
-        sign_in(self.context, base_url)
+        sign_in(self.context, base_url, email)
         self.page.goto(f"{base_url}/#key={KEY}")
         self.settle()
 
@@ -742,3 +742,31 @@ def test_toasts_on_a_phone_leave_the_bottom_nav_uncovered(browser, base_url):
     tab.page.evaluate("() => { toast('Saved to portfolio'); toast('Added to your portfolio'); }")
     toasts, nav = tab.page.locator(".toasts").bounding_box(), tab.page.locator("#bnav").bounding_box()
     assert toasts["y"] + toasts["height"] <= nav["y"], (toasts, nav)
+
+
+def test_a_new_user_is_led_through_setup_to_a_set_up_home(browser, base_url):
+    tab = Tab(browser, base_url, 1366, email=NEW_EMAIL)
+    landed = tab.page.url
+    tab.page.locator("label", has_text="Careful (conservative)").click()
+    tab.page.locator("label", has_text="Medium:").click()
+    tab.page.get_by_label("Cash you can invest (₹)").fill("0")
+    tab.page.get_by_role("button", name="Next").click()
+    tab.settle()
+    tab.page.get_by_role("link", name="I don't own any yet").click()
+    tab.settle()
+    tab.page.get_by_role("link", name="Go to Home").click()
+    tab.settle()
+    home_is_set_up = tab.page.get_by_role("heading", name="Your money today").is_visible()
+    tab.context.close()
+    assert (landed.endswith("#/welcome"), home_is_set_up) == (True, True)
+
+
+def test_each_risk_card_states_the_limits_the_profiles_route_gives(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/welcome")
+    risk = tab.context.request.get(f"{base_url}/ui/profiles").json()["risk"].values()
+    cards = tab.page.locator("label:has(input[name=risk_profile])").all_inner_texts()
+    tab.context.close()
+    said = [f"No single stock above {r['max_position_pct']:.0f}% of your money, and no sector above {r['max_sector_pct']:.0f}%."
+            for r in risk]
+    assert [s in card for s, card in zip(said, cards)] == [True] * len(said) and len(cards) == len(said)

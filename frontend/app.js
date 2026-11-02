@@ -1014,7 +1014,7 @@ function askCard(sym) {
     log, h("div", { class: "row" }, input, h("button", { class: "btn primary", onclick: () => send() }, "Ask")));
 }
 
-function addTxModal(ctx, sym, price) {
+function addTxModal(ctx, sym, price, saved = () => { if (location.hash.startsWith("#/portfolio")) route(); }) {
   const f = { symbol: h("input", { value: sym || "", placeholder: "Symbol, e.g. TCS" }), side: h("select", {}, h("option", {}, "BUY"), h("option", {}, "SELL")),
     quantity: h("input", { type: "number", min: "1", value: "1" }), price: h("input", { type: "number", step: "0.05", value: price ? price.toFixed(2) : "" }),
     trade_date: h("input", { type: "date", value: new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()) }),
@@ -1022,7 +1022,7 @@ function addTxModal(ctx, sym, price) {
   for (const [name, input] of Object.entries(f)) input.name = name;
   const save = async () => {
     await api("/portfolio/transactions", { method: "POST", body: JSON.stringify({ symbol: f.symbol.value.trim().toUpperCase(), side: f.side.value, quantity: +f.quantity.value, price: +f.price.value, trade_date: f.trade_date.value, fees: +f.fees.value }) });
-    toast("Saved to portfolio"); if (location.hash.startsWith("#/portfolio")) route();
+    toast("Saved to portfolio"); saved();
   };
   Dialog(ctx, "Add transaction", [
     Field("Stock", f.symbol), h("div", { class: "grid cols-2", style: "grid-template-columns:1fr 1fr" }, Field("Type", f.side), Field("Date", f.trade_date)),
@@ -1254,6 +1254,7 @@ async function pageHome(view, ctx) {
     feature("chart", "Track record", "How well each method did on data it never saw — including the ones that don't work.", "#/performance")));
   view.append(h("p", { class: "footer-note" }, "Decision support, not investment advice. Verify figures against NSE/BSE filings before acting."));
   if (!hasKey) return;
+  homeSummary(view, ctx);
   let d; try { d = await api("/ui/performance", { signal: ctx.signal }); } catch (e) { stats.replaceChildren(h("p", { class: "muted", style: "margin-top:14px" }, e.status !== 404 ? `Track record unavailable: ${errorWords(e)}` : "Run `stockintel build-performance` once to show the measured track record here.")); return; }
   const live = d.momentum.live_check, band = bandRecords(d.forecast.coverage)[0];
   const edge = d.patterns.filter((r) => Math.abs(r.z || 0) >= d.bonferroni_z).length, ch5 = d.open_models && d.open_models.chronos.horizons.find((x) => x.horizon === 5);
