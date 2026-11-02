@@ -14,11 +14,14 @@ import logging
 import math
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from backend.api import quota
 from backend.advisory.calculators import performance
 from backend.advisory import report as R
 from backend.user.portfolio.alerts import evaluate as evaluate_alert
@@ -106,11 +109,14 @@ class Reply:
 
 class Orchestrator:
     def __init__(self, provider: Provider, store: Store,
-                 llm_mode: str = "off", use_rss_news: bool = True, llm_client: Any = None):
+                 llm_mode: str = "off", use_rss_news: bool = True, llm_client: Any = None, *, charges_model_calls: bool):
         if llm_mode not in ("off", "narrate", "agent"):
             raise ValueError(f"llm_mode must be off, narrate or agent; got {llm_mode!r}")
         self.provider, self.store = provider, store
         self.llm_mode = llm_mode
+        # only a served app charges: the CLI and offline scripts run on the developer's own account, and an eval
+        # past the daily cap would score each refused routing as a wrong handler
+        self.charges_model_calls = charges_model_calls
         self.use_rss_news = use_rss_news
         self._services: Dict[str, AnalysisService] = {}
         self.sessions: Dict[Tuple[str, str], Session] = {}
@@ -151,6 +157,25 @@ class Orchestrator:
         """Held around a read-modify-write of one portfolio, so two requests cannot drop each other's change."""
         return self._key_lock("portfolio:" + portfolio)
 
+    @contextmanager
+    def model_call(self, portfolio: str):
+        """Charge one call to the Space, Claude or the agent to the portfolio's day; a call that fails is refunded."""
+        if not self.charges_model_calls:
+            yield
+            return
+        now = datetime.now(timezone.utc)
+        quota.charge(self.store, portfolio, "lm", now)
+        try:
+            yield
+        except Exception:
+            quota.refund(self.store, portfolio, "lm", now)
+            raise
+
+    def usage(self, portfolio: str) -> Dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        return {"used": self.store.usage(portfolio, quota.day_ist(now)).get("lm", 0), "limit": quota.USER_LIMITS["lm"],
+                "resets_at": quota.resets_at(now).isoformat()}
+
     def save_portfolio(self, portfolio: str, cash: float, risk_profile: str, horizon: str,
                        transactions: List[Dict[str, Any]]) -> int:
         """Validate (FIFO, no oversells) before anything is written."""
@@ -169,6 +194,11 @@ class Orchestrator:
             return {}, 0.0, {}
         txs = [Transaction(**t) for t in p["transactions"]]
         return build_positions(txs), float(p["cash"]), p
+
+    def alerts(self, portfolio: str, include_acknowledged: bool = False) -> List[Dict[str, Any]]:
+        """Only on held stocks: anyone's analysis writes alerts, so the full list would show what others looked up."""
+        positions, _, _ = self.holdings(portfolio)
+        return self.store.alerts(portfolio, [sym for sym, p in positions.items() if p.quantity > 0], include_acknowledged)
 
     def analysis(self, s: Session, symbol: str, market: str = "NSE", horizon: Optional[str] = None) -> StockAnalysis:
         if not SYMBOL_RE.match(symbol.upper()):
@@ -201,8 +231,9 @@ class Orchestrator:
                 del self._analyses[next(iter(self._analyses))]
         previous = self.store.analyses(a.symbol, limit=1)
         alert = evaluate_alert(a, previous[0] if previous else None)
-        if alert:
-            self.store.save_alert(alert.symbol, alert.kind, alert.severity, alert.message, alert.reasons)
+        if alert:                       # kept under the holding's spelling, or "TEST.NS" hides it from TEST's holder
+            self.store.save_alert(canonical_symbol(alert.symbol, market), alert.kind, alert.severity, alert.message,
+                                  alert.reasons)
         self.store.save_analysis(a.symbol, a.to_dict())
         self._log_predictions(a, market)
         return a
@@ -243,20 +274,26 @@ class Orchestrator:
             return self._agent_reply(s, message, intent)
         reply = self._deterministic(s, intent)
         if reply.data.get("no_answer"):          # our patterns or the reference index had nothing; let the LM place it
-            routed = self._routed(message, intent)
+            try:
+                routed = self._routed(s, message, intent)
+            except quota.QuotaExceeded as exc:
+                routed = intent
+                reply.text += f"\n\n{exc}"
             if routed.name != intent.name:
                 reply = self._deterministic(s, routed)
         if self.llm_mode == "narrate" and reply.data.get("payload") is not None:
-            reply = self._narrate(message, reply)
+            reply = self._narrate(s, message, reply)
         return reply
 
-    def _routed(self, message: str, intent: Intent) -> Intent:
+    def _routed(self, s: Session, message: str, intent: Intent) -> Intent:
         """Our patterns did not recognise the question; let the language model pick one of our handlers."""
         from backend.api import intent_lm
         from backend.api.nlu import ROUTABLE
         from backend.models.external.llm import LLMUnavailable
         try:
-            name = intent_lm.choose(message, ROUTABLE, self.hub.writer())
+            writer = self.hub.writer()
+            with self.model_call(s.portfolio):
+                name = intent_lm.choose(message, ROUTABLE, writer)
         except (LLMUnavailable, DataUnavailable) as exc:
             log.info("no language model to route %r: %s", message, exc)
             return intent
@@ -290,7 +327,7 @@ class Orchestrator:
         sym, mkt = self._target(s, i)
         a = self.analysis(s, sym, mkt)
         body = R.render_report(a)
-        rid = self.store.save_report(a.symbol, body)
+        rid = self.store.save_report(s.portfolio, a.symbol, body)
         return Reply(body, "report", {"report_id": rid}, ["analyze_stock", "save_report"])
 
     def _h_domain(self, s: Session, i: Intent) -> Reply:
@@ -605,7 +642,7 @@ class Orchestrator:
         from backend.advisory.signals.advisor import render
         p = self._signal_plan(s, i)
         payload = sanitize(p.to_dict())
-        self.store.save_plan(payload)
+        self.store.save_plan(s.portfolio, payload)
         return Reply(render(p), "signals", {"payload": payload}, ["signal_plan"])
 
     def _h_market_regime(self, s: Session, i: Intent) -> Reply:
@@ -643,7 +680,7 @@ class Orchestrator:
         positions, _, _ = self.holdings(s.portfolio)
         if not positions:
             raise ValueError("No stored portfolio to check stops on.")
-        planned = {a["symbol"]: a["stop_level"] for a in (self.store.latest_plan() or {}).get("actions", [])
+        planned = {a["symbol"]: a["stop_level"] for a in (self.store.latest_plan(s.portfolio) or {}).get("actions", [])
                    if a.get("stop_level")}
         lines = [f"Stop check ({STOP_PCT:.0%} stops):"]
         for sym, p in positions.items():
@@ -694,9 +731,9 @@ class Orchestrator:
         return Reply("\n".join(lines), "should_buy", {"payload": v}, ["verdict"])
 
     def _h_alerts(self, s: Session, i: Intent) -> Reply:
-        alerts = self.store.alerts()
+        alerts = self.alerts(s.portfolio)
         if not alerts:
-            return Reply("No unacknowledged alerts.", "alerts", {"payload": []})
+            return Reply("No unacknowledged alerts on the stocks you hold.", "alerts", {"payload": []})
         text = "\n\n".join(f"[{a['severity'].upper()}] {a['message']}" for a in alerts[:10])
         return Reply(text, "alerts", {"payload": alerts}, ["alerts"])
 
@@ -718,13 +755,18 @@ class Orchestrator:
                      "help", {"no_answer": True})
 
     # --- LLM modes --------------------------------------------------------------------
-    def _narrate(self, question: str, reply: Reply) -> Reply:
+    def _narrate(self, s: Session, question: str, reply: Reply) -> Reply:
         from backend.models.external.llm import LLMUnavailable, Narrator, compact_payload
         payload = reply.data["payload"]
         if isinstance(payload, dict) and "results" in payload:
             payload = compact_payload(payload)
         try:
-            text, meta = Narrator(self.llm_client).narrate(question, payload, reply.text)
+            with self.model_call(s.portfolio):
+                text, meta = Narrator(self.llm_client).narrate(question, payload, reply.text)
+        except quota.QuotaExceeded as exc:
+            reply.text += f"\n\n{exc}"
+            reply.llm = {"error": str(exc)}
+            return reply
         except LLMUnavailable as exc:
             reply.text += f"\n\n(Conversational layer unavailable: {exc}. Showing the computed answer.)"
             reply.llm = {"error": str(exc)}
@@ -797,7 +839,13 @@ class Orchestrator:
     def _agent_reply(self, s: Session, message: str, intent: Intent) -> Reply:
         from backend.models.external.llm import LLMUnavailable, ToolAgent
         try:
-            text, meta = ToolAgent(self.llm_client, self.agent_tools(s)).run(message, s.history[-8:])
+            with self.model_call(s.portfolio):
+                text, meta = ToolAgent(self.llm_client, self.agent_tools(s)).run(message, s.history[-8:])
+        except quota.QuotaExceeded as exc:
+            reply = self._deterministic(s, intent)
+            reply.text += f"\n\n{exc}"
+            reply.llm = {"error": str(exc)}
+            return reply
         except LLMUnavailable as exc:
             reply = self._deterministic(s, intent)
             reply.text += f"\n\n(Agent unavailable: {exc}. Answered with the rule-based router.)"

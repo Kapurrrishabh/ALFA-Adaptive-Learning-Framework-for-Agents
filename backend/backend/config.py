@@ -41,6 +41,9 @@ MARKETS: Dict[str, Market] = {
 
 DEFAULT_MARKET = "NSE"
 DEFAULT_PORTFOLIO = "default"      # the one portfolio the shared API key and the CLI use
+# PROVISIONAL: how long a request waits for the one note writer or agent before it is told they are busy. Each waiting
+# request holds one of the server's 40 worker threads; confirm against how long one note takes on the Space.
+BUSY_WAIT_S = 5.0
 
 
 def resolve_symbol(symbol: str, market: Optional[str] = None) -> str:

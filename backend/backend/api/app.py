@@ -4,7 +4,8 @@ Auth: every endpoint except /health and the static dashboard requires the
 X-API-Key header to equal STOCKINTEL_API_KEY (compared in constant time).
 The server refuses to start without a key. Rate limit: token bucket per key.
 All handlers are read-only over market data; the only writes are the user's
-own portfolio, reports and alert acknowledgements in the local database.
+own portfolio, reports, alert acknowledgements and daily model-call counts in
+the local database.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from backend.config import DEFAULT_PORTFOLIO, FORECAST_DAYS, resolve_symbol
 from backend.database.sources.provider import DataUnavailable
 from backend.database.sources.quality import DataQualityError
 from backend.api.jsonutil import sanitize
+from backend.api.quota import QuotaExceeded
 from backend.knowledge_base.lessons import knowledge_base
 from backend.paths import FRONTEND
 from backend.api.nlu import ALIASES
@@ -107,6 +109,9 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     if len(key) < 16:
         raise RuntimeError("STOCKINTEL_API_KEY must be set to a random string of at least 16 "
                            "characters before starting the API (e.g. `openssl rand -hex 24`).")
+    if not orch.charges_model_calls:
+        raise RuntimeError("The API serves many users, so build its Orchestrator with charges_model_calls=True; "
+                           "otherwise their model calls skip the daily allowance.")
     bucket = TokenBucket(RATE_PER_MIN)
     # No /openapi.json, /docs or /redoc: they skip the key check and would map every route to anyone
     app = FastAPI(title="StockIntel", version="0.1.0", openapi_url=None,
@@ -130,6 +135,11 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     @app.exception_handler(ValueError)
     async def _value(_: Request, exc: ValueError):
         return JSONResponse(status_code=400, content={"error": "bad_request", "detail": str(exc)})
+
+    @app.exception_handler(QuotaExceeded)
+    async def _quota(_: Request, exc: QuotaExceeded):
+        return JSONResponse(status_code=429, content={"error": "quota", "detail": str(exc), "limit": exc.limit,
+                                                      "resets_at": exc.resets_at.isoformat()})
 
     def ticker(t: str) -> str:
         t = t.upper()
@@ -202,9 +212,9 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     def ui_indicators(t: str, bars: int = Query(default=126, ge=30, le=1000)):
         return ok(hub.indicators(ticker(t), bars))
 
-    @app.get("/ui/stock/{t}/ai", dependencies=[Depends(auth)])
-    def ui_ai(t: str, model: Literal["chronos", "kronos", "alfa", "gru"] = "chronos"):
-        return ok(hub.ai_forecast(ticker(t), model))
+    @app.get("/ui/stock/{t}/ai")
+    def ui_ai(t: str, model: Literal["chronos", "kronos", "alfa", "gru"] = "chronos", owner: str = Depends(auth)):
+        return ok(hub.ai_forecast(ticker(t), model, owner))
 
     @app.get("/ui/ticker", dependencies=[Depends(auth)])
     def ui_ticker():
@@ -263,9 +273,14 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     def ui_agent_ask(body: ChatIn, owner: str = Depends(auth)):
         from backend.models.agent.client import AgentUnavailable
         try:
-            return ok(agent_client.ask(body.message, "", session=owner + ":" + body.session_id))
+            with orch.model_call(owner):
+                return ok(agent_client.ask(body.message, "", session=owner + ":" + body.session_id))
         except AgentUnavailable as exc:
             raise HTTPException(503, str(exc)) from None
+
+    @app.get("/ui/usage")
+    def ui_usage(owner: str = Depends(auth)):
+        return orch.usage(owner)
 
     @app.get("/ui/stock/{t}/insider", dependencies=[Depends(auth)])
     def ui_insider(t: str):
@@ -432,23 +447,30 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
     def chat(body: ChatIn, owner: str = Depends(auth)):
         return ok(orch.handle(body.message, owner, body.session_id).to_dict())
 
-    @app.get("/reports", dependencies=[Depends(auth)])
-    def reports(symbol: Optional[str] = None):
-        return ok(orch.store.reports(ticker(symbol) if symbol else None))
+    @app.get("/reports")
+    def reports(symbol: Optional[str] = None, owner: str = Depends(auth)):
+        return ok(orch.store.reports(owner, ticker(symbol) if symbol else None))
+
+    @app.get("/reports/{report_id}")
+    def report(report_id: int, owner: str = Depends(auth)):
+        r = orch.store.report(owner, report_id)
+        if r is None:
+            raise HTTPException(404, f"no report #{report_id}")
+        return ok(r)
 
     @app.post("/reports/{t}")
     def make_report(t: str, owner: str = Depends(auth)):
         a = orch.analysis(session(owner), ticker(t))
         body = R.render_report(a)
-        return {"id": orch.store.save_report(a.symbol, body), "report": body}
+        return {"id": orch.store.save_report(owner, a.symbol, body), "report": body}
 
-    @app.get("/alerts", dependencies=[Depends(auth)])
-    def alerts(include_acknowledged: bool = False):
-        return ok(orch.store.alerts(include_acknowledged))
+    @app.get("/alerts")
+    def alerts(include_acknowledged: bool = False, owner: str = Depends(auth)):
+        return ok(orch.alerts(owner, include_acknowledged))
 
-    @app.post("/alerts/{alert_id}/ack", dependencies=[Depends(auth)])
-    def ack(alert_id: int):
-        orch.store.acknowledge_alert(alert_id)
+    @app.post("/alerts/{alert_id}/ack")
+    def ack(alert_id: int, owner: str = Depends(auth)):
+        orch.store.acknowledge_alert(owner, alert_id)
         return {"status": "acknowledged", "id": alert_id}
 
     @app.get("/signals")
@@ -462,7 +484,7 @@ def create_app(orch: Orchestrator, api_key: Optional[str] = None, preload: bool 
         words = {"lowvol": "low volatility", "blend": "blend", "momentum": ""}[strategy]
         p = orch._signal_plan(s, Intent(name="signals", amount=capital or None, raw=words))
         payload = sanitize(p.to_dict())
-        orch.store.save_plan(payload)
+        orch.store.save_plan(owner, payload)
         return ok({**payload, "text": render(p)})
 
     @app.get("/market", dependencies=[Depends(auth)])

@@ -33,7 +33,7 @@ def service(local_provider):
 
 @pytest.fixture
 def orch(local_provider, store, monkeypatch):
-    o = Orchestrator(local_provider, store, use_rss_news=False)
+    o = Orchestrator(local_provider, store, use_rss_news=False, charges_model_calls=True)
     o.known.add("TEST")
     o.universe = pd.DataFrame({"symbol": ["TEST", "PEER"], "sector": ["Industrials", "Energy"]})
     return o
@@ -218,8 +218,8 @@ def _split_history(close, split_day=None):
     return pd.DataFrame({"close": close, "ratio": ratio})
 
 
-def _store_test_buy(orch, cash, price, day):
-    orch.save_portfolio(DEFAULT_PORTFOLIO, cash, "moderate", "long", [
+def _store_test_buy(orch, cash, price, day, portfolio=DEFAULT_PORTFOLIO):
+    orch.save_portfolio(portfolio, cash, "moderate", "long", [
         {"symbol": "TEST", "side": "BUY", "quantity": 10, "price": price, "trade_date": day}])
 
 
@@ -330,6 +330,11 @@ def test_alert_explains_why_it_fired(service):
 def test_api_requires_a_key_at_startup(orch):
     with pytest.raises(RuntimeError, match="STOCKINTEL_API_KEY"):
         create_app(orch, api_key="")
+
+
+def test_api_refuses_an_orchestrator_that_does_not_charge_model_calls(local_provider, store):
+    with pytest.raises(RuntimeError, match="charges_model_calls=True"):
+        create_app(Orchestrator(local_provider, store, use_rss_news=False, charges_model_calls=False), api_key=KEY)
 
 
 def test_api_rejects_missing_or_wrong_keys(orch):
@@ -645,6 +650,131 @@ def test_two_portfolios_do_not_see_each_others_holdings(app_client, orch, sees_a
     assert sees_alices_buy(orch, orch.session("alice", "web")) and not sees_alices_buy(orch, orch.session("bob", "web"))
 
 
+@pytest.fixture
+def two_portfolios_reports(app_client, orch):
+    """Report ids made by alice in chat and by the API's own portfolio."""
+    for portfolio in ("alice", DEFAULT_PORTFOLIO):
+        _store_test_buy(orch, 0.0, 100, "2025-06-02", portfolio)
+    alices = orch.handle("Generate a report on TEST", "alice", "r").data["report_id"]
+    return {"alice": alices, "mine": app_client.post("/reports/TEST", headers={"X-API-Key": KEY}).json()["id"]}
+
+
+def test_the_report_list_leaves_out_another_portfolios_reports(app_client, two_portfolios_reports):
+    listed = app_client.get("/reports", headers={"X-API-Key": KEY}).json()
+    assert [r["id"] for r in listed] == [two_portfolios_reports["mine"]]
+
+
+def test_another_portfolios_report_cannot_be_opened(app_client, two_portfolios_reports):
+    opened = {who: app_client.get(f"/reports/{rid}", headers={"X-API-Key": KEY}).status_code
+              for who, rid in two_portfolios_reports.items()}
+    assert opened == {"alice": 404, "mine": 200}
+
+
+@pytest.mark.parametrize("method, path", [("get", "/reports"), ("get", "/reports/1"), ("post", "/reports/TEST"),
+                                          ("get", "/alerts"), ("post", "/alerts/1/ack")])
+def test_owned_report_and_alert_routes_refuse_anonymous_callers(app_client, method, path):
+    assert getattr(app_client, method)(path).status_code == 401
+
+
+def test_a_report_before_the_portfolio_is_set_up_is_a_plain_400(app_client):
+    r = app_client.post("/reports/TEST", headers={"X-API-Key": KEY})
+    assert r.status_code == 400 and r.json()["detail"].startswith("Set up your portfolio first")
+
+
+def test_a_portfolio_keeps_only_its_own_newest_reports(orch):
+    from backend.database.storage import REPORTS_KEPT
+    for portfolio in ("alice", DEFAULT_PORTFOLIO):
+        _store_test_buy(orch, 0.0, 100, "2025-06-02", portfolio)
+    orch.store.save_report("alice", "TEST", "alice's report")
+    for n in range(REPORTS_KEPT + 1):
+        orch.store.save_report(DEFAULT_PORTFOLIO, "TEST", f"report {n}")
+    kept = {p: [r["body"] for r in orch.store.reports(p, limit=REPORTS_KEPT + 1)] for p in ("alice", DEFAULT_PORTFOLIO)}
+    assert kept == {"alice": ["alice's report"], DEFAULT_PORTFOLIO: [f"report {n}" for n in range(REPORTS_KEPT, 0, -1)]}
+
+
+def test_a_portfolio_keeps_only_its_own_newest_plans(orch, monkeypatch):
+    """Every /signals call keeps a plan, so without a cap one user could grow the database without end."""
+    import backend.database.storage as storage
+    monkeypatch.setattr(storage, "PLANS_KEPT", 2)
+    for portfolio in ("alice", DEFAULT_PORTFOLIO):
+        _store_test_buy(orch, 0.0, 100, "2025-06-02", portfolio)
+    for portfolio in ("alice", DEFAULT_PORTFOLIO, DEFAULT_PORTFOLIO, DEFAULT_PORTFOLIO):
+        orch.store.save_plan(portfolio, {"as_of": END, "strategy": "momentum", "actions": []})
+    kept = orch.store.conn.execute("SELECT p.name, count(*) FROM signal_plans s JOIN portfolios p ON p.id = s.portfolio_id"
+                                   " GROUP BY p.name").fetchall()
+    assert dict(map(tuple, kept)) == {"alice": 1, DEFAULT_PORTFOLIO: 2}
+
+
+def test_one_portfolios_plan_does_not_move_anothers_stops(orch):
+    from backend.advisory.signals.advisor import STOP_PCT
+    for portfolio in ("alice", "bob"):
+        _store_test_buy(orch, 0.0, 100, "2025-06-02", portfolio)
+    orch.store.save_plan("bob", {"as_of": END, "strategy": "momentum", "actions": [{"symbol": "TEST", "stop_level": 55.5}]})
+    stops = [re.search(r"stop ₹([\d,.]+)", orch.handle("Check my stops", p, "s").text).group(1) for p in ("alice", "bob")]
+    assert stops == [f"{100 * (1 - STOP_PCT):,.2f}", "55.50"]
+
+
+def test_a_plan_for_new_money_needs_no_portfolio_set_up(app_client, signal_inputs):
+    """A plan is kept with its portfolio, and a new user has none yet; the plan itself must still come back."""
+    assert app_client.get("/signals?capital=100000", headers={"X-API-Key": KEY}).status_code == 200
+
+
+def test_acknowledging_an_alert_hides_it_only_from_that_portfolio(app_client, orch):
+    for portfolio in ("alice", DEFAULT_PORTFOLIO):
+        _store_test_buy(orch, 0.0, 100, "2025-06-02", portfolio)
+    alert = orch.store.save_alert("TEST", "price_move", "high", "TEST moved 6%", ["moved 6%"])
+    h = {"X-API-Key": KEY}
+    app_client.post(f"/alerts/{alert}/ack", headers=h)
+    assert [len(app_client.get("/alerts", headers=h).json()), len(orch.alerts("alice"))] == [0, 1]
+
+
+def test_alerts_list_only_the_stocks_the_portfolio_holds(app_client, orch):
+    """Anyone's analysis writes an alert, so an unfiltered list would show which stocks other users looked up."""
+    _store_test_buy(orch, 0.0, 100, "2025-06-02")
+    for symbol in ("TEST", "PEER"):
+        orch.store.save_alert(symbol, "price_move", "high", f"{symbol} moved 6%", ["moved 6%"])
+    assert [a["symbol"] for a in app_client.get("/alerts", headers={"X-API-Key": KEY}).json()] == ["TEST"]
+
+
+def test_an_alert_from_analysing_the_suffixed_symbol_reaches_the_holder(orch):
+    """Holdings drop the ".NS" suffix, and an alert kept as typed ("TEST.NS") was hidden from TEST's holder."""
+    _store_test_buy(orch, 0.0, 100, "2025-06-02")
+    orch.store.save_analysis("TEST.NS", {"decision": {"analysis_timestamp": "2026-01-02", "data_timestamp": "2026-01-02",
+                                                      "decision_support_label": "INSUFFICIENT_EVIDENCE", "score": 0.0,
+                                                      "confidence": 0.0}, "results": {}})
+    orch.analysis(orch.session(DEFAULT_PORTFOLIO, "a"), "TEST.NS")
+    assert [a["symbol"] for a in orch.alerts(DEFAULT_PORTFOLIO)] == ["TEST"]
+
+
+OLD_OWNERLESS_TABLES = """
+CREATE TABLE portfolios (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, cash REAL NOT NULL DEFAULT 0,
+    risk_profile TEXT NOT NULL DEFAULT 'moderate', horizon TEXT NOT NULL DEFAULT 'medium', created_at TEXT NOT NULL);
+CREATE TABLE reports (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, created_at TEXT NOT NULL, body TEXT NOT NULL);
+CREATE TABLE signal_plans (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, as_of TEXT NOT NULL,
+    strategy TEXT NOT NULL, payload TEXT NOT NULL);
+INSERT INTO reports (symbol, created_at, body) VALUES ('TEST', '2026-01-02', 'an old report');
+INSERT INTO signal_plans (created_at, as_of, strategy, payload) VALUES ('2026-01-02', '2026-01-02', 'momentum', '{}');
+"""
+
+
+@pytest.mark.parametrize("had_default, visible", [(True, True), (False, False)])
+def test_an_older_database_gives_its_reports_and_plans_to_the_default_portfolio_only(tmp_path, had_default, visible):
+    """With no default portfolio the old rows have no known owner; one set up later, or a restart, must not claim them."""
+    import sqlite3
+    from backend.database.storage import Store
+    path = str(tmp_path / "old.db")
+    old = sqlite3.connect(path)
+    old.executescript(OLD_OWNERLESS_TABLES)
+    if had_default:
+        old.execute("INSERT INTO portfolios (name, created_at) VALUES (?, '2026-01-01')", (DEFAULT_PORTFOLIO,))
+    old.commit()
+    old.close()
+    Store(path).save_portfolio(DEFAULT_PORTFOLIO, 0.0, "moderate", "medium", [])
+    reopened = Store(path)
+    seen = [bool(reopened.reports(DEFAULT_PORTFOLIO)), reopened.latest_plan(DEFAULT_PORTFOLIO) is not None]
+    assert seen == [visible, visible]
+
+
 def test_performance_endpoint_reports_missing_build_cleanly(app_client, monkeypatch, tmp_path):
     import backend.advisory.calculators.performance as perf
     monkeypatch.setattr(perf, "PATH", tmp_path / "none.json")
@@ -709,6 +839,83 @@ def test_agent_ask_carries_the_chat_session_to_the_agent(orch, monkeypatch):
     client = TestClient(create_app(orch, api_key=KEY))
     client.post("/ui/agent/ask", json={"message": "Why?", "session_id": "web-1"}, headers={"X-API-Key": KEY})
     assert sessions == [f"{DEFAULT_PORTFOLIO}:web-1"]
+
+
+def _answering_agent(monkeypatch, orch):
+    from backend.models.agent.client import SelfAgentClient
+    monkeypatch.setattr(SelfAgentClient, "ask", lambda self, question, subject="", *, session: {"stage": "turn"})
+    return TestClient(create_app(orch, api_key=KEY))
+
+
+def test_an_agent_question_over_the_daily_limit_is_a_429_saying_when_more_come(orch, monkeypatch):
+    from datetime import datetime
+    from backend.api import quota
+    monkeypatch.setitem(quota.USER_LIMITS, "lm", 1)
+    client = _answering_agent(monkeypatch, orch)
+    asks = [client.post("/ui/agent/ask", json={"message": "Why?"}, headers={"X-API-Key": KEY}) for _ in range(2)]
+    stopped = asks[1].json()
+    assert ([a.status_code for a in asks], stopped["limit"], datetime.fromisoformat(stopped["resets_at"]).time()) == \
+        ([200, 429], 1, time(0))
+
+
+def test_the_usage_route_gives_the_owners_count_from_the_store(orch, monkeypatch):
+    from datetime import datetime, timezone
+    from backend.api import quota
+    client = _answering_agent(monkeypatch, orch)
+    client.post("/ui/agent/ask", json={"message": "Why?"}, headers={"X-API-Key": KEY})
+    usage = client.get("/ui/usage", headers={"X-API-Key": KEY}).json()
+    stored = orch.store.usage(DEFAULT_PORTFOLIO, quota.day_ist(datetime.now(timezone.utc)))
+    assert (usage["used"], usage["limit"]) == (stored["lm"], quota.USER_LIMITS["lm"])
+
+
+@pytest.mark.parametrize("path", ["/ui/usage", "/ui/stock/TEST/ai"])
+def test_the_usage_and_forecast_routes_refuse_anonymous_callers(app_client, path):
+    assert app_client.get(path).status_code == 401
+
+
+def test_a_question_while_the_agent_is_busy_is_a_503_that_costs_nothing(orch, monkeypatch):
+    """Questions queued for the one agent for up to a minute each, and enough of them used up the server's threads."""
+    import threading
+    import websockets.sync.client as ws
+    import backend.models.agent.client as sc
+    asking, release = threading.Event(), threading.Event()
+
+    def answering(*a, **k):
+        asking.set()
+        release.wait(5)
+        raise OSError("the test closed the agent")
+    monkeypatch.setattr(sc, "BUSY_WAIT_S", 0.1)
+    monkeypatch.setattr(sc.SelfAgentClient, "_login", lambda self: "token")
+    monkeypatch.setattr(ws, "connect", answering)
+    client, h = TestClient(create_app(orch, api_key=KEY)), {"X-API-Key": KEY}
+    first = threading.Thread(target=client.post, args=("/ui/agent/ask",), kwargs={"json": {"message": "Why?"}, "headers": h})
+    first.start()
+    asking.wait(5)
+    busy = client.post("/ui/agent/ask", json={"message": "Why?"}, headers=h)
+    used = orch.usage(DEFAULT_PORTFOLIO)["used"]
+    release.set()
+    first.join()
+    assert (busy.status_code, "answering someone else" in busy.json()["detail"], used) == (503, True, 1)
+
+
+@pytest.mark.parametrize("reply", [None, 503], ids=["port closed", "error reply"])
+def test_the_agent_status_does_not_give_out_the_agents_address(orch, monkeypatch, reply):
+    import httpx
+    port = _closed_port()
+    monkeypatch.setenv("SELFAGENT_URL", f"http://127.0.0.1:{port}")
+    if reply:
+        monkeypatch.setattr(httpx, "get", lambda url, timeout: httpx.Response(reply, request=httpx.Request("GET", url)))
+    client = TestClient(create_app(orch, api_key=KEY))
+    assert str(port) not in client.get("/ui/agent/status", headers={"X-API-Key": KEY}).text
+
+
+def test_a_question_to_an_agent_that_is_down_does_not_give_out_its_address(orch, monkeypatch, tmp_path):
+    import backend.models.agent.client as sc
+    port = _closed_port()
+    monkeypatch.setattr(sc, "CREDENTIALS", tmp_path / "agent.json")
+    monkeypatch.setenv("SELFAGENT_URL", f"http://127.0.0.1:{port}")
+    client = TestClient(create_app(orch, api_key=KEY))
+    assert str(port) not in client.post("/ui/agent/ask", json={"message": "Why?"}, headers={"X-API-Key": KEY}).text
 
 
 def test_phone_install_manifest_and_service_worker_are_served(app_client):
@@ -841,6 +1048,45 @@ def test_a_failing_model_space_is_a_clean_404_naming_the_space(app_client, monke
     monkeypatch.setattr(rm, "_client", lambda: _FakeSpace(error=RuntimeError("queue full")))
     r = app_client.get("/ui/stock/PEER/ai?model=kronos", headers={"X-API-Key": KEY})
     assert r.status_code == 404 and "you/stockintel-models" in r.json()["detail"] and "queue full" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("error, used", [(None, 1), (RuntimeError("queue full"), 0)], ids=["answered", "failed"])
+def test_a_model_space_forecast_is_charged_once_and_only_when_it_answers(app_client, orch, monkeypatch, error, used):
+    import json as _json
+    import backend.models.external.remote_models as rm
+    fan = {f"q{q}": [100.0 + q] * FORECAST_DAYS for q in (10, 25, 50, 75, 90)}
+    monkeypatch.setenv("STOCKINTEL_MODEL_SPACE", "you/stockintel-models")
+    monkeypatch.setattr(rm, "_client", lambda: _FakeSpace(_json.dumps(fan), error))
+    for _ in range(2):          # the second is a cache hit when the first answered
+        app_client.get("/ui/stock/TEST/ai?model=chronos", headers={"X-API-Key": KEY})
+    assert orch.usage(DEFAULT_PORTFOLIO)["used"] == used
+
+
+def test_a_forecast_asked_while_the_same_one_runs_on_the_space_runs_and_pays_once(app_client, orch, monkeypatch):
+    """The stock page's ALFA layer and its analyst note ask for one fan seconds apart, and the Space takes ~35 s."""
+    import json as _json
+    import threading
+    import time as _t
+    import backend.models.external.remote_models as rm
+    asking, release = threading.Event(), threading.Event()
+
+    class SlowSpace(_FakeSpace):
+        def predict(self, *args, api_name):
+            asking.set()
+            release.wait(5)
+            return super().predict(*args, api_name=api_name)
+    space = SlowSpace(_json.dumps({f"q{q}": [100.0 + q] * FORECAST_DAYS for q in (10, 25, 50, 75, 90)}))
+    monkeypatch.setenv("STOCKINTEL_MODEL_SPACE", "you/stockintel-models")
+    monkeypatch.setattr(rm, "_client", lambda: space)
+    ask = lambda: app_client.get("/ui/stock/TEST/ai?model=chronos", headers={"X-API-Key": KEY})
+    first, second = threading.Thread(target=ask), threading.Thread(target=ask)
+    first.start()
+    asking.wait(5)
+    second.start()
+    _t.sleep(0.3)               # time for the second request to reach the lock the first one holds
+    release.set()
+    first.join(), second.join()
+    assert (len(space.calls), orch.usage(DEFAULT_PORTFOLIO)["used"]) == (1, 1)
 
 
 def test_state_snapshot_copies_the_database_and_caches(tmp_path):
@@ -1123,7 +1369,7 @@ def test_the_analyst_note_quotes_the_closed_bar_its_forecasts_start_from(app_cli
     import backend.api.hub as hubmod
     from tests.app.test_nlu_llm import _analyst_facts
     monkeypatch.setenv("STOCKINTEL_ML", "0")
-    monkeypatch.setattr(hubmod.Hub, "ai_forecast", lambda self, sym, model: {})
+    monkeypatch.setattr(hubmod.Hub, "ai_forecast", lambda self, sym, model, owner: {})
     f, quoted = _analyst_facts(), []
     monkeypatch.setattr(an, "facts", lambda close, as_of, **rest: quoted.append((close, as_of)) or f)
     history = _at_exchange_time(orch, monkeypatch, time(11, 0))
@@ -1139,7 +1385,7 @@ def test_every_stop_on_the_stock_page_is_the_one_below_the_last_close(app_client
     from backend.advisory.signals.advisor import STOP_PCT
     from tests.app.test_nlu_llm import _analyst_facts
     monkeypatch.setenv("STOCKINTEL_ML", "0")
-    monkeypatch.setattr(hubmod.Hub, "ai_forecast", lambda self, sym, model: {})
+    monkeypatch.setattr(hubmod.Hub, "ai_forecast", lambda self, sym, model, owner: {})
     f, noted = _analyst_facts(), []
     monkeypatch.setattr(an, "facts", lambda verdict, **rest: noted.append(verdict["stop"]) or f)
     history = _at_exchange_time(orch, monkeypatch, time(11, 0))
@@ -1180,28 +1426,124 @@ def test_analyst_note_falls_back_to_the_computed_note_when_models_are_off(app_cl
     from tests.app.test_nlu_llm import _analyst_facts
     monkeypatch.setenv("STOCKINTEL_ML", "0")
     f = _analyst_facts()
-    monkeypatch.setattr(hubmod.Hub, "ai_forecast", lambda self, sym, model: {})
+    monkeypatch.setattr(hubmod.Hub, "ai_forecast", lambda self, sym, model, owner: {})
     import backend.advisory.analyst as an
     monkeypatch.setattr(an, "facts", lambda *a, **k: f)
     r = app_client.get("/ui/stock/TEST/analyst", headers={"X-API-Key": KEY}).json()
     assert r["written_by"] is None and r["text"] == an.computed_note(f) and "switched off" in r["draft_rejected"][0]
 
 
-def test_the_analyst_note_is_not_shared_between_a_holder_and_a_non_holder(app_client, orch, monkeypatch):
-    """The note quotes the verdict, which says HOLD / ADD to someone who holds the stock and BUY to anyone else."""
+@pytest.fixture
+def note_writer(app_client, orch, monkeypatch):
+    """The fake language model behind the analyst note; "holder" holds TEST and "non-holder" does not."""
     import backend.advisory.analyst as an
     import backend.api.hub as hubmod
     from tests.app.test_nlu_llm import _analyst_facts
     f, writer = _analyst_facts(), _Picker("A draft.")
     monkeypatch.setattr(hubmod.Hub, "ml_enabled", lambda self: True)
     monkeypatch.setattr(hubmod.Hub, "writer", lambda self: writer)
-    monkeypatch.setattr(hubmod.Hub, "ai_forecast", lambda self, sym, model: {})
+    monkeypatch.setattr(hubmod.Hub, "ai_forecast", lambda self, sym, model, owner: {})
     monkeypatch.setattr(an, "facts", lambda **inputs: f)
     orch.save_portfolio("holder", 0.0, "moderate", "medium", [
         {"symbol": "TEST", "side": "BUY", "quantity": 10, "price": 100, "trade_date": "2025-06-02"}])
+    return writer
+
+
+def _note(orch, portfolio, symbol="TEST"):
+    return orch.hub.analyst_note(symbol, orch.session(portfolio, "note"))
+
+
+def test_the_analyst_note_is_not_shared_between_a_holder_and_a_non_holder(orch, note_writer):
+    """The note quotes the verdict, which says HOLD / ADD to someone who holds the stock and BUY to anyone else."""
     for portfolio in ("holder", "non-holder"):
-        orch.hub.analyst_note("TEST", orch.session(portfolio, "note"))
-    assert len(writer.prompts) == 2
+        _note(orch, portfolio)
+    assert len(note_writer.prompts) == 2
+
+
+def test_an_analyst_note_over_the_daily_limit_is_the_computed_note_saying_why(orch, note_writer, monkeypatch):
+    from backend.api import quota
+    monkeypatch.setitem(quota.USER_LIMITS, "lm", 1)
+    _note(orch, "holder", "TEST")
+    over = _note(orch, "holder", "PEER")
+    assert (len(note_writer.prompts), over["written_by"], over["draft_rejected"][0].startswith("You have used your")) == \
+        (1, None, True)
+
+
+def test_a_cached_analyst_note_is_not_charged_again(orch, note_writer):
+    for _ in range(2):
+        _note(orch, "holder")
+    assert orch.usage("holder")["used"] == 1
+
+
+def test_the_all_users_cap_stops_a_second_portfolios_note(orch, note_writer, monkeypatch):
+    from backend.api import quota
+    monkeypatch.setitem(quota.EVERYONE_LIMITS, "lm", 1)
+    notes = [_note(orch, portfolio) for portfolio in ("holder", "non-holder")]
+    assert (len(note_writer.prompts), notes[1]["draft_rejected"][0].startswith("All users together")) == (1, True)
+
+
+def test_a_note_the_writer_could_not_write_is_not_charged(orch, note_writer, monkeypatch):
+    from backend.models.external.llm import LLMUnavailable
+
+    def asleep(system, messages):
+        raise LLMUnavailable("the Space is asleep")
+    monkeypatch.setattr(note_writer, "create", asleep)
+    note = _note(orch, "holder")
+    assert (note["draft_rejected"], orch.usage("holder")["used"]) == (["the Space is asleep"], 0)
+
+
+def test_a_note_asked_while_the_writer_is_busy_is_the_computed_note_saying_so(orch, note_writer, monkeypatch):
+    """Requests queued for the one writer for up to a minute each, and enough of them used up the server's threads."""
+    import threading
+    import backend.api.hub as hubmod
+    writing, release = threading.Event(), threading.Event()
+    draft = note_writer.create
+
+    def slow(system, messages):
+        writing.set()
+        release.wait(5)
+        return draft(system, messages)
+    monkeypatch.setattr(hubmod, "BUSY_WAIT_S", 0.1)
+    monkeypatch.setattr(note_writer, "create", slow)
+    first = threading.Thread(target=_note, args=(orch, "holder"))
+    first.start()
+    writing.wait(5)
+    busy = _note(orch, "non-holder")
+    release.set()
+    first.join()
+    assert busy["draft_rejected"][0].startswith("The writer is busy")
+
+
+@pytest.mark.parametrize("mode", ["narrate", "agent"])
+def test_a_claude_reply_over_the_daily_limit_is_the_computed_answer_saying_why(orch, monkeypatch, mode):
+    from backend.api import quota
+    from .test_nlu_llm import FakeClient, text_resp
+    monkeypatch.setitem(quota.USER_LIMITS, "lm", 0)
+    orch.llm_mode, orch.llm_client = mode, FakeClient([text_resp("unused")])
+    reply = orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "claude")
+    assert (orch.llm_client.calls, "AI answers for today" in reply.text) == ([], True)
+
+
+def test_a_question_routed_over_the_daily_limit_keeps_the_reply_and_says_why(orch, monkeypatch):
+    from backend.api import quota
+    writer = _Picker("market_regime")
+    monkeypatch.setitem(quota.USER_LIMITS, "lm", 0)
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: writer)
+    reply = orch.handle("what is going on out there?", DEFAULT_PORTFOLIO, "route")
+    assert (writer.prompts, reply.data["no_answer"], "AI answers for today" in reply.text) == ([], True, True)
+
+
+def test_the_cli_still_routes_questions_past_the_daily_limit(monkeypatch):
+    """eval_user_questions.py asks the CLI's orchestrator dozens of questions; each one refused past the
+    cap was scored as a wrong handler."""
+    from argparse import Namespace
+    from backend import cli
+    from backend.api import quota
+    orch, writer = cli._orchestrator(Namespace(db=":memory:", demo=True)), _Picker("market_regime")
+    monkeypatch.setitem(quota.USER_LIMITS, "lm", 0)
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: writer)
+    orch.handle("what is going on out there?", DEFAULT_PORTFOLIO, "route")
+    assert len(writer.prompts) == 1
 
 
 def test_an_unrecognised_question_is_routed_by_the_language_model(orch, monkeypatch):

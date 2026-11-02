@@ -28,11 +28,11 @@ def _provider(args):
     return YahooProvider()
 
 
-def _orchestrator(args, llm_mode: str = "off"):
+def _orchestrator(args, llm_mode: str = "off", charges_model_calls: bool = False):
     from backend.api.orchestrator import Orchestrator
     from backend.database.storage import Store
     return Orchestrator(_provider(args), Store(args.db), llm_mode=llm_mode,
-                        use_rss_news=not args.demo)
+                        use_rss_news=not args.demo, charges_model_calls=charges_model_calls)
 
 
 def cmd_analyze(args) -> int:
@@ -43,7 +43,7 @@ def cmd_analyze(args) -> int:
         print(json.dumps(sanitize(a.to_dict()), indent=2))
     elif args.report:
         body = R.render_report(a)
-        orch.store.save_report(a.symbol, body)
+        orch.store.save_report(DEFAULT_PORTFOLIO, a.symbol, body)
         print(body)
     else:
         if args.llm == "narrate":
@@ -373,7 +373,7 @@ def cmd_signals(args) -> int:
              risk_mode=args.risk, n=args.positions, universe=uni, insider_trades=_insider_or_none(),
              measured=performance.momentum_evidence(performance.track_record()))
     p.warnings += split_warnings
-    orch.store.save_plan(sanitize(p.to_dict()))
+    orch.store.save_plan(DEFAULT_PORTFOLIO, sanitize(p.to_dict()))
     print(json.dumps(sanitize(p.to_dict()), indent=2) if args.json else render(p))
     return 0
 
@@ -434,7 +434,7 @@ def cmd_app(args) -> int:
         key_file.parent.mkdir(parents=True, exist_ok=True)
         key_file.write_text(key)
         key_file.chmod(0o600)
-    app = create_app(_orchestrator(args, args.llm), api_key=key, preload=True)
+    app = create_app(_orchestrator(args, args.llm, charges_model_calls=True), api_key=key, preload=True)
     url = f"http://{args.host}:{args.port}/#key={key}"
     print(f"StockIntel is running at {url}\n(the key in the link logs you in; keep it private)")
     if args.lan:
@@ -518,7 +518,7 @@ def cmd_serve(args) -> int:
         logging.getLogger("stockintel.state").setLevel(logging.INFO)
         hfstate.pull(Path(args.db))
         saver = hfstate.Autosave(Path(args.db), hfstate.PUSH_MINUTES).start()
-    app = create_app(_orchestrator(args, args.llm))
+    app = create_app(_orchestrator(args, args.llm, charges_model_calls=True))
     try:
         uvicorn.run(app, host=args.host, port=args.port)
     finally:

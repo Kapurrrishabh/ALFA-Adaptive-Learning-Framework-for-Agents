@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from contextlib import nullcontext
 from datetime import date
 from typing import Any, Dict, List, Optional
 
@@ -19,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 from backend.advisory.calculators import performance
-from backend.config import FORECAST_DAYS
+from backend.config import BUSY_WAIT_S, FORECAST_DAYS
 from backend.database.sources.panel import CACHE_DIR, index_constituents, universe_panel
 from backend.database.sources.provider import DataUnavailable
 from backend.knowledge_base.lessons import knowledge_base
@@ -481,9 +482,9 @@ class Hub:
         return os.environ.get("STOCKINTEL_ML", "1") != "0" and (
             bool(remote_models.space()) or importlib.util.find_spec("torch") is not None)
 
-    def ai_forecast(self, symbol: str, model: str = "chronos") -> Dict[str, Any]:
+    def ai_forecast(self, symbol: str, model: str, owner: str) -> Dict[str, Any]:
         """Chronos quantile fan, Kronos projected candles or ALFA's sampled-path fan, cached for
-        the day, with the model's measured out-of-sample record attached."""
+        the day, with the model's measured out-of-sample record attached. A run on the model Space is charged to `owner`."""
         from backend.models.serving import alfa_fan as alfa_model, gru_line
         from backend.models.external import kronos_model, remote_models, tsfm
         if model not in ("chronos", "kronos", "alfa", "gru"):
@@ -499,25 +500,28 @@ class Hub:
         cache = self.__dict__.setdefault("_ai_cache", {})
         if key not in cache:
             future = lambda n: [str(d.date()) for d in pd.bdate_range(df.index[-1], periods=n + 1)[1:]]
+            paid = model != "gru" and remote_models.on_space(model)
             # its own lock: a model call (or a queued Space) must not block the panel
             with self.__dict__.setdefault("_ai_lock", threading.Lock()):
-                if model == "chronos":
-                    cache[key] = {"dates": future(FORECAST_DAYS),
-                                  **(remote_models.fan if remote_models.on_space("chronos") else tsfm.fan)(df["close"], FORECAST_DAYS)}
-                elif model == "gru":
-                    # aligned as in training: every stock bar kept, so the line starts from the last closed bar
-                    bars = df[["close", "high", "low"]].assign(market=self.bench().reindex(df.index).ffill()).dropna()
-                    if bars.index[-1] != df.index[-1]:
-                        raise DataUnavailable(f"{symbol}'s {df.index[-1].date()} bar has no high, low or Nifty close, so "
-                                              f"the GRU line would start from {bars.index[-1].date()}; retry once it is filled")
-                    cache[key] = {"dates": future(FORECAST_DAYS), **gru_line.line(bars.close.to_numpy(), bars.high.to_numpy(),
-                                                                                bars.low.to_numpy(), bars.market.to_numpy())}
-                elif model == "alfa":
-                    q = (remote_models.alfa_fan(df["close"], alfa_model.STEPS, alfa_model.PATHS) if remote_models.on_space("alfa")
-                         else alfa_model.fan(df["close"]))
-                    cache[key] = {"dates": future(alfa_model.STEPS), **q}
-                else:
-                    cache[key] = (remote_models.next_candles if remote_models.on_space("kronos") else kronos_model.next_candles)(df, pred_len=5, samples=8)
+                if key not in cache:            # written while this request waited
+                    with self.orch.model_call(owner) if paid else nullcontext():
+                        if model == "chronos":
+                            cache[key] = {"dates": future(FORECAST_DAYS),
+                                          **(remote_models.fan if remote_models.on_space("chronos") else tsfm.fan)(df["close"], FORECAST_DAYS)}
+                        elif model == "gru":
+                            # aligned as in training: every stock bar kept, so the line starts from the last closed bar
+                            bars = df[["close", "high", "low"]].assign(market=self.bench().reindex(df.index).ffill()).dropna()
+                            if bars.index[-1] != df.index[-1]:
+                                raise DataUnavailable(f"{symbol}'s {df.index[-1].date()} bar has no high, low or Nifty close, so "
+                                                      f"the GRU line would start from {bars.index[-1].date()}; retry once it is filled")
+                            cache[key] = {"dates": future(FORECAST_DAYS), **gru_line.line(bars.close.to_numpy(), bars.high.to_numpy(),
+                                                                                        bars.low.to_numpy(), bars.market.to_numpy())}
+                        elif model == "alfa":
+                            q = (remote_models.alfa_fan(df["close"], alfa_model.STEPS, alfa_model.PATHS) if remote_models.on_space("alfa")
+                                 else alfa_model.fan(df["close"]))
+                            cache[key] = {"dates": future(alfa_model.STEPS), **q}
+                        else:
+                            cache[key] = (remote_models.next_candles if remote_models.on_space("kronos") else kronos_model.next_candles)(df, pred_len=5, samples=8)
         if model == "gru":
             rec = cache[key]["record"]
             day = next(d for d in rec["test"]["days"] if d["day"] == FORECAST_DAYS)
@@ -586,29 +590,36 @@ class Hub:
         sym = symbol.upper()
         t = self.technical(sym, bars=21, closed=True)
         v = self.verdict(sym, s)
-        return {"symbol": sym, "close": t["close"][-1], "as_of": t["as_of"], "alfa": self.ai_forecast(sym, "alfa"),
-                "gru": self.ai_forecast(sym, "gru"), "band": t["cone"][-1],
+        return {"symbol": sym, "close": t["close"][-1], "as_of": t["as_of"], "alfa": self.ai_forecast(sym, "alfa", s.portfolio),
+                "gru": self.ai_forecast(sym, "gru", s.portfolio), "band": t["cone"][-1],
                 "verdict": {"stop": t["stop"], "rank": v["momentum_rank"], "universe": v["universe_size"],
                             "verdict": v["verdict"]}}
 
     def analyst_note(self, symbol: str, s: Session) -> Dict[str, Any]:
         """Our models' numbers for one stock, written up by the language model and checked (advisory/analyst.py)."""
         from backend.advisory import analyst
+        from backend.api.quota import QuotaExceeded
         from backend.models.external.llm import LLMUnavailable
         inputs = self.analyst_inputs(symbol, s)
         f = analyst.facts(**inputs)
+        computed = lambda why: {"facts": f, "text": analyst.computed_note(f), "written_by": None, "draft_rejected": [why]}
         # the note quotes the verdict, and a holder's (HOLD / ADD) is not everyone else's (BUY)
         key = (inputs["symbol"], inputs["as_of"], inputs["close"], inputs["verdict"]["verdict"])
         cache = self.__dict__.setdefault("_analyst_cache", {})
         if key not in cache:
             if not self.ml_enabled():
-                return {"facts": f, "text": analyst.computed_note(f), "written_by": None,
-                        "draft_rejected": ["the language model is switched off on this server (STOCKINTEL_ML=0 or no torch)"]}
-            with self.__dict__.setdefault("_writer_lock", threading.Lock()):
-                try:
-                    cache[key] = {"facts": f, **analyst.write(f, self.writer())}
-                except LLMUnavailable as exc:
-                    return {"facts": f, "text": analyst.computed_note(f), "written_by": None, "draft_rejected": [str(exc)]}
+                return computed("the language model is switched off on this server (STOCKINTEL_ML=0 or no torch)")
+            lock = self.__dict__.setdefault("_writer_lock", threading.Lock())
+            if not lock.acquire(timeout=BUSY_WAIT_S):
+                return computed("The writer is busy right now with another note. Ask again in a moment.")
+            try:
+                if key not in cache:            # written while this request waited
+                    with self.orch.model_call(s.portfolio):
+                        cache[key] = {"facts": f, **analyst.write(f, self.writer())}
+            except (QuotaExceeded, LLMUnavailable) as exc:
+                return computed(str(exc))
+            finally:
+                lock.release()
         return cache[key]
 
     # --- portfolio builder ---------------------------------------------------------------
