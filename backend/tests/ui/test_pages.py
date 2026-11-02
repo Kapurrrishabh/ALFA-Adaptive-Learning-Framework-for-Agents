@@ -225,6 +225,7 @@ def test_tab_from_the_page_title_reaches_the_sub_nav(browser, base_url):
 
 def tab_to(tab, selector, presses=40):
     """Press Tab, as a keyboard user would, until focus is on an element matching selector."""
+    tab.page.locator(selector).first.wait_for()   # settle() can end before a starved page has drawn it
     for _ in range(presses):
         tab.page.keyboard.press("Tab")
         if tab.page.evaluate("(sel) => document.activeElement.matches(sel)", selector):
