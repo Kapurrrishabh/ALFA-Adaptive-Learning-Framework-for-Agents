@@ -3,11 +3,12 @@ the search box, the theme toggle, the shared dialog, toasts, and error and empty
 or screen reader user gets."""
 import re
 
+import httpx
 import pytest
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="Playwright is not installed: pip install -e '.[dev]'")
 
-from .conftest import KEY  # noqa: E402
+from .conftest import KEY, RUN_REQUESTS  # noqa: E402
 
 pytestmark = pytest.mark.ui
 WIDTHS = [390, 800, 1366]   # provisional: a phone, the nav breakpoint itself, a laptop
@@ -17,7 +18,8 @@ SECTIONS = ["Home", "Markets", "Portfolio", "Ask", "Learn"]
 NO_PAGE = ["nowhere", "stock", "stock/%E0%A4"]
 PAGES = ["home", "explore", "stock/TEST", "search?q=power", "portfolio", "signals", "builder", "chat", "learn",
          "performance", "reports", *NO_PAGE]
-# Chrome logs a failed fetch without its address, so failures are read from the responses; an API 404 is how a missing model shows up
+# Chrome logs a failed fetch without its address, so failures are read from the responses; an API 404 is how a missing model shows up,
+# and a 429 means the run outgrew the test key's rate limit, which otherwise shows only as a click that times out
 UNNAMED_FETCH_ERROR = "Failed to load resource"
 LONG_NAME = "Parag Parikh Flexi Cap Fund Direct Plan Growth"
 EMOJI = re.compile("[\u2600-\u27bf\U0001f300-\U0001faff]")
@@ -35,7 +37,7 @@ class Tab:
         self.page.on("requestfailed", self._ended)
         self.page.on("pageerror", lambda e: self.errors.append(str(e)))
         self.page.on("console", lambda m: self.errors.append(m.text) if m.type == "error" and not m.text.startswith(UNNAMED_FETCH_ERROR) else None)
-        self.page.on("response", lambda r: self.errors.append(f"{r.status} {r.url}") if r.status >= 500 or (r.status >= 400 and "/static/" in r.url) else None)
+        self.page.on("response", lambda r: self.errors.append(f"{r.status} {r.url}") if r.status >= 500 or r.status == 429 or (r.status >= 400 and "/static/" in r.url) else None)
         self.page.goto(f"{base_url}/#key={KEY}")
         self.settle()
 
@@ -73,6 +75,14 @@ def browser():
         b = p.chromium.launch()
         yield b
         b.close()
+
+
+@pytest.fixture(autouse=True)
+def close_tabs(browser):
+    """Close the tabs each test opened: left open, they keep animating and slow every test after them."""
+    yield
+    for context in browser.contexts:
+        context.close()
 
 
 @pytest.fixture(scope="module")
@@ -215,6 +225,7 @@ def test_tab_from_the_page_title_reaches_the_sub_nav(browser, base_url):
 
 def tab_to(tab, selector, presses=40):
     """Press Tab, as a keyboard user would, until focus is on an element matching selector."""
+    tab.page.locator(selector).first.wait_for()   # settle() can end before a starved page has drawn it
     for _ in range(presses):
         tab.page.keyboard.press("Tab")
         if tab.page.evaluate("(sel) => document.activeElement.matches(sel)", selector):
@@ -729,6 +740,12 @@ def test_a_rate_limit_shows_the_servers_words_with_the_limit(browser, base_url):
     assert limit in explore_answered_with(browser, base_url, status=429, json={"detail": limit}).page.inner_text("#view")
 
 
+def test_the_shared_test_key_is_never_refused_in_a_whole_runs_requests(base_url):
+    with httpx.Client(base_url=base_url, headers={"X-API-Key": KEY}) as client:
+        codes = {client.get("/search", params={"q": "TE"}).status_code for _ in range(RUN_REQUESTS)}
+    assert codes == {200}
+
+
 def test_two_toasts_do_not_overlap(browser, base_url):
     tab = Tab(browser, base_url, 1366)
     tab.page.evaluate("() => { toast('Saved to portfolio'); toast('Added to your portfolio'); }")
@@ -741,3 +758,8 @@ def test_toasts_on_a_phone_leave_the_bottom_nav_uncovered(browser, base_url):
     tab.page.evaluate("() => { toast('Saved to portfolio'); toast('Added to your portfolio'); }")
     toasts, nav = tab.page.locator(".toasts").bounding_box(), tab.page.locator("#bnav").bounding_box()
     assert toasts["y"] + toasts["height"] <= nav["y"], (toasts, nav)
+
+
+def test_no_earlier_test_leaves_a_tab_open(browser):
+    # last in the file, so every other test has opened its tabs and ended before this looks
+    assert browser.contexts == []

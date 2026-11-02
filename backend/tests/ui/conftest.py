@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 KEY = "k" * 24
+RUN_REQUESTS = 700   # provisional: keyed requests the pages sent in one full browser run (683 on 2026-11-01, 676 on 2026-11-02); recount when the suite grows
 STOCKS = pd.DataFrame({"symbol": ["TEST", "PEER"], "name": ["Test Industries Ltd.", "Peer Power Ltd."],
                        "sector": ["Industrials", "Energy"], "nifty200": [True, True]})
 
@@ -43,6 +44,7 @@ def track_record(dates):
 def base_url(tmp_path_factory):
     import uvicorn
     import backend.advisory.calculators.performance as perf
+    import backend.api.app as api_mod
     from backend.api.app import create_app
     from backend.api.orchestrator import Orchestrator
     from backend.config import DEFAULT_PORTFOLIO, resolve_symbol
@@ -76,6 +78,7 @@ def base_url(tmp_path_factory):
         mp.setattr(alfa_fan, "WEIGHTS", missing / "alfa.npz")
         mp.setattr(gru_line, "WEIGHTS", missing / "path_gru.npz")
         mp.setattr(insider, "load", no_insider)
+        mp.setattr(api_mod, "RATE_PER_MIN", 20 * RUN_REQUESTS)   # every test shares KEY's one bucket: 10x a run's total, the pages' RUN_REQUESTS and as many again from the test of it
         orch = Orchestrator(provider, Store(":memory:"), use_rss_news=False, charges_model_calls=True)
         orch.save_portfolio(DEFAULT_PORTFOLIO, 0.0, "moderate", "medium", [{"symbol": "TEST", "side": "BUY", "quantity": 10,
                                                          "price": float(prices["close"].iloc[-120]), "trade_date": str(prices.index[-120].date())}])
