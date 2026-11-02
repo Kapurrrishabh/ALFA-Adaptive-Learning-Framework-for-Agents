@@ -153,25 +153,47 @@ def _ask(writer, system, content):
 
 
 def _unentailed(text, chunks, entails):
-    """Why `text` says something no source entails, sentence by sentence, or nothing when every sentence is entailed."""
+    """Why `text` says something no source entails, sentence by sentence, or nothing when every sentence is entailed. A
+    sentence naming its sources must be entailed by theirs: "(Economic Times, 28 Oct 2026)" passed on a Mint report."""
     # Only a bracket naming the passages' own sources is left out: kept on its sentence, "(Mint, 6 Oct 2026)" failed 3 of
     # 21 faithful replies. Any other is read without its brackets, which the model takes as an aside: "The Nifty fell
     # (over 500 points)" scored 0.91 for passages where the Sensex fell by them, and 0.07 written without the brackets.
     sources = [chunk.text for chunk in chunks]
-    cited = {_citation(chunk) for chunk in chunks}
-    kept = lambda bracket: "" if all(part.strip() in cited for part in bracket.group(1).split(";")) \
-        else f" {bracket.group(1)}"
-    claims = [claim for claim in (BRACKETED.sub(kept, part).strip() for part in sentences(text))
-              if re.search(r"\w", claim)]
+    cited = {}
+    for chunk in chunks:
+        cited.setdefault(_citation(chunk), []).append(chunk.text)
+    cited.pop("", None)
+    kept = lambda bracket: "" if _named(bracket.group(1), cited) else f" {bracket.group(1)}"
+    claims = []
+    for part in sentences(text):
+        claim = BRACKETED.sub(kept, part).strip()
+        named = [source for bracket in BRACKETED.findall(part) for source in _named(bracket, cited)]
+        if re.search(r"\w", claim):
+            claims.append((claim, named))
+        elif claims:
+            claims[-1][1].extend(named)
     if not claims:
         return ["it states nothing a passage could support"]
     # the passages' sentences first: short, they entail most true claims, and whole passages took three times as long
-    for premises in ([part for source in sources for part in sentences(source)], sources + [" ".join(sources)]):
-        premises = list(dict.fromkeys(premises))
-        scores = entails([(premise, claim) for claim in claims for premise in premises])
-        claims = [claim for at, claim in enumerate(claims)
-                  if max(scores[at * len(premises):(at + 1) * len(premises)]) < ENTAILED]
-    return [f"no passage says “{claim}”" for claim in claims]
+    for whole in (False, True):
+        read = [(claim, named, _premises([said for source in named for said in cited[source]] or sources, whole))
+                for claim, named in claims]
+        scores = iter(entails([(premise, claim) for claim, _, premises in read for premise in premises]))
+        claims = [(claim, named) for claim, named, premises in read if max(next(scores) for _ in premises) < ENTAILED]
+    return [f"{'; '.join(named)} does not say “{claim}”" if named else f"no passage says “{claim}”"
+            for claim, named in claims]
+
+
+def _named(bracket, cited):
+    """The sources a bracket names, when each of its parts is one: "Mint, 6 Oct 2026; ET, 7 Oct 2026"."""
+    parts = [part.strip() for part in bracket.split(";")]
+    return parts if all(part in cited for part in parts) else []
+
+
+def _premises(texts, whole):
+    """The passages whole and joined, or their sentences, each once."""
+    return list(dict.fromkeys(texts + [" ".join(texts)] if whole else
+                              [part for said in texts for part in sentences(said)]))
 
 
 def _denials(question, text):

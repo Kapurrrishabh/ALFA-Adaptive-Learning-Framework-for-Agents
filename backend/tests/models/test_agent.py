@@ -1149,7 +1149,7 @@ def test_a_passages_figure_in_brackets_after_another_subject_is_read_with_its_se
                            entails=tied)
     turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
     assert turn.served == phrase.recent_plain(None, None, [fell])
-    assert "no passage says “Refinery stocks fell 3% after the RBI hike.”" in turn.unphrased_because
+    assert "ET, 7 Oct 2026 does not say “Refinery stocks fell 3% after the RBI hike.”" in turn.unphrased_because
 
 
 def test_a_figure_the_reply_ties_to_another_name_than_its_passage_does_serves_the_plain_answer(market, router):
@@ -1173,6 +1173,27 @@ def test_a_reply_that_only_denies_the_question_serves_the_plain_answer(market, r
 def test_a_denial_that_goes_on_to_report_the_passages_is_left_to_the_entailment_model(market, router):
     reply = "Refinery stocks are not falling; Reliance Industries commissioned its new refinery unit (Mint, 6 Oct 2026)."
     turn = agent(market, router, reference=news_reference(FakeWriter(reply))).answer(ASKED_YES_NO)
+    assert turn.served == reply and turn.phrased_by == "test-lm"
+
+
+STEEL = Chunk("ET, 7 Oct 2026: Refinery stocks fell as Tata Steel shares fell 3%.", [], "https://n.test/steel", "2026-10-07")
+
+
+@pytest.mark.parametrize("reply", ["Reliance Industries commissioned its new refinery unit (ET, 7 Oct 2026).",
+                                   "Reliance Industries commissioned its new refinery unit. (ET, 7 Oct 2026)"])
+def test_a_sentence_citing_a_source_that_does_not_say_it_serves_the_plain_answer(market, router, reply):
+    """"Wipro shares dropped 3% after a guidance cut (Economic Times, 28 Oct 2026)." passed: Mint had reported it."""
+    from backend.models.agent import phrase
+    built = news_reference(FakeWriter(reply), news=(NEWS, STEEL), entails=literal)
+    turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
+    assert turn.served == phrase.recent_plain(None, None, [NEWS, STEEL])
+    assert "ET, 7 Oct 2026 does not say “Reliance Industries commissioned its new refinery unit.”" in turn.unphrased_because
+
+
+def test_a_sentence_citing_the_source_that_says_it_is_served(market, router):
+    reply = "Reliance Industries commissioned its new refinery unit (Mint, 6 Oct 2026)."
+    turn = agent(market, router, reference=news_reference(FakeWriter(reply), news=(NEWS, STEEL), entails=literal)).answer(
+        ASKED_YES_NO)
     assert turn.served == reply and turn.phrased_by == "test-lm"
 
 
