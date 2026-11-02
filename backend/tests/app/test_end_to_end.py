@@ -24,6 +24,7 @@ from .test_funds import NAV_TEXT, growing, mfapi_json
 from .test_nlu_llm import _Picker
 
 ORACLE = Path(__file__).resolve().parents[3] / "deploy" / "oracle"
+SERVE_NEEDS = ["STOCKINTEL_AUTH_SECRET", "STOCKINTEL_PUBLIC_URL"]
 OTHER = "ravi@example.com"
 UNAUTHORIZED = (401, {"detail": "Unauthorized"})    # fastapi-users' own refusal, not a 401 of ours
 
@@ -339,7 +340,7 @@ def test_alert_explains_why_it_fired(service):
     assert alert is not None and any("classification changed" in r for r in alert.reasons)
 
 
-@pytest.mark.parametrize("missing", ["STOCKINTEL_AUTH_SECRET", "STOCKINTEL_PUBLIC_URL"])
+@pytest.mark.parametrize("missing", SERVE_NEEDS)
 def test_serve_will_not_start_without_its_sign_in_settings(monkeypatch, tmp_path, missing):
     import argparse
     import uvicorn
@@ -690,6 +691,47 @@ def test_the_oracle_host_opens_only_https_to_the_internet():
     compose = yaml.safe_load((ORACLE / "compose.yaml").read_text())
     assert [p for s in compose["services"].values() for p in s.get("ports", [])] == ["443:443"]
     assert re.findall(r"^for port in (.*); do$", (ORACLE / "setup.sh").read_text(), re.M) == ["443"]
+
+
+def oracle_services(file="compose.yaml"):
+    return yaml.safe_load((ORACLE / file).read_text())["services"]
+
+
+def test_the_app_trusts_a_forwarded_caller_address_only_from_caddy():
+    services = oracle_services()
+    assert services["app"]["environment"]["FORWARDED_ALLOW_IPS"] == services["caddy"]["networks"]["edge"]["ipv4_address"]
+
+
+def test_caddy_cannot_reach_the_agent():
+    services = oracle_services()
+    assert set(services["caddy"]["networks"]) & set(services["agent"]["networks"]) == set()
+
+
+def test_only_the_app_gets_the_sign_in_secrets():
+    assert [name for name, s in oracle_services().items() if "auth.env" in s.get("env_file", [])] == ["app"]
+
+
+def test_setup_no_longer_makes_or_prints_the_shared_key():
+    setup = (ORACLE / "setup.sh").read_text()
+    assert ("#key=" in setup, "STOCKINTEL_API_KEY" in setup) == (False, False)
+
+
+def test_caddy_caps_the_request_body_size():
+    assert re.search(r"request_body \{\s*max_size \d+MB\s*\}", (ORACLE / "Caddyfile").read_text())
+
+
+def test_the_gate_check_boot_neither_restores_nor_saves_the_real_state():
+    assert oracle_services("gatecheck.yaml")["app"]["environment"]["STOCKINTEL_STATE_REPO"] == ""
+
+
+def test_the_gate_check_boot_opens_a_database_other_than_the_real_one():
+    real = re.search(r"STOCKINTEL_DB=(\S+)", (ORACLE.parents[1] / "Dockerfile").read_text())[1]
+    assert oracle_services("gatecheck.yaml")["app"]["environment"]["STOCKINTEL_DB"] not in (real, "")
+
+
+def test_render_asks_for_every_setting_serve_will_not_start_without():
+    render = yaml.safe_load((ORACLE.parents[1] / "render.yaml").read_text())
+    assert set(SERVE_NEEDS) - {v["key"] for v in render["services"][0]["envVars"]} == set()
 
 
 def test_api_analysis_and_domain_endpoints(orch, accounts):

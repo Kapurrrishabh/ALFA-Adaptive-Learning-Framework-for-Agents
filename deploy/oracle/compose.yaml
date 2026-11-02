@@ -1,6 +1,6 @@
 # The whole app on one Oracle Cloud Always Free VM (Ampere A1: 4 cores, 24 GB). Everything runs here except
 # the language model, which stays on the ZeroGPU Space: these cores lack fast 16-bit maths, and it writes
-# an answer in about 6 s there. Start with `docker compose up -d --build` after setup.sh has written .env.
+# an answer in about 6 s there. Start with `docker compose up -d --build` after setup.sh has written .env and auth.env.
 name: alfa
 
 x-alfa: &alfa
@@ -14,11 +14,19 @@ services:
   app:
     <<: *alfa
     build: {context: ../.., args: {EXTRAS: "ml,cloud,collect"}}
-    environment: {SELFAGENT_URL: "http://agent:8010"}
+    env_file: [.env, auth.env]
+    environment:
+      SELFAGENT_URL: "http://agent:8010"
+      STOCKINTEL_PUBLIC_URL: "https://${DOMAIN}"
+      FORWARDED_ALLOW_IPS: "172.30.0.10"      # caddy's address below: only its X-Forwarded-For names the caller
+    # PROVISIONAL 512 MB: keeps uploads in memory, and the state backup is built here too (94 MB on a dev copy)
+    tmpfs: ["/tmp:size=512m"]
+    networks: [edge, agentnet]
     command: ["stockintel", "serve", "--host", "0.0.0.0", "--port", "8000"]
 
   agent:
     <<: *alfa
+    networks: [agentnet]            # its own /auth/register is open, so caddy must not reach it
     command: ["sh", "-c", "python -m backend.models.serving.weights agent && exec python -m backend.models.agent.run.serve --host 0.0.0.0 --port 8010 --live --phrase --dense --router pretrained"]
 
   news:
@@ -34,7 +42,13 @@ services:
     ports: ["443:443"]
     environment: {DOMAIN: "${DOMAIN}"}
     volumes: [./Caddyfile:/etc/caddy/Caddyfile:ro, caddy:/data]
+    networks: {edge: {ipv4_address: 172.30.0.10}}
     restart: unless-stopped
+
+networks:
+  edge:
+    ipam: {config: [{subnet: 172.30.0.0/24}]}
+  agentnet: {}
 
 volumes:
   data: {}
