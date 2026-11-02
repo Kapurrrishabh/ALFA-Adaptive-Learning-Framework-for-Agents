@@ -88,13 +88,15 @@ def unbound_figures(answer, passages):
 
 
 def _spellings(run, alias):
-    """A name's spellings, without the everyday words and months a capital can start: "The Sensex" is "Sensex"."""
+    """A name's spellings, without the everyday words and months a capital can start: "The Sensex" is "Sensex". A name of
+    three words or more is also spelt by its initials: "Reserve Bank of India" is "RBI"."""
     words = run.split()
     while words and _everyday(words[0]):
         words.pop(0)
     while words and _everyday(words[-1]):
         words.pop()
-    return tuple(filter(None, [" ".join(words), alias]))
+    initials = "".join(word[0] for word in words if word != "of")
+    return tuple(filter(None, [" ".join(words), alias, initials if len(initials) > 2 else ""]))
 
 
 def _everyday(word):

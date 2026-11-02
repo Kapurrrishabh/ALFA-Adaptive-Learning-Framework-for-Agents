@@ -102,11 +102,13 @@ def test_a_figure_tied_to_the_name_its_passage_gives_it_is_bound(answer):
     assert guardrails.unbound_figures(answer, NIFTY_AND_TCS) == []
 
 
-def test_a_name_with_its_short_form_in_brackets_is_bound_by_either_spelling():
+@pytest.mark.parametrize("answer", ["The Reserve Bank of India (RBI) raised the repo rate to 5.5%.",
+                                    "The Reserve Bank of India raised the repo rate to 5.5%."])
+def test_a_name_written_out_is_bound_by_its_short_form(answer):
     """"The Reserve Bank of India (RBI) ... 5.5%" was refused for a passage that gave 5.5% under "RBI" alone."""
     passages = ["Mint, 7 Oct 2026: RBI hikes the repo rate by 25 bps to 5.5%.",
                 "NDTV Profit, 7 Oct 2026: The Reserve Bank of India raised its growth forecast."]
-    assert guardrails.unbound_figures("The Reserve Bank of India (RBI) raised the repo rate to 5.5%.", passages) == []
+    assert guardrails.unbound_figures(answer, passages) == []
 
 
 def test_screen_swaps_in_the_refusal_and_reports_why():
