@@ -11,7 +11,7 @@ import pytest
 
 from tests.app.conftest import EMAIL, PASSWORD, SECRET, FakeGoogle, Outbox
 
-RUN_REQUESTS = 700   # provisional: signed-in requests the pages sent in one full browser run (683 on 2026-11-01, 676 on 2026-11-02); recount when the suite grows
+RUN_REQUESTS = 700   # provisional: signed-in requests the pages sent in one full browser run (683 on 2026-11-01, 676 on 2026-11-02, 665 with 360 px added); recount when the suite grows
 STOCKS = pd.DataFrame({"symbol": ["TEST", "PEER"], "name": ["Test Industries Ltd.", "Peer Power Ltd."],
                        "sector": ["Industrials", "Energy"], "nifty200": [True, True]})
 
@@ -58,7 +58,7 @@ def outbox():
 def base_url(tmp_path_factory, outbox):
     import uvicorn
     import backend.advisory.calculators.performance as perf
-    import backend.api.app as app_module
+    import backend.api.app as api_mod
     from backend.api.accounts import Accounts, owner_of
     from backend.api.app import create_app
     from backend.api.orchestrator import Orchestrator
@@ -93,9 +93,10 @@ def base_url(tmp_path_factory, outbox):
         mp.setattr(alfa_fan, "WEIGHTS", missing / "alfa.npz")
         mp.setattr(gru_line, "WEIGHTS", missing / "path_gru.npz")
         mp.setattr(insider, "load", no_insider)
+        mp.setattr(api_mod, "RATE_PER_MIN", 20 * RUN_REQUESTS)   # every tab signs in as one user, so all share its one bucket: 10x a run's requests
         # every browser tab signs in as the same user, and all of them from 127.0.0.1
-        mp.setattr(app_module, "SIGN_INS_PER_MIN", 10_000)
-        mp.setattr(app_module, "EMAIL_TRIES", 10_000)
+        mp.setattr(api_mod, "SIGN_INS_PER_MIN", 10_000)
+        mp.setattr(api_mod, "EMAIL_TRIES", 10_000)
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         url = f"http://127.0.0.1:{sock.getsockname()[1]}"
@@ -103,7 +104,6 @@ def base_url(tmp_path_factory, outbox):
         # in another thread: Playwright's sync API runs an event loop here, and create_user starts its own
         with ThreadPoolExecutor(1) as pool:
             user = pool.submit(accounts.create_user, EMAIL, PASSWORD, verified=True).result()
-        mp.setattr(app_module, "RATE_PER_MIN", 20 * RUN_REQUESTS)   # every test shares one user's bucket: 10x a run's total, the pages' RUN_REQUESTS and as many again from the test of it
         orch = Orchestrator(provider, Store(":memory:"), use_rss_news=False, charges_model_calls=True)
         orch.save_portfolio(owner_of(user), 0.0, "moderate", "medium", [{"symbol": "TEST", "side": "BUY", "quantity": 10,
                                                          "price": float(prices["close"].iloc[-120]), "trade_date": str(prices.index[-120].date())}])
