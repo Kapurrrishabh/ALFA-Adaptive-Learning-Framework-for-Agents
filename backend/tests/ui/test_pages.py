@@ -77,6 +77,14 @@ def browser():
         b.close()
 
 
+@pytest.fixture(autouse=True)
+def close_tabs(browser):
+    """Close the tabs each test opened: left open, they keep animating and slow every test after them."""
+    yield
+    for context in browser.contexts:
+        context.close()
+
+
 @pytest.fixture(scope="module")
 def visits(browser, base_url):
     """What each page showed at each width: its h1 texts, the errors it logged, whether it scrolled sideways,
@@ -749,3 +757,8 @@ def test_toasts_on_a_phone_leave_the_bottom_nav_uncovered(browser, base_url):
     tab.page.evaluate("() => { toast('Saved to portfolio'); toast('Added to your portfolio'); }")
     toasts, nav = tab.page.locator(".toasts").bounding_box(), tab.page.locator("#bnav").bounding_box()
     assert toasts["y"] + toasts["height"] <= nav["y"], (toasts, nav)
+
+
+def test_no_earlier_test_leaves_a_tab_open(browser):
+    # last in the file, so every other test has opened its tabs and ended before this looks
+    assert browser.contexts == []
