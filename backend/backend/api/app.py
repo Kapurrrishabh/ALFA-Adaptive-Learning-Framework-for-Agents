@@ -115,6 +115,7 @@ class BuilderHolding(BaseModel):
 
 class BuilderApplyIn(BaseModel):
     holdings: List[BuilderHolding] = Field(min_length=1, max_length=30)
+    paid_from_cash: bool       # true takes the cost off the stored cash in the same save, so it is not counted twice
 
 
 class WhatIfIn(BaseModel):
@@ -192,7 +193,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     def session(owner: str):
         return orch.session(owner, "api")
 
-    def set_up_portfolio(owner: str) -> Dict[str, Any]:
+    def require_set_up_portfolio(owner: str) -> Dict[str, Any]:
         """No row means the user has not answered the setup questions, and there is no default to guess them."""
         p = orch.store.portfolio(owner)
         if p is None:
@@ -340,11 +341,16 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     @app.post("/ui/builder/apply")
     def ui_builder_apply(body: BuilderApplyIn, owner: str = Depends(auth)):
         with orch.portfolio_lock(owner):
-            p = set_up_portfolio(owner)
+            p = require_set_up_portfolio(owner)
             today = date.today().isoformat()
             txs = p["transactions"] + [{"symbol": h.symbol, "side": "BUY", "quantity": h.shares, "price": h.price,
                                         "trade_date": today} for h in body.holdings]
-            n = orch.save_portfolio(owner, p["cash"], p["risk_profile"], p["horizon"], txs)
+            cost = sum(h.shares * h.price for h in body.holdings)
+            cash = round(p["cash"] - cost, 2) if body.paid_from_cash else p["cash"]
+            if cash < 0:
+                raise HTTPException(400, f"These stocks cost ₹{cost:,.2f}, more than your ₹{p['cash']:,.2f} of cash. "
+                                         "Check the prices you typed, or raise your cash first.")
+            n = orch.save_portfolio(owner, cash, p["risk_profile"], p["horizon"], txs)
         return {"status": "saved", "transactions": n}
 
     @app.get("/ui/agent/status", dependencies=[Depends(auth)])
@@ -379,7 +385,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     @app.post("/portfolio/transactions")
     def add_transaction(tx: TransactionIn, owner: str = Depends(auth)):
         with orch.portfolio_lock(owner):
-            p = set_up_portfolio(owner)
+            p = require_set_up_portfolio(owner)
             txs = p["transactions"] + [{**tx.model_dump(), "trade_date": tx.trade_date.isoformat()}]
             n = orch.save_portfolio(owner, p["cash"], p["risk_profile"], p["horizon"], txs)
         return {"status": "saved", "transactions": n}

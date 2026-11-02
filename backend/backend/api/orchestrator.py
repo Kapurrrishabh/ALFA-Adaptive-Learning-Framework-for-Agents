@@ -196,7 +196,9 @@ class Orchestrator:
         """Validate (FIFO, no oversells) before anything is written."""
         if risk_profile not in RISK_PROFILES:
             raise ValueError(f"risk_profile must be one of {list(RISK_PROFILES)}, got {risk_profile!r}")
-        if len(transactions) > MAX_TRANSACTIONS:
+        stored = self.store.portfolio(portfolio)
+        # Only a save that grows the list is refused, so a portfolio already over the cap can still shrink
+        if len(transactions) > max(MAX_TRANSACTIONS, len(stored["transactions"]) if stored else 0):
             raise ValueError(f"A portfolio holds at most {MAX_TRANSACTIONS} transactions, and this would make "
                              f"{len(transactions)}. Delete ones you no longer need, then try again.")
         txs = [Transaction(**{k: t[k] for k in ("symbol", "side", "quantity", "price", "trade_date")},
@@ -204,9 +206,10 @@ class Orchestrator:
         build_positions(txs)
         self.store.save_portfolio(portfolio, cash, risk_profile, horizon,
                                   [t.__dict__ for t in txs])
-        with self._caches_guard:        # open chats take the new answers, or a chat begun before setup ignores them
-            for s in [s for key, s in self.sessions.items() if key[0] == portfolio]:
-                s.risk_profile, s.horizon = risk_profile, horizon
+        if stored is None or (stored["risk_profile"], stored["horizon"]) != (risk_profile, horizon):
+            with self._caches_guard:    # open chats take changed answers, or a chat begun before setup ignores them
+                for s in [s for key, s in self.sessions.items() if key[0] == portfolio]:
+                    s.risk_profile, s.horizon = risk_profile, horizon
         return len(txs)
 
     def holdings(self, portfolio: str) -> Tuple[Dict[str, Position], float, Dict[str, Any]]:

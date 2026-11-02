@@ -958,7 +958,8 @@ def test_cash_without_every_setup_answer_is_refused(orch, accounts, missing):
 
 @pytest.mark.parametrize("path, body", [
     ("/portfolio/transactions", {"symbol": "TEST", "side": "BUY", "quantity": 3, "price": 100, "trade_date": "2025-01-02"}),
-    ("/ui/builder/apply", {"holdings": [{"symbol": "TEST", "shares": 3, "price": 100}]})], ids=["add", "builder"])
+    ("/ui/builder/apply", {"holdings": [{"symbol": "TEST", "shares": 3, "price": 100}], "paid_from_cash": False})],
+    ids=["add", "builder"])
 def test_adding_stocks_before_setup_says_to_set_up_first(app_client, path, body):
     r = app_client.post(path, json=body)
     assert (r.status_code, r.json()["detail"]) == (400, NOT_SET_UP)
@@ -1004,6 +1005,49 @@ def test_a_save_past_the_transaction_cap_is_refused(app_client, monkeypatch):
     tx = {"symbol": "TEST", "side": "BUY", "quantity": 3, "price": 100, "trade_date": "2025-01-02"}
     codes = [app_client.post("/portfolio/transactions", json=tx).status_code for _ in range(2)]
     assert codes == [200, 400]
+    assert app_client.post("/portfolio/transactions", json=tx).json()["detail"].startswith(
+        "A portfolio holds at most 1 transactions, and this would make 2.")
+
+
+def test_a_portfolio_over_a_lowered_cap_can_still_delete(app_client, monkeypatch):
+    import backend.api.orchestrator as orch_mod
+    set_up(app_client)
+    tx = {"symbol": "TEST", "side": "BUY", "quantity": 3, "price": 100, "trade_date": "2025-01-02"}
+    for _ in range(3):
+        app_client.post("/portfolio/transactions", json=tx)
+    monkeypatch.setattr(orch_mod, "MAX_TRANSACTIONS", 1)
+    assert app_client.delete("/portfolio/transactions/0").status_code == 200
+
+
+def test_a_basket_paid_from_cash_takes_its_cost_off_the_stored_cash(app_client, orch, accounts):
+    set_up(app_client, 10000)
+    body = {"holdings": [{"symbol": "TEST", "shares": 3, "price": 100.5}, {"symbol": "PEER", "shares": 2, "price": 40}],
+            "paid_from_cash": True}
+    assert app_client.post("/ui/builder/apply", json=body).status_code == 200
+    assert orch.store.portfolio(owner(accounts))["cash"] == pytest.approx(10000 - 3 * 100.5 - 2 * 40)
+
+
+def test_a_basket_costing_more_than_the_cash_is_refused_and_nothing_is_saved(app_client, orch, accounts):
+    set_up(app_client, 250)
+    body = {"holdings": [{"symbol": "TEST", "shares": 3, "price": 100}], "paid_from_cash": True}
+    r = app_client.post("/ui/builder/apply", json=body)
+    stored = orch.store.portfolio(owner(accounts))
+    assert (r.status_code, r.json()["detail"], stored["cash"], stored["transactions"]) == (
+        400, "These stocks cost ₹300.00, more than your ₹250.00 of cash. Check the prices you typed, or raise your "
+             "cash first.", 250, [])
+
+
+def test_a_basket_must_say_whether_it_was_paid_from_cash(app_client):
+    set_up(app_client, 1000)
+    body = {"holdings": [{"symbol": "TEST", "shares": 3, "price": 100}]}
+    assert app_client.post("/ui/builder/apply", json=body).status_code == 422
+
+
+def test_a_risk_level_said_in_chat_outlives_a_save_that_keeps_the_stored_answers(orch):
+    orch.save_portfolio(DEFAULT_PORTFOLIO, 100000.0, "conservative", "medium", [])
+    orch.handle("I'm aggressive", DEFAULT_PORTFOLIO, "c")
+    orch.save_portfolio(DEFAULT_PORTFOLIO, 500.0, "conservative", "medium", [])
+    assert orch.session(DEFAULT_PORTFOLIO, "c").risk_profile == "aggressive"
 
 
 def test_ui_technical_chart_carries_geometry_markers_cone_and_records(app_client):
@@ -1182,7 +1226,8 @@ def test_builder_spends_within_capital_and_apply_records_the_buys(app_client, or
     assert b["holdings"] and b["cash_left"] >= 0
     assert sum(x["value"] for x in b["holdings"]) + b["cash_left"] == pytest.approx(100000, abs=0.01)
     assert len(b["backcast"]["dates"]) == len(b["backcast"]["basket"]) == len(b["backcast"]["nifty"])
-    body = {"holdings": [{"symbol": x["symbol"], "shares": x["shares"], "price": x["price"]} for x in b["holdings"]]}
+    body = {"holdings": [{"symbol": x["symbol"], "shares": x["shares"], "price": x["price"]} for x in b["holdings"]],
+            "paid_from_cash": False}
     assert app_client.post("/ui/builder/apply", json=body).status_code == 200
     txs = orch.store.portfolio(owner(accounts))["transactions"]
     assert [t["symbol"] for t in txs] == [x["symbol"] for x in b["holdings"]]

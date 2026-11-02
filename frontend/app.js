@@ -1085,6 +1085,8 @@ async function pageSignals(view, ctx) {
   const cap = h("input", { type: "number", min: "0", value: localStorage.getItem("si-cap") || "100000", style: "width:150px" });
   const strat = h("select", {}, h("option", { value: "momentum" }, "Momentum (NSE method)"), h("option", { value: "lowvol" }, "Low volatility"), h("option", { value: "blend" }, "Blend 50/50"));
   const risk = h("select", {}, h("option", { value: "balanced" }, "Balanced"), h("option", { value: "full" }, "Full exposure"), h("option", { value: "defensive" }, "Defensive (trend + vol)"));
+  const [mine, profiles] = await Promise.all([portfolioOrNone(ctx), api("/ui/profiles", { signal: ctx.signal })]);
+  if (mine) risk.value = profiles.risk[mine.risk_profile].mode;
   const out = h("div", { class: "grid", style: "margin-top:18px" });
   const run = async () => {
     localStorage.setItem("si-cap", cap.value);
@@ -1308,7 +1310,7 @@ async function pageBuilder(view, ctx) {
     if (!b.holdings.length) { out.replaceChildren(EmptyState("layers", "No stock to buy with these settings", null, null), warn || ""); return; }
     const r = b.risk, maxW = Math.max(...b.holdings.map((x) => x.weight_pct));
     const apply = () => Dialog(ctx, "Add these stocks to your portfolio?", `This adds ${b.holdings.length} BUY transactions dated today. Do this after you have actually bought them.`, ["Add to portfolio", async () => {
-      await api("/ui/builder/apply", { method: "POST", body: JSON.stringify({ holdings: b.holdings.map((x) => ({ symbol: x.symbol, shares: x.shares, price: x.price })) }) });
+      await api("/ui/builder/apply", { method: "POST", body: JSON.stringify({ holdings: b.holdings.map((x) => ({ symbol: x.symbol, shares: x.shares, price: x.price })), paid_from_cash: false }) });
       toast("Added to your portfolio"); location.hash = "#/portfolio"; }]);
     const kpi = (k, v, sub, c = "") => h("div", { class: "stat kpi" }, h("div", { class: "k" }, k), h("div", { class: `v num ${c}` }, v), h("div", { class: "muted", style: "font-size:12px" }, sub));
     const kpis = h("div", { class: "card" }, h("div", { class: "grid cols-4" }, kpi("Invested", inr(b.capital - b.cash_left, 0), `${b.holdings.length} stocks`), kpi("Cash left", inr(b.cash_left, 0), `plan invests ${Math.round(b.invest_fraction * 100)}% now`),

@@ -770,3 +770,13 @@ def test_each_risk_card_states_the_limits_the_profiles_route_gives(browser, base
     said = [f"No single stock above {r['max_position_pct']:.0f}% of your money, and no sector above {r['max_sector_pct']:.0f}%."
             for r in risk]
     assert [s in card for s, card in zip(said, cards)] == [True] * len(said) and len(cards) == len(said)
+
+
+def test_the_plan_page_starts_on_the_risk_mode_of_the_stored_risk_level(browser, base_url):
+    tab = Tab(browser, base_url, 1366)
+    tab.page.route("**/portfolio", lambda route: route.fulfill(response=(r := route.fetch()), json={**r.json(), "risk_profile": "conservative"}))
+    tab.go("#/signals")
+    mode = tab.context.request.get(f"{base_url}/ui/profiles").json()["risk"]["conservative"]["mode"]
+    chosen = tab.page.get_by_label("Risk").input_value()
+    tab.context.close()
+    assert chosen == mode != "balanced"

@@ -46,12 +46,12 @@ async function starterBasket(host, ctx, p, profiles) {
     e.preventDefault(); problem.textContent = "";
     if (prices.some((input) => !(Number(input.value) > 0))) { problem.textContent = "Type the price you paid for each stock."; return; }
     add.disabled = true;
-    try { await api("/ui/builder/apply", { method: "POST", body: JSON.stringify({ holdings: b.holdings.map((x, i) => ({ symbol: x.symbol, shares: x.shares, price: Number(prices[i].value) })) }) }); }
+    try { await api("/ui/builder/apply", { method: "POST", body: JSON.stringify({ holdings: b.holdings.map((x, i) => ({ symbol: x.symbol, shares: x.shares, price: Number(prices[i].value) })), paid_from_cash: true }) }); }
     catch (err) { add.disabled = false; problem.textContent = errorWords(err); return; }
     if (ctx.live()) location.hash = "#/welcome?step=3";
   } },
     h("h3", {}, "Your starter basket"),
-    h("p", {}, `Buy these in your broker app, then come back. Change each price to the one you paid, so your portfolio holds what you really bought.`),
+    h("p", {}, `Buy these in your broker app, then come back. Change each price to the one you paid, so your portfolio holds what you really bought. What they cost comes off your cash.`),
     ...b.holdings.map((x, i) => Field(`${x.name}: ${x.shares} shares, price paid per share (₹)`, prices[i])),
     b.warnings.length ? h("ul", { class: "checks con" }, ...b.warnings.map((w) => h("li", {}, w))) : null, problem, h("div", { class: "row" }, add)));
 }
@@ -108,7 +108,7 @@ async function homeSummary(view, ctx) {
   const failed = (slot) => (e) => slot.replaceChildren(h("span", { class: "muted" }, errorWords(e)));
   if (p.transactions.length) {
     api("/portfolio/analysis", { signal: ctx.signal }).then((rep) => stats.replaceChildren(stat("Value", inr(rep.total_value, 0)),
-      stat("Total gain", `${inr(rep.unrealized_pl, 0)} (${pct(rep.unrealized_pl_pct)})`, cls(rep.unrealized_pl)),
+      stat("Gain on what you hold", `${inr(rep.unrealized_pl, 0)} (${pct(rep.unrealized_pl_pct)})`, cls(rep.unrealized_pl)),
       stat("Last 5 sessions", `${inr(rep.week_change.total_change_value, 0)} (${pct(rep.week_change.total_change_pct)})`, cls(rep.week_change.total_change_value)),
       stat("Cash", inr(rep.cash, 0)))).catch(failed(stats));
   } else {
