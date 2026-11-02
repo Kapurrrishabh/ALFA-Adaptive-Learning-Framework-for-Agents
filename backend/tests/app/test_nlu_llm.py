@@ -386,6 +386,9 @@ def test_the_reference_answers_the_questions_the_app_offers(question, title):
     ("why can't you predict prices", "Why the system does not predict exact prices"),
     ("how do i figure out p/e ratio", "P/E ratio (price to earnings)"),
     ("volatility in both directions", "Volatility"),
+    ("volatility and turbulent markets", "Volatility"),
+    ("is this firm overvalued on p/e", "P/E ratio (price to earnings)"),
+    ("what tax do I pay on shares I sold", "Taxes on listed equity (verify current rules)"),
     ("what is a stop loss order", "Stop-loss"),          # a hyphenated heading word is named by its parts
 ])
 def test_the_agents_one_lesson_is_the_one_the_question_names(question, title):
