@@ -442,6 +442,19 @@ def test_theme_toggle_sends_no_request(browser, base_url):
     assert tab.requests[sent:] == []
 
 
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_the_system_theme_is_in_place_before_the_app_script_runs(browser, base_url, scheme):
+    tab = Tab(browser, base_url, 1366, color_scheme=scheme, service_workers="block")
+
+    def note_the_theme_first(route):
+        script = route.fetch()
+        route.fulfill(response=script, body="window.themeAtStart = document.documentElement.dataset.theme;\n" + script.text())
+    tab.page.route("**/static/app.js", note_the_theme_first)
+    tab.page.reload()
+    tab.settle()
+    assert tab.page.evaluate("window.themeAtStart") == scheme
+
+
 THEME_COLOURS = """() => { const names = new Set();
   for (const sheet of document.styleSheets) if (sheet.href.startsWith(location.origin))
     for (const rule of sheet.cssRules) for (const p of rule.style || []) if (p.startsWith("--")) names.add(p);

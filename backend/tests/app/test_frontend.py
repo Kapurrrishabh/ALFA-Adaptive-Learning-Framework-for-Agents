@@ -33,3 +33,19 @@ def test_service_worker_caches_exactly_the_files_index_html_loads():
 def test_index_html_runs_no_inline_script():
     bodies = re.findall(r"<script\b[^>]*>(.*?)</script>", (FRONTEND / "index.html").read_text(), re.S)
     assert bodies and not [b for b in bodies if b.strip()]
+
+
+def test_index_html_loads_nothing_from_another_origin():
+    addresses = re.findall(r'(?:src|href)="([^"]+)"', (FRONTEND / "index.html").read_text())
+    assert [a for a in addresses if re.match(r"[a-z][a-z0-9+.-]*:|//", a, re.I)] == []
+
+
+def tokens_set_by(selector):
+    blocks = re.findall(re.escape(selector) + r"\s*\{([^}]*)\}", (FRONTEND / "app.css").read_text())
+    return set(re.findall(r"(--[\w-]+)\s*:", "".join(blocks)))
+
+
+def test_both_themes_set_the_same_tokens():
+    light, dark = tokens_set_by(':root:not([data-theme="dark"])'), tokens_set_by(':root[data-theme="dark"]')
+    assert light, "no light theme block was found, so this check cannot fail"
+    assert sorted(light ^ dark) == []
