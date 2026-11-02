@@ -692,6 +692,19 @@ def test_a_portfolio_keeps_only_its_own_newest_reports(orch):
     assert kept == {"alice": ["alice's report"], DEFAULT_PORTFOLIO: [f"report {n}" for n in range(REPORTS_KEPT, 0, -1)]}
 
 
+def test_a_portfolio_keeps_only_its_own_newest_plans(orch, monkeypatch):
+    """Every /signals call keeps a plan, so without a cap one user could grow the database without end."""
+    import backend.database.storage as storage
+    monkeypatch.setattr(storage, "PLANS_KEPT", 2)
+    for portfolio in ("alice", DEFAULT_PORTFOLIO):
+        _store_test_buy(orch, 0.0, 100, "2025-06-02", portfolio)
+    for portfolio in ("alice", DEFAULT_PORTFOLIO, DEFAULT_PORTFOLIO, DEFAULT_PORTFOLIO):
+        orch.store.save_plan(portfolio, {"as_of": END, "strategy": "momentum", "actions": []})
+    kept = orch.store.conn.execute("SELECT p.name, count(*) FROM signal_plans s JOIN portfolios p ON p.id = s.portfolio_id"
+                                   " GROUP BY p.name").fetchall()
+    assert dict(map(tuple, kept)) == {"alice": 1, DEFAULT_PORTFOLIO: 2}
+
+
 def test_one_portfolios_plan_does_not_move_anothers_stops(orch):
     from backend.advisory.signals.advisor import STOP_PCT
     for portfolio in ("alice", "bob"):
@@ -721,6 +734,16 @@ def test_alerts_list_only_the_stocks_the_portfolio_holds(app_client, orch):
     for symbol in ("TEST", "PEER"):
         orch.store.save_alert(symbol, "price_move", "high", f"{symbol} moved 6%", ["moved 6%"])
     assert [a["symbol"] for a in app_client.get("/alerts", headers={"X-API-Key": KEY}).json()] == ["TEST"]
+
+
+def test_an_alert_from_analysing_the_suffixed_symbol_reaches_the_holder(orch):
+    """Holdings drop the ".NS" suffix, and an alert kept as typed ("TEST.NS") was hidden from TEST's holder."""
+    _store_test_buy(orch, 0.0, 100, "2025-06-02")
+    orch.store.save_analysis("TEST.NS", {"decision": {"analysis_timestamp": "2026-01-02", "data_timestamp": "2026-01-02",
+                                                      "decision_support_label": "INSUFFICIENT_EVIDENCE", "score": 0.0,
+                                                      "confidence": 0.0}, "results": {}})
+    orch.analysis(orch.session(DEFAULT_PORTFOLIO, "a"), "TEST.NS")
+    assert [a["symbol"] for a in orch.alerts(DEFAULT_PORTFOLIO)] == ["TEST"]
 
 
 OLD_OWNERLESS_TABLES = """

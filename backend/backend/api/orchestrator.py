@@ -231,8 +231,9 @@ class Orchestrator:
                 del self._analyses[next(iter(self._analyses))]
         previous = self.store.analyses(a.symbol, limit=1)
         alert = evaluate_alert(a, previous[0] if previous else None)
-        if alert:
-            self.store.save_alert(alert.symbol, alert.kind, alert.severity, alert.message, alert.reasons)
+        if alert:                       # kept under the holding's spelling, or "TEST.NS" hides it from TEST's holder
+            self.store.save_alert(canonical_symbol(alert.symbol, market), alert.kind, alert.severity, alert.message,
+                                  alert.reasons)
         self.store.save_analysis(a.symbol, a.to_dict())
         self._log_predictions(a, market)
         return a

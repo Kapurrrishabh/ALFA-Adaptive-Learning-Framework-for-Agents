@@ -101,6 +101,9 @@ _OWN_REPORTS = ("SELECT r.id, r.symbol, r.created_at, r.body FROM reports r"
 # Provisional: a report is about 6 KB (render_report on synthetic data), so a full portfolio keeps about 0.3 MB.
 # Raise it if users ask for reports older than the newest 50.
 REPORTS_KEPT = 50
+# Provisional: only the stop check reads a plan, and only the newest; older ones explain an old stop level. A plan is
+# about 5.5 KB (12 saved in two local databases), so a portfolio keeps about 0.3 MB.
+PLANS_KEPT = 50
 
 
 def _refuse_everyone(who: str) -> None:
@@ -250,6 +253,8 @@ class Store:
             cur = self.conn.execute("INSERT INTO signal_plans (portfolio_id, created_at, as_of, strategy, payload)"
                                     " VALUES (?,?,?,?,?)", (pid, utcnow_iso(), payload["as_of"], payload["strategy"],
                                                             json.dumps(payload, default=str)))
+            self.conn.execute("DELETE FROM signal_plans WHERE portfolio_id = ? AND id NOT IN (SELECT id FROM signal_plans"
+                              " WHERE portfolio_id = ? ORDER BY id DESC LIMIT ?)", (pid, pid, PLANS_KEPT))
         return int(cur.lastrowid)
 
     def latest_plan(self, portfolio: str) -> Optional[Dict[str, Any]]:
