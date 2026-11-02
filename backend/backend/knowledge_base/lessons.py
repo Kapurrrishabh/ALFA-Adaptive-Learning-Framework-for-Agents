@@ -19,6 +19,10 @@ from typing import List, Optional
 
 KB_DIR = Path(__file__).parent / "lessons"
 K1, B = 1.5, 0.75
+# provisional, set on reviewers' labelled questions. A heading must name question words worth 1.95 idf ("price"
+# alone is 1.37); 1.4 to 1.95 scored the same, and the top answers fewest forum questions. Failing that, a named
+# heading needs a section score of 5: "unpredictable" in a lesson's text scores 6.8, chance words about 2.2
+MIN_TITLE_SCORE, MIN_SECTION_SCORE = 1.95, 5.0
 # everyday words carry no finance meaning, yet BM25 scores the rarer ones highly: before "out", "there",
 # "you" and "like" were listed, "what is going on out there?" was answered with the lesson on triangles
 STOP = set("a an the of to in on for and or is are be what how why does do it its this that "
@@ -54,8 +58,12 @@ def _tokens(text: str) -> List[str]:
     toks = re.findall(r"[a-z0-9][a-z0-9/&\-]*", text.lower())
     out = []
     for t in toks:
-        if t in STOP:
+        # a lone letter is what an apostrophe leaves ("can't" -> "t", "fund's" -> "s"), never a topic, yet it
+        # matched lesson text: "what's the fund's p/e ratio" got the expense-ratio lesson
+        if t in STOP or (len(t) == 1 and t.isalpha()):
             continue
+        if len(t) > 4 and t.endswith("xes"):    # "taxes" -> "tax"; cutting only the "s" left "taxe"
+            t = t[:-2]
         out.append(t[:-1] if len(t) > 4 and t.endswith("s") and not t.endswith("ss") else t)
     return out
 
@@ -70,11 +78,13 @@ def covers(text: str, question: str) -> bool:
     return stems(question) <= stems(text)
 
 
-def _shares_word(query: List[str], title: List[str]) -> bool:
-    """Whether a question and a heading name the same thing, allowing for the crude stemmer above:
-    "tax" and "taxe" (from "Taxes") count as the same word."""
-    return any(a == b or (len(min(a, b, key=len)) >= 3 and (a.startswith(b) or b.startswith(a)))
-               for a in query for b in title)
+def _names(query: List[str], word: str) -> bool:
+    """Whether a question names a heading word, allowing for the crude stemmer above ("taxed" names "tax"). A
+    hyphenated word needs every part, so "tax" alone does not name "tax-saving"; "debt" names "debt/equity"."""
+    def said(part):
+        return any(q == p or (min(len(q), len(p)) >= 3 and (q.startswith(p) or p.startswith(q)))
+                   for q in query for p in part.split("/") if p)
+    return word in query or all(said(part) for part in word.split("-") if part)
 
 
 class KnowledgeBase:
@@ -93,6 +103,7 @@ class KnowledgeBase:
         n = len(self.docs)
         self.idf = {t: math.log(1 + (n - f + 0.5) / (f + 0.5)) for t, f in df.items()}
         self.tf = [Counter(d) for d in self.docs]
+        self.titles = [set(_tokens(c.title)) for c in self.chunks]
 
     def search(self, query: str, k: int = 3, min_score: float = 1.0) -> List[tuple]:
         q = _tokens(query)
@@ -108,12 +119,13 @@ class KnowledgeBase:
                     f = tf[t]
                     s += self.idf[t] * f * (K1 + 1) / (f + K1 * (1 - B + B * dl / self.avgdl))
             scores.append(s)
-        ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-        hits = [(self.chunks[i], round(scores[i], 2)) for i in ranked[:k] if scores[i] >= min_score]
-        # a lesson is about what its heading names, so a question sharing no word with the heading is a
-        # coincidence of wording, not an answer: without this "is it a good day" returned a volume lesson
-        titled = [h for h in hits if _shares_word(expanded, _tokens(h[0].title))]
-        return titled if titled else []
+        title_scores = [sum(self.idf[w] for w in title if _names(expanded, w)) for title in self.titles]
+        # a lesson is about what its heading names, so the sections the question names are ranked on their own:
+        # cutting to the top k first let a rare word in another lesson's prose win, and the heading check left nothing
+        strong = [i for i, s in enumerate(scores) if s >= min_score and title_scores[i] >= MIN_TITLE_SCORE]
+        weak = [i for i, s in enumerate(scores) if s >= max(min_score, MIN_SECTION_SCORE) and title_scores[i] > 0]
+        ranked = sorted(strong or weak, key=scores.__getitem__, reverse=True)
+        return [(self.chunks[i], round(scores[i], 2)) for i in ranked[:k]]
 
 
 _KB: Optional[KnowledgeBase] = None
