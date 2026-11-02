@@ -1,5 +1,5 @@
 """A real app server on 127.0.0.1 for the browser tests: synthetic prices, no outside calls, one user who
-signs in through the login form, a small track record and one holding."""
+signs in through the login form, Google and email sign-up with their outside parts faked, a small track record and one holding."""
 import json
 import socket
 import threading
@@ -9,10 +9,9 @@ from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import pytest
 
-from tests.app.conftest import EMAIL, PASSWORD, SECRET
+from tests.app.conftest import EMAIL, PASSWORD, SECRET, FakeGoogle, Outbox
 
-KEY = "k" * 24      # the web app asks for a key until its sign-in screens ship; the server ignores it
-RUN_REQUESTS = 700   # provisional: keyed requests the pages sent in one full browser run (683 on 2026-11-01, 676 on 2026-11-02); recount when the suite grows
+RUN_REQUESTS = 700   # provisional: signed-in requests the pages sent in one full browser run (683 on 2026-11-01, 676 on 2026-11-02); recount when the suite grows
 STOCKS = pd.DataFrame({"symbol": ["TEST", "PEER"], "name": ["Test Industries Ltd.", "Peer Power Ltd."],
                        "sector": ["Industrials", "Energy"], "nifty200": [True, True]})
 
@@ -50,7 +49,13 @@ def sign_in(context, base_url):
 
 
 @pytest.fixture(scope="module")
-def base_url(tmp_path_factory):
+def outbox():
+    """The emails the app server sends, newest last."""
+    return Outbox()
+
+
+@pytest.fixture(scope="module")
+def base_url(tmp_path_factory, outbox):
     import uvicorn
     import backend.advisory.calculators.performance as perf
     import backend.api.app as app_module
@@ -94,7 +99,7 @@ def base_url(tmp_path_factory):
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         url = f"http://127.0.0.1:{sock.getsockname()[1]}"
-        accounts = Accounts(str(tmp_path_factory.mktemp("accounts") / "stockintel.db"), url, SECRET, None, None)
+        accounts = Accounts(str(tmp_path_factory.mktemp("accounts") / "stockintel.db"), url, SECRET, FakeGoogle(), outbox)
         # in another thread: Playwright's sync API runs an event loop here, and create_user starts its own
         with ThreadPoolExecutor(1) as pool:
             user = pool.submit(accounts.create_user, EMAIL, PASSWORD, verified=True).result()

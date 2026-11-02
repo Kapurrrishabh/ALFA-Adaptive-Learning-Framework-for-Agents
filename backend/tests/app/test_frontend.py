@@ -49,3 +49,16 @@ def test_both_themes_set_the_same_tokens():
     light, dark = tokens_set_by(':root:not([data-theme="dark"])'), tokens_set_by(':root[data-theme="dark"]')
     assert light, "no light theme block was found, so this check cannot fail"
     assert sorted(light ^ dark) == []
+
+
+def test_the_app_sends_no_shared_key_header():
+    assert "X-API-Key" not in (FRONTEND / "app.js").read_text()
+
+
+def test_the_app_never_reads_the_old_saved_key():
+    assert re.findall(r"""getItem\(\s*["']si-key""", (FRONTEND / "app.js").read_text()) == []
+
+
+def test_only_the_sign_in_pages_and_the_guide_open_signed_out():
+    public = re.findall(r'\{ path: "([^"]+)"[^\n]*public: true', (FRONTEND / "app.js").read_text())
+    assert sorted(public) == ["guide", "reset", "signin", "signup", "verify"]
