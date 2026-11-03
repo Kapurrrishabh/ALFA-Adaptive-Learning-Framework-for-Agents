@@ -1330,7 +1330,7 @@ function AuthIntro() {
       point("compass", "Buy, wait or don't buy.", "A clear call on a stock, with the reasons for and against."),
       point("sparkle", "Forecasts that show their record.", "Each range for the days ahead sits next to how well it did in tests."),
       point("pie", "A check of your portfolio.", "What to sell, trim, buy and hold, with the reasons."),
-      point("chat", "Lessons and an honest assistant.", "Plain-English lessons, and an AI assistant that says so when it does not know.")),
+      point("chat", "Lessons and a chat for your questions.", "Plain-English lessons, and an AI helper that stays quiet when it is not sure.")),
     h("figure", { class: "auth-art" }, fanArt(), h("figcaption", {}, "Illustration only: the further ahead a forecast looks, the wider its range.")),
     h("p", { class: "auth-note" }, "Decision support, not investment advice. The app never places trades: you buy and sell in your own broker app."));
 }

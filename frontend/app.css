@@ -216,7 +216,7 @@ tr.link:hover { background: var(--bg-2); cursor: pointer; }
 .auth .form .btn.primary { padding: 11px 16px; font-size: var(--fs-md); }
 .card.auth > .row { margin-top: 10px; }
 .card.auth > .btn.primary { display: block; width: fit-content; margin-top: 16px; }
-.auth-intro { margin-top: 24px; padding: 26px 22px; border-radius: 28px; border: 1px solid var(--line);
+.auth-intro { max-width: 460px; margin-top: 24px; padding: 26px 22px; border-radius: var(--radius); border: 1px solid var(--line);
   background: radial-gradient(560px 320px at 100% 0%, color-mix(in srgb, var(--brand) 14%, transparent), transparent 70%),
     radial-gradient(480px 280px at 0% 100%, color-mix(in srgb, var(--gold) 9%, transparent), transparent 70%), var(--card); }
 .auth-intro .display { margin: 14px 0 20px; text-wrap: balance; }
@@ -231,14 +231,16 @@ tr.link:hover { background: var(--bg-2); cursor: pointer; }
 .auth-art figcaption, .auth-note { font-size: var(--fs-xs); color: var(--ink-2); }
 .auth-art figcaption { padding: 8px 14px 12px; }
 .auth-note { margin: 18px 0 0; }
-/* a wide screen puts what the app does on the left, beside the page title and its card */
+/* one centred column below the wide layout; a wide screen puts what the app does on the left, beside the title and its card */
+.page:has(.auth-intro) > * { max-width: 460px; margin-inline: auto; }
 @media (min-width: 981px) {
+  .page:has(.auth-intro) > * { max-width: none; margin-inline: 0; }
   .page:has(.auth-intro) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 440px); grid-template-rows: auto 1fr;
     column-gap: 56px; align-items: start; padding-top: 40px; }
   .page:has(.auth-intro) > div { display: contents; }
   .page:has(.auth-intro) > .page-title, .page:has(.auth-intro) .card.auth { grid-column: 2; }
   .page:has(.auth-intro) .card.auth { padding: 24px; }
-  .auth-intro { grid-column: 1; grid-row: 1 / span 2; margin: 0; padding: 36px; } }
+  .auth-intro { max-width: none; grid-column: 1; grid-row: 1 / span 2; margin: 0; padding: 36px; } }
 .import-sources p { overflow-wrap: anywhere; }
 .toasts { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 60; width: max-content; max-width: 92vw;
   display: flex; flex-direction: column; align-items: center; gap: 8px; }
