@@ -182,6 +182,17 @@ class Accounts:
                     schemas.BaseUserCreate(email=email, password=password, is_verified=verified))
         return asyncio.run(create())
 
+    def set_password(self, email: str, password: str) -> None:
+        """A new password for an account, checked by the sign-up rules; every session it had is signed out."""
+        async def change() -> None:
+            async with self._sessions() as session:
+                manager = self._manager(session)
+                user = await manager.get_by_email(email)
+                await manager.update(schemas.BaseUserUpdate(password=password), user)
+                await session.execute(delete(AccessToken).where(AccessToken.user_id == user.id))
+                await session.commit()
+        asyncio.run(change())
+
     def user(self, email: str) -> Optional[User]:
         async def find() -> Optional[User]:
             async with self._sessions() as session:

@@ -756,6 +756,31 @@ def test_claim_refuses_an_account_that_already_has_a_portfolio(accounts, db_path
         accounts_command(db_path, "claim")
 
 
+NEW_PASSWORD = "a brand new sentence for signing in"
+
+
+def test_a_new_password_from_the_command_signs_in_and_signs_the_old_sessions_out(orch, accounts, db_path,
+                                                                                 shared_portfolio, monkeypatch):
+    import getpass
+    old = signed_in_client(orch, accounts)
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: NEW_PASSWORD)
+    accounts_command(db_path, "password")
+    fresh = TestClient(create_app(orch, accounts), base_url=PUBLIC_URL)
+    logins = [fresh.post("/auth/cookie/login", data={"username": EMAIL, "password": p}).status_code
+              for p in (PASSWORD, NEW_PASSWORD)]
+    assert (logins, old.get("/users/me").status_code) == ([400, 204], 401)
+
+
+@pytest.mark.parametrize("email,password,said", [(EMAIL, "too short", "15"), ("nobody@example.com", NEW_PASSWORD, "no account")])
+def test_the_password_command_refuses_a_short_password_or_an_unknown_email(accounts, db_path, shared_portfolio,
+                                                                           monkeypatch, email, password, said):
+    import getpass
+    accounts.create_user(EMAIL, PASSWORD, verified=True)
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: password)
+    with pytest.raises(SystemExit, match=said):
+        accounts_command(db_path, "password", email)
+
+
 def test_the_local_app_refuses_to_listen_beyond_this_computer(tmp_path):
     import argparse
     from backend import cli

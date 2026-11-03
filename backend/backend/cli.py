@@ -444,13 +444,16 @@ def cmd_app(args) -> int:
     return 0
 
 
-def _add_user(accounts, email: str) -> None:
+def _ask_password(email: str) -> str:
     import getpass
-    from fastapi_users.exceptions import InvalidPasswordException, UserAlreadyExists
     from backend.api.accounts import PASSWORD_MAX, PASSWORD_MIN
+    return getpass.getpass(f"Password for {email} ({PASSWORD_MIN} to {PASSWORD_MAX} characters; a short sentence works): ")
+
+
+def _add_user(accounts, email: str) -> None:
+    from fastapi_users.exceptions import InvalidPasswordException, UserAlreadyExists
     try:
-        accounts.create_user(email, getpass.getpass(f"Password for {email} ({PASSWORD_MIN} to {PASSWORD_MAX} "
-                                                    "characters; a short sentence works): "), verified=True)
+        accounts.create_user(email, _ask_password(email), verified=True)
     except InvalidPasswordException as exc:
         raise SystemExit(exc.reason) from None
     except UserAlreadyExists:
@@ -464,6 +467,16 @@ def cmd_accounts(args) -> int:
     if args.action == "add":
         _add_user(accounts, args.email)
         print(f"Added {args.email}; it can sign in now.")
+        return 0
+    if args.action == "password":
+        from fastapi_users.exceptions import InvalidPasswordException, UserNotExists
+        try:
+            accounts.set_password(args.email, _ask_password(args.email))
+        except InvalidPasswordException as exc:
+            raise SystemExit(exc.reason) from None
+        except UserNotExists:
+            raise SystemExit(f"{args.email} has no account; add one with `stockintel accounts add --email {args.email}`.") from None
+        print(f"Changed the password for {args.email} and signed it out everywhere.")
         return 0
     user = accounts.user(args.email)
     if user is None or not user.is_verified:
@@ -678,8 +691,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.set_defaults(fn=cmd_app)
 
     ac = sub.add_parser("accounts", help="add an account, or move the old shared portfolio to one (needs serve's settings)")
-    ac.add_argument("action", choices=["add", "claim", "release"],
-                    help=f"claim: give portfolio '{DEFAULT_PORTFOLIO}' to the account; release: give it back")
+    ac.add_argument("action", choices=["add", "password", "claim", "release"],
+                    help=f"password: set a new one; claim: give portfolio '{DEFAULT_PORTFOLIO}' to the account; release: give it back")
     ac.add_argument("--email", required=True)
     ac.set_defaults(fn=cmd_accounts)
 
