@@ -209,6 +209,36 @@ tr.link:hover { background: var(--bg-2); cursor: pointer; }
 .field [aria-invalid] { border-color: var(--down); }
 .card.auth { max-width: 460px; }
 .auth a:not(.btn) { color: var(--brand); text-decoration: underline; }
+.btn.google { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 11px 16px; border-radius: 999px; font-size: var(--fs-md);
+  border-color: color-mix(in srgb, var(--ink) 22%, var(--card)); }
+.auth-or { display: flex; align-items: center; gap: 12px; margin: 16px 0; color: var(--muted); font-size: var(--fs-xs); }
+.auth-or::before, .auth-or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.auth .form .btn.primary { padding: 11px 16px; font-size: var(--fs-md); }
+.card.auth > .row { margin-top: 10px; }
+.card.auth > .btn.primary { display: block; width: fit-content; margin-top: 16px; }
+.auth-intro { margin-top: 24px; padding: 26px 22px; border-radius: 28px; border: 1px solid var(--line);
+  background: radial-gradient(560px 320px at 100% 0%, color-mix(in srgb, var(--brand) 14%, transparent), transparent 70%),
+    radial-gradient(480px 280px at 0% 100%, color-mix(in srgb, var(--gold) 9%, transparent), transparent 70%), var(--card); }
+.auth-intro .display { margin: 14px 0 20px; text-wrap: balance; }
+.auth-points { list-style: none; padding: 0; margin: 0 0 22px; display: grid; gap: 12px; }
+.auth-points li { display: flex; gap: 12px; align-items: flex-start; color: var(--ink-2); }
+.auth-points strong { color: var(--ink); }
+.auth-points .feature-icon { flex: none; width: 36px; height: 36px; border-radius: 11px; }
+.auth-points .feature-icon svg { width: 18px; height: 18px; }
+.auth-art { margin: 0; overflow: hidden; border-radius: var(--radius); border: 1px solid var(--line); background: color-mix(in srgb, var(--card) 70%, transparent); }
+.auth-art svg { display: block; width: 100%; height: auto; }
+/* small text on the tinted panel: the tint lowers muted grey's contrast, as on .banner */
+.auth-art figcaption, .auth-note { font-size: var(--fs-xs); color: var(--ink-2); }
+.auth-art figcaption { padding: 8px 14px 12px; }
+.auth-note { margin: 18px 0 0; }
+/* a wide screen puts what the app does on the left, beside the page title and its card */
+@media (min-width: 981px) {
+  .page:has(.auth-intro) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 440px); grid-template-rows: auto 1fr;
+    column-gap: 56px; align-items: start; padding-top: 40px; }
+  .page:has(.auth-intro) > div { display: contents; }
+  .page:has(.auth-intro) > .page-title, .page:has(.auth-intro) .card.auth { grid-column: 2; }
+  .page:has(.auth-intro) .card.auth { padding: 24px; }
+  .auth-intro { grid-column: 1; grid-row: 1 / span 2; margin: 0; padding: 36px; } }
 .import-sources p { overflow-wrap: anywhere; }
 .toasts { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 60; width: max-content; max-width: 92vw;
   display: flex; flex-direction: column; align-items: center; gap: 8px; }

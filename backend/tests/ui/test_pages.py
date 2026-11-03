@@ -468,6 +468,21 @@ def test_the_sign_in_page_links_to_the_guide(browser, base_url):
     assert tab.page.locator("h1").all_inner_texts() == ["How to use StockIntel"]
 
 
+def test_on_a_laptop_the_sign_in_page_shows_the_brand_promise_and_value_points_beside_the_card(browser, base_url):
+    tab = signed_out_at(browser, base_url, "#/signin")
+    intro = tab.page.locator("#view .auth-intro")
+    left, card = intro.bounding_box(), tab.page.locator("#view .card.auth").bounding_box()
+    shown = ("StockIntel" in intro.inner_text(), intro.locator("h2:visible").count(), intro.locator("li:visible").count() >= 3)
+    assert (shown, left["x"] + left["width"] <= card["x"]) == ((True, 1, True), True)
+
+
+def test_on_a_phone_the_sign_in_card_comes_before_what_the_app_does(browser, base_url):
+    tab = Tab(browser, base_url, 390, signed_in=False)
+    tab.go("#/signin")
+    card, intro = (tab.page.locator(box).bounding_box() for box in ("#view .card.auth", "#view .auth-intro"))
+    assert card["y"] + card["height"] <= intro["y"]
+
+
 def test_deleting_the_account_says_what_goes(browser, base_url):
     tab = Tab(browser, base_url, 1366)
     tab.page.click("#account summary")

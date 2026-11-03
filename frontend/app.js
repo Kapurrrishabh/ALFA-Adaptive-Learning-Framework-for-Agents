@@ -1302,6 +1302,48 @@ async function finishGoogleSignIn() {
   catch (e) { googleProblem = `Signing in with Google did not finish. ${e.status === 400 && !e.detail ? "Start again." : errorWords(e)}`;
     history.replaceState(null, "", "/#/signin?next=" + encodeURIComponent(next)); }
 }
+// made-up and captioned as such: a price line running into a range that widens with the days ahead
+function fanArt() {
+  const W = 560, H = 160, x0 = 330, svg = s("svg", { viewBox: `0 0 ${W} ${H}`, "aria-hidden": "true" });
+  const price = (x) => 112 - 0.13 * x + 9 * Math.sin(x / 26) + 5 * Math.sin(x / 9), y0 = price(x0);
+  const line = Array.from({ length: 121 }, (_, i) => i * x0 / 120).map((x, i) => `${i ? "L" : "M"}${x.toFixed(1)} ${price(x).toFixed(1)}`).join("");
+  const ts = Array.from({ length: 25 }, (_, i) => i / 24), at = (t, spread) => `${(x0 + t * (W - x0)).toFixed(1)} ${(y0 - 12 * t + spread * Math.sqrt(t)).toFixed(1)}`;
+  const band = (spread) => `M${ts.map((t) => at(t, -spread)).join("L")}L${[...ts].reverse().map((t) => at(t, spread)).join("L")}Z`;
+  const fade = s("linearGradient", { id: "fan-fade", x1: 0, y1: 0, x2: 0, y2: 1 }), defs = s("defs");
+  fade.append(s("stop", { offset: 0, style: "stop-color:var(--brand)", "stop-opacity": 0.22 }), s("stop", { offset: 1, style: "stop-color:var(--brand)", "stop-opacity": 0 }));
+  defs.append(fade);
+  svg.append(defs, ...[40, 80, 120].map((y) => s("line", { x1: 0, x2: W, y1: y, y2: y, style: "stroke:var(--line)", "stroke-dasharray": "2 6" })),
+    s("line", { x1: x0, x2: x0, y1: 0, y2: H, style: "stroke:var(--line)", "stroke-width": 1.5 }),
+    s("path", { d: `${line}L${x0} ${H}L0 ${H}Z`, fill: "url(#fan-fade)" }),
+    s("path", { d: band(48), style: "fill:var(--brand)", "fill-opacity": 0.1 }), s("path", { d: band(22), style: "fill:var(--brand)", "fill-opacity": 0.16 }),
+    s("path", { d: `M${x0} ${y0}L${W} ${y0 - 12}`, fill: "none", style: "stroke:var(--brand)", "stroke-width": 2, "stroke-dasharray": DASHED }),
+    s("path", { d: line, fill: "none", style: "stroke:var(--brand)", "stroke-width": 2.5, "stroke-linecap": "round", "stroke-linejoin": "round" }),
+    s("circle", { cx: x0, cy: y0, r: 11, style: "fill:var(--brand)", "fill-opacity": 0.18 }), s("circle", { cx: x0, cy: y0, r: 5, style: "fill:var(--brand);stroke:var(--card)", "stroke-width": 2 }));
+  return svg;
+}
+// beside the card on a wide screen and below it on a phone; words only, since every figure the app shows comes from data
+function AuthIntro() {
+  const point = (ic, title, text) => h("li", {}, h("span", { class: "feature-icon" }, icon(ic)), h("span", {}, h("strong", {}, title), " ", text));
+  return h("div", { class: "auth-intro" }, h("span", { class: "hero-kicker" }, h("i"), "StockIntel, your NSE stock assistant"),
+    h("h2", { class: "display" }, "See the evidence, then make up ", h("em", {}, "your own mind.")),
+    h("ul", { class: "auth-points" },
+      point("compass", "Buy, wait or don't buy.", "A clear call on a stock, with the reasons for and against."),
+      point("sparkle", "Forecasts that show their record.", "Each range for the days ahead sits next to how well it did in tests."),
+      point("pie", "A check of your portfolio.", "What to sell, trim, buy and hold, with the reasons."),
+      point("chat", "Lessons and an honest assistant.", "Plain-English lessons, and an AI assistant that says so when it does not know.")),
+    h("figure", { class: "auth-art" }, fanArt(), h("figcaption", {}, "Illustration only: the further ahead a forecast looks, the wider its range.")),
+    h("p", { class: "auth-note" }, "Decision support, not investment advice. The app never places trades: you buy and sell in your own broker app."));
+}
+// Google's own mark, which its sign-in branding asks this button to show
+function googleMark() {
+  const svg = s("svg", { viewBox: "0 0 48 48", width: 18, height: 18, "aria-hidden": "true" });
+  for (const [fill, d] of [["#ea4335", "M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"],
+    ["#4285f4", "M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"],
+    ["#fbbc05", "M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"],
+    ["#34a853", "M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"]])
+    svg.append(s("path", { fill, d }));
+  return svg;
+}
 async function pageSignIn(view, ctx) {
   const next = safeNext(ctx.params.get("next"));
   if (me) return location.replace(next);
@@ -1313,13 +1355,13 @@ async function pageSignIn(view, ctx) {
     me = await api("/users/me"); drawAccount(); location.replace(next);
   });
   form.problem.textContent = googleProblem; googleProblem = ""; form.problem.after(resend);
-  const google = h("button", { class: "btn", type: "button", onclick: async () => {
+  const google = h("button", { class: "btn google", type: "button", onclick: async () => {
     sessionStorage.setItem("si-next", next);
-    try { location.assign((await api("/auth/google/authorize")).authorization_url); } catch (err) { form.problem.textContent = errorWords(err); } } }, "Continue with Google");
-  view.append(h("div", { class: "card auth" }, h("p", { style: "margin-top:0" }, "StockIntel helps you study NSE stocks and make up your own mind. Sign in to see your portfolio and the app's calls."),
-    methods.google ? google : null, form,
+    try { location.assign((await api("/auth/google/authorize")).authorization_url); } catch (err) { form.problem.textContent = errorWords(err); } } }, googleMark(), "Continue with Google");
+  view.append(h("div", { class: "card auth" }, h("p", { style: "margin-top:0" }, "Sign in to see your portfolio and the app's calls."),
+    methods.google ? [google, h("p", { class: "auth-or" }, "or use your email")] : null, form,
     methods.signup ? h("p", {}, h("a", { href: "#/reset" }, "Forgot your password?"), " · ", h("a", { href: "#/signup" }, "Create an account")) : null,
-    h("p", { class: "muted" }, "New here? Read the ", h("a", { href: "#/guide" }, "guide"), ", and see ", h("a", { href: "/privacy" }, "what the app keeps about you"), ".")));
+    h("p", { class: "muted" }, "New here? Read the ", h("a", { href: "#/guide" }, "guide"), ", and see ", h("a", { href: "/privacy" }, "what the app keeps about you"), ".")), AuthIntro());
 }
 async function pageSignUp(view, ctx) {
   const methods = await api("/auth/methods", { signal: ctx.signal });
@@ -1331,8 +1373,9 @@ async function pageSignUp(view, ctx) {
     card.replaceChildren(h("p", { role: "status" }, `We sent a link to ${email.value}. Open it to confirm your email, then sign in.`), h("a", { class: "btn primary", href: "#/signin" }, "Go to sign in"));
   });
   form.problem.after(resend);
-  card.append(form, h("p", {}, "Already have an account? ", h("a", { href: "#/signin" }, "Sign in")));
-  view.append(card);
+  card.append(h("p", { style: "margin-top:0" }, "Make an account with your email and a password. We send a link to confirm the email."),
+    form, h("p", {}, "Already have an account? ", h("a", { href: "#/signin" }, "Sign in")));
+  view.append(card, AuthIntro());
 }
 async function pageVerify(view, ctx) {
   let words = "Your email is confirmed. You can sign in now.", email = null;
@@ -1343,11 +1386,11 @@ async function pageVerify(view, ctx) {
     else throw err;
   }
   view.append(h("div", { class: "card auth" }, h("p", { style: "margin-top:0" }, words), email && [Field("Email", email), ResendLink(email)],
-    h("a", { class: "btn primary", href: "#/signin" }, "Go to sign in")));
+    h("a", { class: "btn primary", href: "#/signin" }, "Go to sign in")), AuthIntro());
 }
 async function pageReset(view, ctx) {
   const token = ctx.params.get("token"), card = h("div", { class: "card auth" });
-  view.append(card);
+  view.append(card, AuthIntro());
   if (!token) {
     const email = emailInput("email");
     card.append(h("p", { style: "margin-top:0" }, "Enter the email you sign in with, and we will send it a link to choose a new password."),
