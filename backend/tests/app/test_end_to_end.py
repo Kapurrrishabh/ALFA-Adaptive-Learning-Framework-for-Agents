@@ -791,7 +791,7 @@ def test_the_local_app_refuses_to_listen_beyond_this_computer(tmp_path):
 def test_the_oracle_host_opens_only_https_to_the_internet():
     compose = yaml.safe_load((ORACLE / "compose.yaml").read_text())
     assert [p for s in compose["services"].values() for p in s.get("ports", [])] == ["443:443"]
-    assert re.findall(r"^for port in (.*); do$", (ORACLE / "setup.sh").read_text(), re.M) == ["443"]
+    assert re.findall(r"^\s*for port in (.*); do$", (ORACLE / "setup.sh").read_text(), re.M) == ["443"]
 
 
 def oracle_services(file="compose.yaml"):

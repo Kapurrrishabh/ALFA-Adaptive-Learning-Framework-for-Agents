@@ -11,12 +11,15 @@ if ! command -v docker >/dev/null; then
   sudo usermod -aG docker "$USER"
 fi
 
-# Oracle's Ubuntu images reject inbound traffic in iptables even when the network's security list allows it
-for port in 443; do
-  sudo iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null \
-    || sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport "$port" -j ACCEPT
-done
-sudo netfilter-persistent save
+# Oracle's Ubuntu images reject inbound traffic in iptables even when the network's security list allows it;
+# other clouds (Google Cloud, AWS) leave iptables open and filter at their own firewall, and have no netfilter-persistent
+if command -v netfilter-persistent >/dev/null; then
+  for port in 443; do
+    sudo iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null \
+      || sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport "$port" -j ACCEPT
+  done
+  sudo netfilter-persistent save
+fi
 
 if [ ! -f .env ]; then
   read -rp "Your DuckDNS address (e.g. alfa-yourname.duckdns.org): " domain
