@@ -25,6 +25,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--space", default="stockintel-models")
     ap.add_argument("--space-only", action="store_true", help="update the Space and leave the model repos as they are")
+    # the Space stays on your own account: only paid (Team/Enterprise) organisations can host ZeroGPU Spaces
+    ap.add_argument("--owner", help="account or organisation that holds the model repos (default: your own account)")
     args = ap.parse_args()
     commit = pushed_commit()
     space_token = os.environ.get("HF_SPACE_TOKEN")
@@ -33,8 +35,9 @@ def main() -> None:
                          "the Space uses it to read the private model repos")
     api = HfApi()
     user = api.whoami()["name"]
-    repos = {"chronos": f"{user}/stockintel-chronos2-nse", "kronos": f"{user}/stockintel-kronos-nse",
-             "alfa": f"{user}/alfa-weights", "agent": f"{user}/alfa-agent"}
+    owner = args.owner or user
+    repos = {"chronos": f"{owner}/stockintel-chronos2-nse", "kronos": f"{owner}/stockintel-kronos-nse",
+             "alfa": f"{owner}/alfa-weights", "agent": f"{owner}/alfa-agent"}
     space = f"{user}/{args.space}"
     sources = {"chronos": ARTIFACTS / "external" / "chronos-2-nse", "kronos": ARTIFACTS / "external" / "kronos-nse"}
     missing = [str(p) for p in [*sources.values(), *weights.PUBLISHED, *(f for f, _ in weights.agent_files())]
