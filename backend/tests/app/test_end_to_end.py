@@ -13,6 +13,7 @@ from backend.user.portfolio.alerts import evaluate
 from backend.api.accounts import owner_of
 from backend.api.app import HSTS, PUBLIC_PATHS, SECURITY_HEADERS, SET_UP_FIRST, create_app
 from backend.config import DEFAULT_PORTFOLIO, FORECAST_DAYS
+from backend.api.nlu import name_index
 from backend.api.orchestrator import Orchestrator
 from backend.advisory.calculators.screener import screen
 from backend.advisory.service import AnalysisService
@@ -39,9 +40,9 @@ def service(local_provider):
 
 @pytest.fixture
 def orch(local_provider, store, monkeypatch):
+    monkeypatch.setenv("SELFAGENT_URL", "http://127.0.0.1:9")   # nothing listens on the discard port, so the agent reads as off
     o = Orchestrator(local_provider, store, use_rss_news=False, charges_model_calls=True)
-    o.known.add("TEST")
-    o.universe = pd.DataFrame({"symbol": ["TEST", "PEER"], "sector": ["Industrials", "Energy"]})
+    o._listings = name_index({"TEST": "Test Industries Ltd.", "PEER": "Peer Power Ltd."}, set())
     return o
 
 
@@ -127,6 +128,42 @@ def test_chat_replies_read_at_plain_language_grade(orch, monkeypatch, question, 
     assert grade(plain(orch.handle(question, DEFAULT_PORTFOLIO, "plain").text)) <= most
 
 
+class _Agent:
+    """The self-learning agent's client with its socket replaced by one canned turn."""
+
+    def __init__(self, turn):
+        self.turn, self.asked = turn, []
+
+    def ask(self, question, subject, *, session):
+        self.asked.append(question)
+        return self.turn
+
+
+def test_a_question_none_of_our_handlers_fits_is_answered_by_the_self_learning_agent(orch, monkeypatch):
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    orch._agent = _Agent({"spoke": True, "served": "Its own words.", "shown": "Worded from its sources.",
+                          "evidence": "RBI policy note, 2026-11-06: the repo rate stays at 5.50%.", "as_of": "2026-11-06"})
+    r = orch.handle("what did the RBI say about rates?", DEFAULT_PORTFOLIO, "agent")
+    assert (r.intent, orch._agent.asked) == ("agent", ["what did the RBI say about rates?"])
+    assert r.text == ("Worded from its sources.\n\n**Source** · what the self-learning agent retrieved, as of 2026-11-06:\n"
+                      "RBI policy note, 2026-11-06: the repo rate stays at 5.50%.")
+
+
+def test_when_the_agent_holds_back_the_reply_says_why_and_what_we_can_answer(orch, monkeypatch):
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    orch._agent = _Agent({"spoke": False, "served": "", "because": "its evidence does not carry the figures"})
+    r = orch.handle("what did the RBI say about rates?", DEFAULT_PORTFOLIO, "agent")
+    assert r.text.startswith("The self-learning agent held back: its evidence does not carry the figures.")
+    assert "Analyze RELIANCE" in r.text
+
+
+def test_an_unreachable_agent_is_named_and_its_call_refunded(orch, monkeypatch):
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    r = orch.handle("what did the RBI say about rates?", DEFAULT_PORTFOLIO, "agent")
+    assert (r.intent, "The self-learning agent could not answer either" in r.text) == ("help", True)
+    assert orch.usage(DEFAULT_PORTFOLIO)["used"] == 1      # the routing call only
+
+
 def test_the_market_reply_quotes_the_backtested_volatility_target(orch, monkeypatch):
     import backend.advisory.signals.strategies as strategies
     monkeypatch.setattr(strategies, "VOL_TARGET", 0.25)
@@ -168,7 +205,7 @@ def test_why_reply_rounds_each_area_score_and_confidence_to_two_decimals(orch):
 
 def test_why_a_negative_score_heads_its_evidence_as_negatives(orch, local_provider):
     local_provider.frames["FALL.NS"] = synthetic.ohlcv(900, seed=3, drift=-0.003, end=END)
-    orch.known.add("FALL")
+    orch._listings["fall"] = "FALL"
     orch.handle("Analyze FALL", DEFAULT_PORTFOLIO, "fall")
     reply = orch.handle("why?", DEFAULT_PORTFOLIO, "fall")
     assert reply.data["payload"]["decision"]["score"] < 0

@@ -1211,18 +1211,18 @@ async function pageChat(view, ctx) {
   const history = JSON.parse(sessionStorage.getItem("si-chat-log") || "[]");
   const bubble = (who, text, meta) => { const b = h("div", { class: `bubble ${who}` }, who.startsWith("bot") ? md(text) : text, meta ? h("span", { class: "meta" }, meta) : null); log.append(b); log.scrollTop = log.scrollHeight; return b; };
   for (const m of history) bubble(m.who, m.text, m.meta);
-  const useAgent = h("input", { type: "checkbox" }); useAgent.checked = localStorage.getItem("si-agent") === "1";
+  const useAgent = h("input", { type: "checkbox" }); useAgent.checked = localStorage.getItem("si-agent") !== "0";
   useAgent.addEventListener("change", () => localStorage.setItem("si-agent", useAgent.checked ? "1" : "0"));
   const agentRow = h("label", { class: "agent-toggle", hidden: true }, useAgent, "Also ask my self-learning agent (a second opinion that stays quiet when unsure)");
   api("/ui/agent/status", { signal: ctx.signal }).then((st) => { agentRow.hidden = !st.available; }).catch((e) => ctx.live() && toast(errorWords(e)));
   const send = async (q) => {
     q = (q || input.value).trim(); if (!q) return; input.value = "";
     bubble("me", q); history.push({ who: "me", text: q });
-    const b = bubble("bot", "Thinking…");
-    try { const r = await api("/chat", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) });
+    const b = bubble("bot", "Thinking…"); let byAgent = false;
+    try { const r = await api("/chat", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) }); byAgent = r.intent === "agent";
       b.replaceChildren(md(r.text), h("span", { class: "meta" }, `${r.intent}${r.tools_used.length ? " · " + r.tools_used.join(", ") : ""}`)); history.push({ who: "bot", text: r.text, meta: r.intent }); }
     catch (e) { b.textContent = errorWords(e); }
-    if (useAgent.checked && !agentRow.hidden) { const a = bubble("bot agent", "Asking the self-learning agent…");
+    if (useAgent.checked && !agentRow.hidden && !byAgent) { const a = bubble("bot agent", "Asking the self-learning agent…");
       try { const t = await api("/ui/agent/ask", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) });
         const meta = `self-learning agent${t.as_of ? ` · data as of ${t.as_of}` : ""} · ` + (t.spoke ? (t.confidence == null ? "from its sources" : `confidence ${num(t.confidence)}`) : `held back: ${t.because}`)
           + (t.phrased_by ? ` · worded by ${t.phrased_by.split("/").pop()}` : t.unphrased_because ? ` · in its own words (${t.unphrased_because})` : "");

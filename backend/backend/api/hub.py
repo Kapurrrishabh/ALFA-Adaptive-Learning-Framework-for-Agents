@@ -21,7 +21,7 @@ import pandas as pd
 
 from backend.advisory.calculators import performance
 from backend.config import BUILDER_STOCKS, BUSY_WAIT_S, FORECAST_DAYS
-from backend.database.sources.panel import CACHE_DIR, index_constituents, universe_panel
+from backend.database.sources.panel import CACHE_DIR, index_constituents, listed_shares, universe_panel
 from backend.database.sources.provider import DataUnavailable
 from backend.knowledge_base.lessons import knowledge_base
 from backend.api.nlu import ALIASES
@@ -80,6 +80,9 @@ class Hub:
             self._names = pd.DataFrame({"symbol": raw["Symbol"].str.strip(),
                                         "name": raw["Company Name"].str.strip(),
                                         "sector": raw["Industry"].str.strip()})
+            listed = listed_shares()        # the Nifty 500 list names REITs, which NSE's list of shares leaves out
+            self._names = pd.concat([self._names, listed[~listed["symbol"].isin(self._names["symbol"])].assign(sector=None)],
+                                    ignore_index=True)
             self._names["nifty200"] = self._names["symbol"].isin(nifty200)
         return self._names
 

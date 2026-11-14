@@ -3,10 +3,11 @@ from types import SimpleNamespace as NS
 import pytest
 
 from backend.models.external.llm import LLMUnavailable, Narrator, ToolAgent, verify_numbers
-from backend.api.nlu import classify, extract_amount, extract_horizon, extract_risk, extract_sectors, extract_tickers
+from backend.api.nlu import classify, extract_amount, extract_horizon, extract_risk, extract_sectors, extract_tickers, name_index
 from backend.knowledge_base.lessons import knowledge_base
 
-KNOWN = ["RELIANCE", "HDFCBANK", "TCS", "INFY", "M&M"]
+KNOWN = name_index({"RELIANCE": "Reliance Industries Ltd.", "HDFCBANK": "HDFC Bank Ltd.", "TCS": "Tata Consultancy Services Ltd.",
+                    "INFY": "Infosys Ltd.", "M&M": "Mahindra & Mahindra Ltd."}, set())
 FORMS = knowledge_base().short_forms
 
 
@@ -25,6 +26,34 @@ def test_ticker_extraction_uses_aliases_and_ignores_finance_acronyms():
     assert extract_tickers("analyze reliance.bo", KNOWN) == [("RELIANCE", "BSE")]
     assert extract_tickers("Analyze NVIDIA and compare with AMD", KNOWN) == [("NVDA", "US"), ("AMD", "US")]
     assert extract_tickers("what is RSI?", KNOWN) == []
+
+
+LISTED = name_index({"NYKAA": "FSN E-Commerce Ventures Ltd.", "IDEA": "Vodafone Idea Limited", "LAURUSLABS": "Laurus Labs Ltd.",
+                     "ADANIENT": "Adani Enterprises Limited", "ADANIPORTS": "Adani Ports and Special Economic Zone Limited",
+                     "RPOWER": "Reliance Power Limited", "RELIANCE": "Reliance Industries Limited"}, {"idea"})
+
+
+@pytest.mark.parametrize("text,symbols", [
+    ("how is nykaa performing", [("NYKAA", "NSE")]),            # its symbol in lowercase
+    ("fsn e-commerce ventures results", [("NYKAA", "NSE")]),    # its name
+    ("how is laurus doing", [("LAURUSLABS", "NSE")]),           # a first word no other company starts with
+    ("how is reliance power doing", [("RPOWER", "NSE")]),       # the longer name, not the alias "reliance"
+    ("what is going on with adani", []),                         # two companies start with it
+])
+def test_a_listed_company_is_found_by_its_symbol_or_name_in_any_case(text, symbols):
+    assert extract_tickers(text, LISTED) == symbols
+
+
+def test_a_symbol_that_is_an_english_word_needs_capitals_or_more_of_its_name():
+    assert extract_tickers("is it a good idea to buy now?", LISTED) == []
+    assert extract_tickers("Is IDEA a good buy?", LISTED) == [("IDEA", "NSE")]
+    assert extract_tickers("should i buy vodafone idea", LISTED) == [("IDEA", "NSE")]
+
+
+def test_how_a_stock_is_performing_is_answered_about_the_stock_not_from_the_lessons():
+    i = classify("how is the nykaa stock performing and should I buy it and if yes then why", LISTED, FORMS, False)
+    assert (i.name, i.symbols) == ("should_buy", [("NYKAA", "NSE")])
+    assert classify("how is nykaa stock performing", LISTED, FORMS, False).name == "analyze"   # "performing" is not "forming"
 
 
 def test_horizon_risk_and_sector_parsing():
@@ -89,7 +118,7 @@ def test_intent_classification(text, session, intent):
 
 @pytest.mark.parametrize("session", [False, True])
 def test_a_lesson_word_that_is_one_of_our_symbols_stays_a_stock(session):
-    assert classify("what is NAV?", KNOWN + ["NAV"], FORMS, session).symbols == [("NAV", "NSE")]
+    assert classify("what is NAV?", {**KNOWN, "nav": "NAV"}, FORMS, session).symbols == [("NAV", "NSE")]
 
 
 PAYLOAD = {"rsi_14": 68.4, "revenue_growth": {"value": 18.2}, "de": 0.31, "label": "WATCH", "vol": 0.231,

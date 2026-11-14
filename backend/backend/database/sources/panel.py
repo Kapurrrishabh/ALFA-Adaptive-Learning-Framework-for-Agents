@@ -68,6 +68,12 @@ def index_constituents(index: str = "nifty500") -> pd.DataFrame:
     return pd.DataFrame({"symbol": df["Symbol"].str.strip(), "sector": df["Industry"].str.strip()})
 
 
+def listed_shares() -> pd.DataFrame:
+    """Every share on NSE's main board (symbol, name), from NSE's own list."""
+    df = _constituents_file("equity_l", NSE_LISTS)
+    return pd.DataFrame({"symbol": df["SYMBOL"].str.strip(), "name": df["NAME OF COMPANY"].str.strip()})
+
+
 def company_names(index: str = "nifty500") -> Dict[str, str]:
     """symbol -> the company's name as people write it: "Infosys Ltd." becomes "Infosys"."""
     df = _constituents_file(index, INDEX_LISTS)

@@ -18,7 +18,8 @@ from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
@@ -31,10 +32,10 @@ from backend.database.sources.provider import DataUnavailable, Provider
 from backend.database.sources.quality import DataQualityError
 from backend.advisory.fusion.evidence import utcnow_iso
 from backend.knowledge_base.lessons import knowledge_base
-from backend.api.nlu import Intent, classify
+from backend.api.nlu import Intent, classify, name_index
 from backend.advisory.statistics.model_registry import ModelRegistry
 from backend.user.portfolio.portfolio import Position, Transaction, analyze as analyze_portfolio, build_positions, what_if
-from backend.advisory.calculators.screener import CRITERIA, load_universe, research_query, screen
+from backend.advisory.calculators.screener import CRITERIA, research_query, screen
 from backend.advisory.service import AnalysisService, StockAnalysis
 from backend.database.storage import Store
 
@@ -58,6 +59,14 @@ ASKS_WHY = re.compile(r"\b(why|how come|what('?s| is)? (made|mak(es|ing))|reason
 # provisional: a week of headlines up to the last close counts as the latest; older means the archive stopped refreshing
 MARKET_NEWS_DAYS = 7
 MARKET_REPORTS = 5
+ENGLISH_WORDS = Path("/usr/share/dict/words")      # macOS ships it; on Debian and Ubuntu it is the wamerican package
+
+
+def english_words() -> Set[str]:
+    if not ENGLISH_WORDS.exists():
+        raise RuntimeError(f"{ENGLISH_WORDS} is missing; install it with `apt-get install wamerican`. The chat needs it "
+                           "to tell a stock named in lowercase from an ordinary word.")
+    return {w for w in ENGLISH_WORDS.read_text().split() if w.isalpha() and w.islower()}
 
 
 def _split_note(symbol: str, lots: List[Tuple[str, float, float]], history: pd.DataFrame) -> Optional[str]:
@@ -134,8 +143,7 @@ class Orchestrator:
         self._locks: Dict[str, Any] = {}
         self._locks_guard = threading.Lock()
         self._caches_guard = threading.Lock()
-        self.universe = load_universe()
-        self.known = set(self.universe["symbol"])
+        self._listings: Optional[Dict[str, str]] = None
         self.research_phrases = [p for phrases, _, _ in CRITERIA.values() for p in phrases]
         self.llm_client = llm_client
         if llm_mode != "off" and llm_client is None:
@@ -152,6 +160,13 @@ class Orchestrator:
             self._services[market] = AnalysisService(self.provider, market, self.use_rss_news,
                                                      forecast_models=models, pattern_priors=priors)
         return self._services[market]
+
+    def listings(self) -> Dict[str, str]:
+        """What people write for each NSE share -> its symbol, from the hub's copy of NSE's lists."""
+        if self._listings is None:
+            names = self.hub.names()
+            self._listings = name_index(dict(zip(names["symbol"], names["name"])), english_words())
+        return self._listings
 
     def session(self, portfolio: str, session_id: str) -> Session:
         key = (portfolio, session_id)
@@ -295,7 +310,7 @@ class Orchestrator:
     # --- entry point --------------------------------------------------------------
     def handle(self, message: str, portfolio: str, session_id: str) -> Reply:
         s = self.session(portfolio, session_id)
-        intent = classify(message, sorted(self.known), knowledge_base().short_forms, s.current is not None,
+        intent = classify(message, self.listings(), knowledge_base().short_forms, s.current is not None,
                           self.research_phrases)
         if intent.horizon:
             s.horizon = intent.horizon
@@ -307,11 +322,12 @@ class Orchestrator:
         if reply.data.get("no_answer"):          # our patterns or the reference index had nothing; let the LM place it
             try:
                 routed = self._routed(s, message, intent)
+                if routed.name != intent.name:
+                    reply = self._deterministic(s, routed)
+                if reply.data.get("no_answer"):  # none of our handlers fits: the agent searches its sources and writes
+                    reply = self._agent_answer(s, message, reply)
             except quota.QuotaExceeded as exc:
-                routed = intent
                 reply.text += f"\n\n{exc}"
-            if routed.name != intent.name:
-                reply = self._deterministic(s, routed)
         if self.llm_mode == "narrate" and reply.data.get("payload") is not None:
             reply = self._narrate(s, message, reply)
         return reply
@@ -329,6 +345,21 @@ class Orchestrator:
             log.info("no language model to route %r: %s", message, exc)
             return intent
         return Intent(**{**intent.__dict__, "name": name}) if name else intent
+
+    def _agent_answer(self, s: Session, message: str, unanswered: Reply) -> Reply:
+        from backend.models.agent.client import AgentUnavailable
+        try:
+            with self.model_call(s.portfolio):
+                turn = self.agent.ask(message, "", session=f"{s.portfolio}:{s.session_id}")
+        except AgentUnavailable as exc:
+            return Reply(f"{unanswered.text}\n\nThe self-learning agent could not answer either: {exc}",
+                         unanswered.intent, unanswered.data)
+        if not turn["spoke"]:
+            return Reply(f"The self-learning agent held back: {turn['because']}.\n\n{unanswered.text}", "agent",
+                         {"no_answer": True, "agent": turn})
+        dated = f", as of {turn['as_of']}" if turn["as_of"] else ""
+        return Reply(f"{turn.get('shown') or turn['served']}\n\n**Source** · what the self-learning agent retrieved{dated}:\n"
+                     f"{turn['evidence']}", "agent", {"agent": turn}, ["self_learning_agent"])
 
     def _deterministic(self, s: Session, intent: Intent) -> Reply:
         handler = getattr(self, f"_h_{intent.name}")
@@ -755,6 +786,14 @@ class Orchestrator:
                          + ("STOP HIT, sell at next open" if low <= level else f"{(px / level - 1) * 100:+.1f}% above")
                          + unchecked)
         return Reply("\n".join(lines), "stops", {}, ["stops"])
+
+    @property
+    def agent(self):
+        """One client for the chat and the agent page: it lets the agent answer one question at a time."""
+        if getattr(self, "_agent", None) is None:
+            from backend.models.agent.client import SelfAgentClient
+            self._agent = SelfAgentClient()
+        return self._agent
 
     @property
     def hub(self):

@@ -256,8 +256,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
         return {"status": "ok"}
 
     from backend.api.hub import Hub
-    from backend.models.agent.client import SelfAgentClient
-    agent_client = SelfAgentClient()
+    agent_client = orch.agent
     hub = Hub(orch, preload=preload)
     app.state.hub = orch._hub = hub      # one hub (and one cached panel) for the API and chat
     app.mount("/static", StaticFiles(directory=FRONTEND), name="static")
@@ -532,7 +531,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     @app.get("/search", dependencies=[Depends(auth)])
     def search(q: str = Query(min_length=1, max_length=40)):
         ql = q.lower()
-        hits = [s for s in sorted(orch.known) if ql in s.lower()]
+        hits = [s for s in sorted(set(orch.listings().values())) if ql in s.lower()]
         hits += [sym for name, (sym, _) in ALIASES.items() if ql in name and sym not in hits]
         return {"query": q, "results": hits[:15]}
 

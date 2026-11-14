@@ -7,6 +7,8 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/data \
     ALFA_DATA=/data ALFA_ARTIFACTS=/data/artifacts ALFA_FRONTEND=/app/frontend STOCKINTEL_DB=/data/stockintel.db \
     STOCKINTEL_KRONOS_PATH=/app/vendor/kronos
+# the chat reads /usr/share/dict/words to tell a stock named in lowercase from an ordinary word
+RUN apt-get update && apt-get install -y --no-install-recommends wamerican && rm -rf /var/lib/apt/lists/*
 COPY backend/pyproject.toml backend/README.md ./backend/
 COPY backend/backend ./backend/backend
 COPY frontend ./frontend

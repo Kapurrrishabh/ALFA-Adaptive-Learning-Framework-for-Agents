@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
-# Common names -> (symbol, market). Symbols in the universe file match directly.
+# Common names -> (symbol, market): indices, US stocks, and names people write unlike NSE (see name_index).
 ALIASES = {
     "reliance": ("RELIANCE", "NSE"), "hdfc bank": ("HDFCBANK", "NSE"), "icici bank": ("ICICIBANK", "NSE"),
     "icici": ("ICICIBANK", "NSE"), "state bank": ("SBIN", "NSE"), "sbi": ("SBIN", "NSE"),
@@ -30,7 +30,7 @@ ALIASES = {
     "bajaj auto": ("BAJAJ-AUTO", "NSE"), "jio financial": ("JIOFIN", "NSE"), "shriram finance": ("SHRIRAMFIN", "NSE"),
     "sbi life": ("SBILIFE", "NSE"), "hdfc life": ("HDFCLIFE", "NSE"), "britannia": ("BRITANNIA", "NSE"),
     "tata consumer": ("TATACONSUM", "NSE"), "grasim": ("GRASIM", "NSE"), "ntpc": ("NTPC", "NSE"),
-    "ongc": ("ONGC", "NSE"), "itc": ("ITC", "NSE"), "tcs": ("TCS", "NSE"),
+    "ongc": ("ONGC", "NSE"), "itc": ("ITC", "NSE"), "tcs": ("TCS", "NSE"), "lic": ("LICI", "NSE"),
     "nifty": ("^NSEI", "NSE"), "sensex": ("^BSESN", "BSE"), "bank nifty": ("^NSEBANK", "NSE"),
     "nvidia": ("NVDA", "US"), "apple": ("AAPL", "US"), "microsoft": ("MSFT", "US"), "amd": ("AMD", "US"),
     "tesla": ("TSLA", "US"), "amazon": ("AMZN", "US"), "alphabet": ("GOOGL", "US"), "google": ("GOOGL", "US"),
@@ -41,7 +41,8 @@ NOT_TICKERS = {"I", "A", "RSI", "PE", "EPS", "MACD", "ATR", "NSE", "BSE", "BUY",
                "AVOID", "ETF", "IPO", "CEO", "CFO", "US", "USA", "INR", "USD", "FY", "EV", "EBITDA", "ROE",
                "ROA", "ROIC", "PEG", "FCF", "VAR", "CVAR", "SMA", "EMA", "OBV", "GDP", "RBI", "SEBI", "AI",
                "IT", "FMCG", "OK", "Q1", "Q2", "Q3", "Q4", "YOY", "QOQ", "TTM", "LTCG", "STCG", "STT",
-               "HNI", "MF", "SIP", "PB", "DE", "NPA", "WHY", "WHAT", "HOW", "AND", "THE", "VS"}
+               "HNI", "MF", "SIP", "PB", "DE", "NPA", "WHY", "WHAT", "HOW", "AND", "THE", "VS",
+               "AVG", "INFO", "AGRI", "AGRO", "ECO", "IND"}
 
 SECTOR_WORDS = {
     "Technology": ("it stocks", "it sector", "it compan", "it services", "tech", "software",
@@ -60,7 +61,7 @@ SECTOR_WORDS = {
 DOMAIN_WORDS = {
     "candlestick": ("candle", "doji", "hammer", "engulfing"),
     "pattern": ("pattern", "triangle", "head and shoulders", "double top", "double bottom",
-                "flag", "wedge", "channel", "forming"),
+                "flag", "wedge", "channel", " forming"),
     "fundamental": ("fundamental", "valuation", "earnings", "revenue", "margin", "debt", "p/e",
                     " pe ", "roe", "balance sheet", "cash flow", "profit"),
     "news_sentiment": ("news", "sentiment", "headline", "announcement"),
@@ -111,8 +112,29 @@ def extract_amount(text: str) -> Optional[float]:
     return None
 
 
-def extract_tickers(text: str, known: Iterable[str]) -> List[Tuple[str, str]]:
-    known_set: Set[str] = {k.upper() for k in known}
+def _words(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9&]+", text.lower())
+
+
+def name_index(names: Mapping[str, str], english: Set[str]) -> Dict[str, str]:
+    """What people write for each listed company -> its symbol: the symbol, the name without "Limited", and the
+    name's first word when no other company starts with it. A lone English word ("idea", "beta") is left out, so
+    that stock is found only in capitals (IDEA) or by more of its name (Vodafone Idea)."""
+    index: Dict[str, str] = {}
+    starts: Dict[str, Set[str]] = {}
+    for sym, name in names.items():
+        words = _words(re.sub(r"\s+(ltd\.?|limited)$", "", name.strip(), flags=re.I))
+        index[" ".join(words)] = sym
+        starts.setdefault(words[0], set()).add(sym)
+    index.update({" ".join(_words(sym)): sym for sym in names})
+    index.update({w: next(iter(syms)) for w, syms in starts.items() if len(syms) == 1 and w not in index})
+    # a lone lowercase word of two letters ("gm", "hp") is too often not meant as a stock
+    return {p: sym for p, sym in index.items()
+            if " " in p or (len(p) > 2 and p not in english and p.upper() not in NOT_TICKERS)}
+
+
+def extract_tickers(text: str, listings: Mapping[str, str]) -> List[Tuple[str, str]]:
+    known_set: Set[str] = set(listings.values())
     found: List[Tuple[str, str]] = []
     rest = f" {text} "
     explicit = re.compile(r"(?<![\w&\-])([A-Za-z0-9&\-]{2,15})\.(ns|bo)\b", re.I)
@@ -121,13 +143,20 @@ def extract_tickers(text: str, known: Iterable[str]) -> List[Tuple[str, str]]:
         if sym not in found:
             found.append(sym)
     rest = explicit.sub(" ", rest)
-    for name in sorted(ALIASES, key=len, reverse=True):
-        pattern = re.compile(rf"(?<![a-z]){re.escape(name)}(?![a-z])", re.I)
-        if pattern.search(rest):
-            sym = ALIASES[name]
+    # the longest name wins ("reliance power" over the alias "reliance"); on a tie the alias does ("amd" is the US one)
+    phrases = {**{p: (sym, "NSE") for p, sym in listings.items()}, **{" ".join(_words(a)): v for a, v in ALIASES.items()}}
+    tokens, longest = list(re.finditer(r"[a-z0-9&]+", rest.lower())), max(p.count(" ") + 1 for p in phrases)
+    i = 0
+    while i < len(tokens):
+        n = next((n for n in range(min(longest, len(tokens) - i), 0, -1)
+                  if " ".join(t.group() for t in tokens[i:i + n]) in phrases), 0)
+        if n:
+            sym = phrases[" ".join(t.group() for t in tokens[i:i + n])]
             if sym not in found:
                 found.append(sym)
-            rest = pattern.sub(" ", rest)
+            start, end = tokens[i].start(), tokens[i + n - 1].end()
+            rest = rest[:start] + " " * (end - start) + rest[end:]
+        i += n or 1
     for tok in re.findall(r"\b[A-Z][A-Z0-9&\-]{1,14}\b", rest):
         base = tok
         if base in NOT_TICKERS:
@@ -228,10 +257,10 @@ ROUTABLE = {
 }
 
 
-def classify(text: str, known_symbols: Sequence[str], short_forms: Set[str], has_session_symbol: bool,
+def classify(text: str, listings: Mapping[str, str], short_forms: Set[str], has_session_symbol: bool,
              research_phrases: Sequence[str] = ()) -> Intent:
     t = text.lower().strip()
-    symbols = extract_tickers(text, known_symbols)
+    symbols = extract_tickers(text, listings)
     amount = extract_amount(text)
     inc, exc = extract_sectors(text)
     base = dict(symbols=symbols, amount=amount, horizon=extract_horizon(text),
@@ -269,7 +298,7 @@ def classify(text: str, known_symbols: Sequence[str], short_forms: Set[str], has
     # a verdict only when the one stock named is the subject: "TCS fell, is gold a good buy?" is not about TCS
     subject = re.search(r"\bis (.+?) a (good )?buy\b", text, re.I)
     if subject and len(symbols) == 1 and not symbols[0][0].startswith("^") \
-            and extract_tickers(subject.group(1), known_symbols) == symbols:
+            and extract_tickers(subject.group(1), listings) == symbols:
         return intent("should_buy")
     if re.search(r"\breport\b", t) and (symbols or has_session_symbol):
         return intent("report")
@@ -305,7 +334,7 @@ def classify(text: str, known_symbols: Sequence[str], short_forms: Set[str], has
                        r"how are\b.*\btaxed\b)", t)
     live = re.search(r"\b(current|today|now|latest|my)\b", t)
     # the ticker guess reads NAV in "what is NAV?" as a stock, but it is a word our lessons explain
-    names_no_stock = all(sym in short_forms and sym not in known_symbols for sym, _ in symbols)
+    names_no_stock = all(sym in short_forms and sym not in listings.values() for sym, _ in symbols)
     asks_term = concept or symbols and re.search(r"\b(explain|describe|define|tell me about|understand|learn|meaning|"
                                                  r"meant|full form|stands? for)\b", t)
     if asks_term and names_no_stock and not live and not (refers_back and has_session_symbol):
