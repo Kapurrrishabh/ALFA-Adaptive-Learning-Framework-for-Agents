@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 from backend.advisory.calculators import performance
+from backend.advisory.report import plain_reason
 from backend.config import BUILDER_STOCKS, BUSY_WAIT_S, FORECAST_DAYS
 from backend.database.sources.panel import CACHE_DIR, index_constituents, listed_shares, universe_panel
 from backend.database.sources.provider import DataUnavailable
@@ -375,16 +376,17 @@ class Hub:
         total = len(rank_tbl)
         if in_uni:
             r = rank_tbl.loc[sym]
-            line = (f"Momentum rank {rank} of {total} in the Nifty 200 (6-month {r.r6 * 100:+.1f}%, "
-                    f"12-month {r.r12 * 100:+.1f}%, risk-adjusted by {r.sigma * 100:.0f}% volatility).")
+            line = (f"It ranks {rank} of {total} on steady price gains among India's 200 largest companies (the Nifty 200): "
+                    f"{r.r6 * 100:+.1f}% in 6 months and {r.r12 * 100:+.1f}% in a year, allowing for its "
+                    f"{r.sigma * 100:.0f}% yearly swings.")
             (why_buy if rank <= KEEP_RANK else why_not).append(line)
         for e in d.supporting_evidence[:3] if d.score >= 0 else d.contradicting_evidence[:3]:
-            why_buy.append(e["claim"])
+            why_buy.append(plain_reason(e["claim"]))
         for e in d.contradicting_evidence[:3] if d.score >= 0 else d.supporting_evidence[:3]:
-            why_not.append(e["claim"])
+            why_not.append(plain_reason(e["claim"]))
         fund = a.results.get("fundamental")
         if fund is not None and fund.available:
-            line = f"Fundamentals look {fund.state} (trend: {fund.details.get('trend')})."
+            line = f"The company's accounts look {fund.state} ({fund.details.get('trend')})."
             if fund.score > 0.1:
                 why_buy.append(line)
             elif fund.score < -0.1 or fund.details.get("trend") == "deteriorating":
@@ -393,45 +395,49 @@ class Hub:
         if risk is not None and risk.available:
             vol = risk.details["annualized_vol_pct"]
             if vol > 40:
-                why_not.append(f"High volatility: {vol}% a year — expect large swings.")
+                why_not.append(f"The price swings a lot, about {vol}% a year, so expect big ups and downs.")
             dd = risk.details["current_drawdown_pct"]
             if dd < -25:
-                why_not.append(f"Price is {abs(dd):.0f}% below its peak in the loaded history.")
+                why_not.append(f"The price is {abs(dd):.0f}% below its highest point in the prices we hold.")
         if m["trend"] == "down":
-            why_not.append(f"The overall market is in a downtrend (Nifty below its 10-month average "
-                           f"{m['sma_10m']:,.0f}); new buys carry more risk.")
+            why_not.append(f"The whole market is falling (the Nifty is below its 10-month average of "
+                           f"{m['sma_10m']:,.0f}), so new buys are riskier.")
         if m["momentum_crash_risk"]:
-            why_not.append("Market is in a bear-then-rebound regime where momentum stocks have crashed before.")
+            why_not.append("The market is bouncing back after a fall, a time when stocks like this have crashed before.")
         ins = self.insider(sym, 90, limit=None)
         bought = sum(x["value_cr"] for x in ins if x["action"] == "Bought" and "romoter" in x["category"])
         sold = sum(x["value_cr"] for x in ins if x["action"] == "Sold" and "romoter" in x["category"])
         if bought:
-            why_buy.append(f"Promoters bought ₹{bought:,.2f} cr in the last 90 days (weak signal on its own).")
+            why_buy.append(f"The company's promoters (its founders and main owners) bought ₹{bought:,.2f} cr of shares "
+                           "in the last 90 days, a weak sign on its own.")
         if sold:
-            why_not.append(f"Promoters sold ₹{sold:,.2f} cr in the last 90 days.")
+            why_not.append(f"The company's promoters (its founders and main owners) sold ₹{sold:,.2f} cr of shares "
+                           "in the last 90 days.")
 
         if not in_uni:
             verdict, tone = "NO SIGNAL", "neutral"
-            headline = ("Outside the Nifty 200, so the tested buy signal doesn't cover this stock. "
-                        f"Research view: {d.decision_support_label}.")
+            headline = ("It is outside the Nifty 200 (India's 200 largest companies), so our tested buy signal does not "
+                        f"cover it. Our wider check says {d.decision_support_label}.")
         elif rank <= BUY_RANK:
             if m["momentum_crash_risk"]:
                 verdict, tone = "BUY — HALF SIZE", "positive"
-                headline = f"Top-{BUY_RANK} momentum stock, but the market regime calls for half position size."
+                headline = (f"It is one of the {BUY_RANK} strongest risers among India's 200 largest companies, but "
+                            "the market is in a risky phase, so buy only half the usual amount.")
             else:
                 verdict, tone = ("HOLD / ADD" if held else "BUY"), "positive"
-                headline = f"Top-{BUY_RANK} momentum stock in the Nifty 200 — it qualifies for the signal portfolio."
+                headline = (f"It is one of the {BUY_RANK} strongest risers among India's 200 largest companies, which "
+                            "is what our tested signal buys.")
         elif rank <= KEEP_RANK:
             verdict, tone = ("HOLD" if held else "WAIT"), "neutral"
-            headline = (f"Rank {rank}: good enough to keep if you own it (top {KEEP_RANK}), "
-                        f"not strong enough to buy fresh (top {BUY_RANK}).")
+            headline = (f"It ranks {rank}: strong enough to keep if you own it (top {KEEP_RANK}), but not strong "
+                        f"enough to buy now (top {BUY_RANK}).")
         else:
             verdict, tone = ("SELL AT REBALANCE" if held else "DON'T BUY"), "negative"
-            headline = f"Rank {rank} of {total}: momentum is weak, which is where the signal says to avoid."
+            headline = f"It ranks {rank} of {total}: its price strength is weak, and our signal avoids stocks like this."
         if in_uni and rank <= KEEP_RANK:
             # plan() sizes the portfolio from the capital and owns that rule, so the verdict names the size it assumes
-            headline += (f" These bands are for a {N_DEFAULT}-stock portfolio; your rebalance plan sizes the portfolio "
-                         "to your capital, and with fewer stocks it buys and keeps only higher ranks.")
+            headline += (f" This assumes a portfolio of {N_DEFAULT} stocks; with less money your plan holds fewer, so "
+                         "it buys and keeps only higher ranks.")
         return {
             "symbol": sym, "verdict": verdict, "tone": tone, "headline": headline, "held": held,
             "momentum_rank": rank, "universe_size": total, "buy_rank": BUY_RANK, "keep_rank": KEEP_RANK, "research_label": d.decision_support_label,
@@ -439,8 +445,8 @@ class Hub:
             "why_buy": why_buy[:7], "why_not": why_not[:7],
             "plan": {"stop_loss": self.stop_loss(sym) if tone == "positive" else None,
                      "next_review": next_rebalance(date.today()),
-                     "position_size": f"equal slice of your momentum portfolio "
-                                      f"(≈{100 * exposure_for('balanced', m) / N_DEFAULT:.1f}% with {N_DEFAULT} stocks)"
+                     "position_size": f"about {100 * exposure_for('balanced', m) / N_DEFAULT:.1f}% of the money you "
+                                      f"invest this way (one of {N_DEFAULT} equal parts)"
                      if tone == "positive" else None},
             "market": m, "analysis_timestamp": a.analysis_timestamp, "data_as_of": a.quality["last_date"],
             "evidence_note": performance.evidence_note(performance.track_record())

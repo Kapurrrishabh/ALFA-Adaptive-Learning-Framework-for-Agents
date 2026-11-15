@@ -121,7 +121,7 @@ def test_every_reply_that_explains_volatility_reads_the_one_meaning(orch, monkey
 
 
 @pytest.mark.parametrize("question, most", [("help", 8), ("Is the market in a downtrend?", 8),
-                                            ("Analyze TEST", 9), ("how risky is TEST?", 9)])
+                                            ("Analyze TEST", 9), ("how risky is TEST?", 9), ("Should I buy TEST?", 9)])
 def test_chat_replies_read_at_plain_language_grade(orch, monkeypatch, question, most):
     from backend.models.external.eval_user_questions import grade, plain
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
@@ -145,7 +145,7 @@ def test_a_question_none_of_our_handlers_fits_is_answered_by_the_self_learning_a
                           "evidence": "RBI policy note, 2026-11-06: the repo rate stays at 5.50%.", "as_of": "2026-11-06"})
     r = orch.handle("what did the RBI say about rates?", DEFAULT_PORTFOLIO, "agent")
     assert (r.intent, orch._agent.asked) == ("agent", ["what did the RBI say about rates?"])
-    assert r.text == ("Worded from its sources.\n\n**Source** · what the self-learning agent retrieved, as of 2026-11-06:\n"
+    assert r.text == ("Worded from its sources.\n\n**Source** · what ALFA retrieved, as of 2026-11-06:\n"
                       "RBI policy note, 2026-11-06: the repo rate stays at 5.50%.")
 
 
@@ -153,14 +153,14 @@ def test_when_the_agent_holds_back_the_reply_says_why_and_what_we_can_answer(orc
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
     orch._agent = _Agent({"spoke": False, "served": "", "because": "its evidence does not carry the figures"})
     r = orch.handle("what did the RBI say about rates?", DEFAULT_PORTFOLIO, "agent")
-    assert r.text.startswith("The self-learning agent held back: its evidence does not carry the figures.")
+    assert r.text.startswith("ALFA, our self-learning model, held back: its evidence does not carry the figures.")
     assert "Analyze RELIANCE" in r.text
 
 
 def test_an_unreachable_agent_is_named_and_its_call_refunded(orch, monkeypatch):
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
     r = orch.handle("what did the RBI say about rates?", DEFAULT_PORTFOLIO, "agent")
-    assert (r.intent, "The self-learning agent could not answer either" in r.text) == ("help", True)
+    assert (r.intent, "ALFA, our self-learning model, could not answer either" in r.text) == ("help", True)
     assert orch.usage(DEFAULT_PORTFOLIO)["used"] == 1      # the routing call only
 
 
@@ -1047,7 +1047,7 @@ def test_verdict_bands_say_which_portfolio_size_they_assume(app_client):
     from backend.advisory.signals.advisor import N_DEFAULT
     v = app_client.get("/ui/stock/TEST/verdict").json()
     assert (v["buy_rank"], v["keep_rank"]) == (N_DEFAULT, 2 * N_DEFAULT)
-    assert f"These bands are for a {N_DEFAULT}-stock portfolio" in v["headline"]
+    assert f"This assumes a portfolio of {N_DEFAULT} stocks" in v["headline"]
 
 
 def test_a_half_size_verdict_sizes_the_position_at_half(app_client, monkeypatch):
@@ -1057,7 +1057,7 @@ def test_a_half_size_verdict_sizes_the_position_at_half(app_client, monkeypatch)
     monkeypatch.setattr(hubmod, "market_state", lambda bench, asof: {**state(bench, asof), "momentum_crash_risk": True})
     v = app_client.get("/ui/stock/TEST/verdict").json()
     assert v["verdict"] == "BUY — HALF SIZE"
-    assert f"(≈{100 * CRASH_EXPOSURE / N_DEFAULT:.1f}% with {N_DEFAULT} stocks)" in v["plan"]["position_size"]
+    assert f"about {100 * CRASH_EXPOSURE / N_DEFAULT:.1f}% of the money" in v["plan"]["position_size"]
 
 
 def test_verdict_promoter_totals_count_every_filing_in_the_window(app_client, monkeypatch):
@@ -1070,7 +1070,7 @@ def test_verdict_promoter_totals_count_every_filing_in_the_window(app_client, mo
            "direction": 1, "value": 5e7, "shares": 10_000, "pid": 99}
     monkeypatch.setattr(insider, "load", lambda: pd.DataFrame(sales + [buy]))
     v = app_client.get("/ui/stock/TEST/verdict").json()
-    assert "Promoters bought ₹5.00 cr in the last 90 days (weak signal on its own)." in v["why_buy"]
+    assert any("promoters (its founders and main owners) bought ₹5.00 cr" in x for x in v["why_buy"])
 
 
 @pytest.mark.parametrize("trend, listed_against", [("deteriorating", True), ("stable/mixed", False)])
@@ -1084,8 +1084,41 @@ def test_neutral_fundamentals_are_not_a_reason_to_buy(app_client, orch, monkeypa
         return a
     monkeypatch.setattr(orch, "analysis", neutral)
     v = app_client.get("/ui/stock/TEST/verdict").json()
-    line = f"Fundamentals look mixed (trend: {trend})."
+    line = f"The company's accounts look mixed ({trend})."
     assert line not in v["why_buy"] and (line in v["why_not"]) == listed_against
+
+
+@pytest.mark.parametrize("claim", [
+    "Price is above the 50-day average (339.25) and the average is rising.", "Price is below the 200-day average (1,296.46).",
+    "20-day return is +8.5%.", "Revenue changed +25.9% year on year.", "P/E is 521.7 (absolute bands; not sector-adjusted).",
+    "EBIT covers interest 3.9 times.", "Return on equity is 5.6%.", "Annualized volatility is 35.2% over the last year.",
+    "Maximum drawdown in the loaded history is -72.1% (2021-12-01 to 2023-04-27).",
+    "Swing structure shows lower highs and lower lows.", "MACD histogram is negative (-17.22).", "PEG ratio is 3.27.",
+    "Realized volatility (28% ann.) is at percentile 80 of its history — unusually volatile.",
+])
+def test_a_plain_reason_keeps_every_figure_of_the_engines_reason(claim):
+    from backend.advisory.report import plain_reason
+    figures = lambda text: sorted(re.findall(r"\d[\d,.]*\d|\d", text))
+    assert plain_reason(claim) != claim and figures(plain_reason(claim)) == figures(claim)
+
+
+def test_a_plain_reason_says_a_fall_where_the_engine_wrote_a_minus_sign():
+    from backend.advisory.report import plain_reason
+    assert plain_reason("EPS changed -4.0% year on year.") == "Profit per share fell 4.0% from a year ago."
+
+
+def test_a_reason_with_no_plain_form_is_shown_in_the_engines_own_words():
+    from backend.advisory.report import plain_reason
+    assert plain_reason("Volume is 2.1x its 20-day average on a +3.0% day.") == "Volume is 2.1x its 20-day average on a +3.0% day."
+
+
+def test_the_buy_verdicts_reasons_are_list_items_the_chat_shows_one_per_line(orch):
+    lines = orch.handle("Should I buy TEST?", DEFAULT_PORTFOLIO, "plain-verdict").text.splitlines()
+    headings = [line for line in lines if line in ("**Good signs**", "**Risks**")]
+    assert headings
+    for heading in headings:
+        block = lines[lines.index(heading) + 1:]
+        assert all(line.startswith("- ") for line in block[:block.index("")])
 
 
 def test_ui_verdict_that_gives_a_stop_says_the_track_record_left_it_out(app_client):
@@ -1648,7 +1681,7 @@ def test_evidence_note_reads_every_figure_off_the_track_record(tmp_path, monkeyp
     assert "+15 points in 2023, -10 in 2025" in note
     assert "fell up to 35%" in note
     assert "1 of 3 candle and chart patterns" in note and "at 0 of 1 horizons" in note
-    assert "not built yet" in perf.evidence_note(None)
+    assert "not built yet" in perf.evidence_note(None) and "stockintel" not in perf.evidence_note(None)
     assert perf.momentum_evidence(perf.track_record())[1] == (
         "Backtest on today's index list (survivorship-inflated): worst fall -35%, -21% with the trend + volatility overlay.")
 
@@ -2334,7 +2367,7 @@ def test_a_question_about_another_subject_is_not_answered_for_the_stock_in_the_s
 def test_a_buy_question_about_the_stock_in_the_session_gets_its_verdict(orch, question):
     orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "follow-up")
     reply = orch.handle(question, DEFAULT_PORTFOLIO, "follow-up")
-    assert reply.intent == "should_buy" and reply.text.startswith("TEST:")
+    assert reply.intent == "should_buy" and reply.text.startswith("**Tested buy signal for TEST:")
 
 
 @pytest.mark.parametrize("label", ["knowledge", "a dividend is a share of profit"])   # a reply that is no label is ignored

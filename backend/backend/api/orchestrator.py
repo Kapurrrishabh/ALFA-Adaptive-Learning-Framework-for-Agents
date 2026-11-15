@@ -352,13 +352,13 @@ class Orchestrator:
             with self.model_call(s.portfolio):
                 turn = self.agent.ask(message, "", session=f"{s.portfolio}:{s.session_id}")
         except AgentUnavailable as exc:
-            return Reply(f"{unanswered.text}\n\nThe self-learning agent could not answer either: {exc}",
+            return Reply(f"{unanswered.text}\n\nALFA, our self-learning model, could not answer either: {exc}",
                          unanswered.intent, unanswered.data)
         if not turn["spoke"]:
-            return Reply(f"The self-learning agent held back: {turn['because']}.\n\n{unanswered.text}", "agent",
+            return Reply(f"ALFA, our self-learning model, held back: {turn['because']}.\n\n{unanswered.text}", "agent",
                          {"no_answer": True, "agent": turn})
         dated = f", as of {turn['as_of']}" if turn["as_of"] else ""
-        return Reply(f"{turn.get('shown') or turn['served']}\n\n**Source** · what the self-learning agent retrieved{dated}:\n"
+        return Reply(f"{turn.get('shown') or turn['served']}\n\n**Source** · what ALFA retrieved{dated}:\n"
                      f"{turn['evidence']}", "agent", {"agent": turn}, ["self_learning_agent"])
 
     def _deterministic(self, s: Session, intent: Intent) -> Reply:
@@ -807,20 +807,17 @@ class Orchestrator:
         if mkt != "NSE":
             raise ValueError("The buy/sell signal covers NSE stocks only; try 'Analyze' for other markets.")
         v = self.hub.verdict(sym, s)
-        lines = [f"{sym}: {v['verdict']}", v["headline"], ""]
-        if v["why_buy"]:
-            lines.append("Why you might buy:")
-            lines += [f"  ✓ {x}" for x in v["why_buy"]]
-        if v["why_not"]:
-            lines.append("Why you might not:")
-            lines += [f"  ✕ {x}" for x in v["why_not"]]
+        lines = [f"**Tested buy signal for {sym}: {v['verdict']}**", "", v["headline"]]
+        for title, reasons in (("Good signs", v["why_buy"]), ("Risks", v["why_not"])):
+            if reasons:
+                lines += ["", f"**{title}**", *(f"- {x}" for x in reasons)]
         if v["plan"]["stop_loss"]:
-            lines.append(f"\nIf you buy: stop-loss ₹{v['plan']['stop_loss']:,.2f} (10% below the last close), "
-                         f"{v['plan']['position_size']}.")
-        lines.append(f"Next review: {v['plan']['next_review']}.")
-        lines.append(f"Research engines: {v['research_label']} (score {v['research_score']:+.2f}"
-                     + (", engines disagree)" if v["conflict"] else ")") + ". Ask 'Why?' for the full breakdown.")
-        lines.append("\n" + v["evidence_note"])
+            lines += ["", "**If you buy**", f"- Put in {v['plan']['position_size']}.",
+                      f"- Sell if it closes below ₹{v['plan']['stop_loss']:,.2f}, 10% under the last close."]
+        lines += ["", f"Next check of the signal: {v['plan']['next_review']}.",
+                  f"Our wider check of the chart, news and company accounts says {v['research_label']}"
+                  + ("; those checks disagree with each other" if v["conflict"] else "") + ". Ask 'Why?' for the details.",
+                  "", "**How well this rule has worked**", v["evidence_note"], "", "Decision support, not investment advice."]
         return Reply("\n".join(lines), "should_buy", {"payload": v}, ["verdict"])
 
     def _h_alerts(self, s: Session, i: Intent) -> Reply:

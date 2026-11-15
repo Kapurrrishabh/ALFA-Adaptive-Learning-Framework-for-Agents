@@ -270,7 +270,7 @@ def evidence_note(rec: Optional[Dict[str, Any]]) -> str:
     """What the momentum rule has actually done, read off the built track record."""
     rule = "The buy/sell rule is NSE's momentum method. "
     if rec is None:
-        return rule + "Its measured track record is not built yet; run `stockintel build-performance`."
+        return rule + "Its measured track record is not built yet on this server, so none is shown."
     e = live_edge(rec)
     edges = sum(abs(p["z"] or 0) >= rec["bonferroni_z"] for p in rec["patterns"])
     beats = sum(h["accuracy"] > h["always_up_accuracy"] for h in rec["forecast"]["horizons"])

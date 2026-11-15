@@ -1213,21 +1213,33 @@ async function pageChat(view, ctx) {
   for (const m of history) bubble(m.who, m.text, m.meta);
   const useAgent = h("input", { type: "checkbox" }); useAgent.checked = localStorage.getItem("si-agent") !== "0";
   useAgent.addEventListener("change", () => localStorage.setItem("si-agent", useAgent.checked ? "1" : "0"));
-  const agentRow = h("label", { class: "agent-toggle", hidden: true }, useAgent, "Also ask my self-learning agent (a second opinion that stays quiet when unsure)");
+  const ALFA = "ALFA, our self-learning model";
+  const agentRow = h("label", { class: "agent-toggle", hidden: true }, useAgent, `Ask ${ALFA} first (it stays quiet when unsure)`);
   api("/ui/agent/status", { signal: ctx.signal }).then((st) => { agentRow.hidden = !st.available; }).catch((e) => ctx.live() && toast(errorWords(e)));
   const send = async (q) => {
     q = (q || input.value).trim(); if (!q) return; input.value = "";
     bubble("me", q); history.push({ who: "me", text: q });
-    const b = bubble("bot", "Thinking…"); let byAgent = false;
-    try { const r = await api("/chat", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) }); byAgent = r.intent === "agent";
-      b.replaceChildren(md(r.text), h("span", { class: "meta" }, `${r.intent}${r.tools_used.length ? " · " + r.tools_used.join(", ") : ""}`)); history.push({ who: "bot", text: r.text, meta: r.intent }); }
-    catch (e) { b.textContent = errorWords(e); }
-    if (useAgent.checked && !agentRow.hidden && !byAgent) { const a = bubble("bot agent", "Asking the self-learning agent…");
-      try { const t = await api("/ui/agent/ask", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) });
-        const meta = `self-learning agent${t.as_of ? ` · data as of ${t.as_of}` : ""} · ` + (t.spoke ? (t.confidence == null ? "from its sources" : `confidence ${num(t.confidence)}`) : `held back: ${t.because}`)
-          + (t.phrased_by ? ` · worded by ${t.phrased_by.split("/").pop()}` : t.unphrased_because ? ` · in its own words (${t.unphrased_because})` : "");
-        a.replaceChildren(md(t.shown || t.served), h("span", { class: "meta" }, meta)); history.push({ who: "bot agent", text: t.shown || t.served, meta }); }
-      catch (e) { a.textContent = `Self-learning agent: ${errorWords(e)}`; } }
+    const askAlfa = useAgent.checked && !agentRow.hidden;
+    const top = bubble(askAlfa ? "bot agent" : "bot", askAlfa ? "Asking ALFA…" : "Thinking…");
+    const show = (b, who, text, meta) => { b.className = `bubble ${who}`; b.replaceChildren(md(text), h("span", { class: "meta" }, meta)); history.push({ who, text, meta }); };
+    let r;
+    try { r = await api("/chat", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) }); }
+    catch (e) { top.className = "bubble bot"; top.textContent = errorWords(e); }
+    // ALFA's answer leads when it speaks; our tested reply follows it, or leads when ALFA holds back
+    if (r && r.intent === "agent") show(top, "bot agent", r.text, ALFA);
+    else if (r) {
+      const ours = [r.text, `${r.intent}${r.tools_used.length ? " · " + r.tools_used.join(", ") : ""}`];
+      let t = null, failed = "";
+      if (askAlfa) try { t = await api("/ui/agent/ask", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) }); } catch (e) { failed = errorWords(e); }
+      const meta = t && `${ALFA}${t.as_of ? ` · data as of ${t.as_of}` : ""} · ` + (t.spoke ? (t.confidence == null ? "from its sources" : `confidence ${num(t.confidence)}`) : `held back: ${t.because}`)
+        + (t.phrased_by ? ` · worded by ${t.phrased_by.split("/").pop()}` : t.unphrased_because ? ` · in its own words (${t.unphrased_because})` : "");
+      if (t && t.spoke) { show(top, "bot agent", t.shown || t.served, meta); show(bubble("bot", ""), "bot", ...ours); }
+      else {
+        show(top, "bot", ...ours);
+        if (t) show(bubble("bot agent", ""), "bot agent", t.shown || t.served, meta);
+        else if (askAlfa) show(bubble("bot agent", ""), "bot agent", `${ALFA}: ${failed}`, ALFA);
+      }
+    }
     sessionStorage.setItem("si-chat-log", JSON.stringify(history.slice(-40))); log.scrollTop = log.scrollHeight;
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });

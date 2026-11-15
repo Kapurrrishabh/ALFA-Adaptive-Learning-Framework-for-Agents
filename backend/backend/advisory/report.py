@@ -259,6 +259,41 @@ TERM_MEANINGS = {
     "No statistically significant edge": "the moves after past signals could easily be chance",
 }
 
+GROWTH_WORDS = {"Revenue": "Sales", "Net income": "Profit", "EPS": "Profit per share", "Free cash flow": "Free cash flow"}
+PLAIN_REASONS = (
+    (r"Price is (above|below) the (\d+)-day average \(([\d,.]+)\) and the average is (rising|falling)\.",
+     lambda m: f"The price is {m[1]} its average over the last {m[2]} days ({m[3]}), and that average is {m[4]}."),
+    (r"Price is (above|below) the (\d+)-day average \(([\d,.]+)\)\.",
+     lambda m: f"The price is {m[1]} its average over the last {m[2]} days ({m[3]})."),
+    (r"(\d+)-day return is ([+-][\d.]+)%\.", lambda m: f"The price has moved {m[2]}% over the last {m[1]} trading days."),
+    (r"(Revenue|Net income|EPS|Free cash flow) changed ([+-])([\d.]+)% year on year\.",
+     lambda m: f"{GROWTH_WORDS[m[1]]} {'grew' if m[2] == '+' else 'fell'} {m[3]}% from a year ago."),
+    (r"P/E is ([\d,.]+) \(absolute bands; not sector-adjusted\)\.", lambda m: f"P/E, {TERM_MEANINGS['P/E']}, is {m[1]}."),
+    (r"EBIT covers interest ([\d,.]+) times\.", lambda m: f"Its {TERM_MEANINGS['EBIT']} covers its interest bill {m[1]} times."),
+    (r"Return on equity is (-?[\d.]+)%\.", lambda m: f"It earns {m[1]}% a year on {TERM_MEANINGS['Equity']}."),
+    (r"Annualized volatility is ([\d.]+)% over the last year\.", lambda m: f"The price swings about {m[1]}% in a year."),
+    (r"Maximum drawdown in the loaded history is -?([\d.]+)% \((\S+) to (\S+)\)\.",
+     lambda m: f"{TERM_MEANINGS['Max drawdown'].capitalize()} in {TERM_MEANINGS['Loaded history']} was {m[1]}% "
+               f"({m[2]} to {m[3]})."),
+    (r"Swing structure shows (higher|lower) highs and (?:higher|lower) lows\.",
+     lambda m: f"Its recent highs and lows keep getting {m[1]}."),
+    (r"MACD histogram is (positive|negative) \(([+-][\d.]+)\)\.",
+     lambda m: f"Short-term momentum is {'rising' if m[1] == 'positive' else 'falling'} (MACD histogram {m[2]})."),
+    (r"PEG ratio is ([\d.]+)\.", lambda m: f"PEG, {TERM_MEANINGS['PEG']}, is {m[1]}."),
+    (r"Realized volatility \((\d+)% ann\.\) is at percentile (\d+) of its history — unusually volatile\.",
+     lambda m: f"Its recent price swings, about {m[1]}% a year, are bigger than {m[2]}% of its past, which is unusual."),
+)
+
+
+def plain_reason(claim: str) -> str:
+    """An engine's reason in everyday words, its figures unchanged. A wording with no plain form here comes back as it
+    is, so an engine whose message changes shows its own words rather than a wrong plain one."""
+    for pattern, say in PLAIN_REASONS:
+        m = re.fullmatch(pattern, claim)
+        if m:
+            return say(m)
+    return claim
+
 
 def render_domain(a: StockAnalysis, domain: str) -> str:
     r = a.results.get(domain)
