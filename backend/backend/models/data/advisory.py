@@ -25,6 +25,7 @@ head's own probabilities; nothing here loads a file or runs a model.
 import re
 
 from backend.models.data import indicators
+from backend.models.guardrails import guardrails
 
 # One format per fact, applied once, so the characters in the answer are the characters in the
 # evidence. A figure rendered two ways cannot be copied and cannot be checked.
@@ -128,12 +129,15 @@ def fill(text, shown):
     return text
 
 
+# The served trend guard's own rule, read off the figures as the evidence prints them, as the guard reads them: from
+# unrounded ones a close of 100.004 shown as 100.00, the same as its averages, said "above both", which the guard refuses
+_TREND_WORDS = {"above": "above both its 20 and 50 day averages", "below": "below both its 20 and 50 day averages",
+                "between": "between its 20 and 50 day averages"}
+
+
 def _trend_words(facts):
-    if facts["close"] > facts["sma_20"] > facts["sma_50"]:
-        return "above both its 20 and 50 day averages"
-    if facts["close"] < facts["sma_20"] < facts["sma_50"]:
-        return "below both its 20 and 50 day averages"
-    return "between its 20 and 50 day averages"
+    shown = (float(_FORMATS[name].format(facts[name])) for name in guardrails.TREND_FIGURES)
+    return _TREND_WORDS[guardrails.trend_position(*shown)]
 
 
 def _rsi_words(value):
@@ -597,6 +601,23 @@ def _needs():
 
 
 NEEDS = _needs()
+
+
+def _subject_slots():
+    """(every word an answer form uses, the words just before its instrument, the words just after it), read off the
+    templates as NEEDS is, over every trend, rsi and outlook wording."""
+    forms = [form for close, sma_20, sma_50, rsi_14 in ((3, 2, 1, 80), (1, 2, 3, 20), (2, 1, 3, 50))
+             for outlook in RISK_NAMES for intent in _ANSWER
+             for form in _ANSWER[intent]("TICKER", dict(close=close, sma_20=sma_20, sma_50=sma_50, rsi_14=rsi_14),
+                                         {**{name: "0" for name in EVIDENCE_KEYS}, "outlook": outlook})]
+
+    def beside(step):
+        return frozenset(words[at + step] for words in map(str.split, forms) for at, word in enumerate(words)
+                         if word == "TICKER" and 0 <= at + step < len(words) and words[at + step].isalpha())
+    return frozenset(re.findall(r"[a-z]+", " ".join(forms))), beside(-1), beside(1)
+
+
+SUBJECT_SLOTS = _subject_slots()
 
 
 def phrasings(intent):

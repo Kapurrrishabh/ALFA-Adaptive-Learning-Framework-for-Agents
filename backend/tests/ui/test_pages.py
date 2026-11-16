@@ -1,7 +1,10 @@
 """The web app in a real browser: the navs at four widths, every page's basics, leaving a page mid-load,
-the search box, the theme toggle, the shared dialog, toasts, and error and empty states, and what a keyboard
-or screen reader user gets."""
+the search box, the theme toggle, the shared dialog, toasts, error and empty states, the stock page's notes, the chat's
+replies, and what a keyboard or screen reader user gets."""
 import re
+from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -9,6 +12,11 @@ import pytest
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="Playwright is not installed: pip install -e '.[dev]'")
 
+from backend.advisory.report import TERM_MEANINGS  # noqa: E402
+from backend.models.agent.core import ALFA as ALFAS_WORDS, BUILT  # noqa: E402
+from backend.models.agent.finance import FACTS, OFF_TOPIC, REFUSAL  # noqa: E402
+from backend.models.agent.present import TITLES, present  # noqa: E402
+from backend.models.data.stock_qa import FACT_SEPARATOR  # noqa: E402
 from backend.paths import FRONTEND  # noqa: E402
 from tests.app.test_portfolio_backtest import HOLDING, zerodha_holdings  # noqa: E402
 
@@ -220,6 +228,41 @@ def test_on_a_phone_the_verdict_comes_before_the_chart(browser, base_url):
     assert verdict["y"] + verdict["height"] <= chart["y"]
 
 
+def test_the_stock_headers_move_is_dated_by_its_bar_not_called_todays(browser, base_url):
+    """On 17 Nov it called 13 Nov's move "today": Yahoo had lost the 16 Nov close."""
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    tab.page.route("**/ui/stock/TEST", lambda route: route.fulfill(json={**route.fetch().json(), "as_of": "2026-11-13"}))
+    tab.go("#/stock/TEST")
+    assert tab.page.locator(".price + div").inner_text().endswith(") on 13 Nov")
+
+
+def test_a_computed_analyst_note_ends_with_one_full_stop(browser, base_url):
+    """It read "More come at 00:00 India time on 17 Nov..": the page added a stop after the server's own."""
+    allowance = "You have used your 10 AI answers for today. More come at 00:00 India time on 17 Nov."
+    tab = Tab(browser, base_url, 1366, service_workers="block")
+    tab.page.route("**/ui/stock/TEST/analyst", lambda route: route.fulfill(json={"text": "TEST is flat.", "written_by": None,
+                                                                                "draft_rejected": [allowance]}))
+    tab.go("#/stock/TEST")
+    tab.page.click("button:text-is('Explain in plain words')")
+    tab.settle()
+    assert tab.page.locator(".analyst .muted").inner_text() == f"Computed note: {allowance}"
+
+
+@pytest.mark.parametrize("width", [390, 1366])
+def test_our_return_models_median_label_stays_inside_the_projection_chart(browser, base_url, width):
+    """"Our model median ₹2,4" ran past the right edge: centred on the last day, the label was wider than the margin."""
+    tab = Tab(browser, base_url, width, service_workers="block")
+    fan = {f"q{q}": [2415.0 + q - 50] * 10 for q in (10, 25, 50, 75, 90)}
+    tab.page.route("**/ui/features", lambda route: route.fulfill(json={"ml": False, "kronos": False, "alfa": True, "gru": False}))
+    tab.page.route(re.compile(r"/ui/stock/TEST/ai\?model=alfa$"), lambda route: route.fulfill(json={
+        "symbol": "TEST", "model": "alfa", "as_of": "2999-01-01", "dates": [f"2999-01-{d:02}" for d in range(2, 12)], **fan,
+        "note": "A fan only this test draws."}))
+    tab.go("#/stock/TEST")
+    show_chart_tab(tab, "Price & projection")
+    assert "Our model median ₹2,415" in tab.page.locator(".chart-card svg[role=img]").first.text_content()
+    assert tab.page.evaluate(CUT_LABELS, "#view") == []
+
+
 def test_a_stock_page_asks_for_no_analyst_note_on_its_own(browser, base_url):
     tab = Tab(browser, base_url, 1366)
     tab.go("#/stock/TEST")
@@ -250,11 +293,203 @@ def test_a_stock_page_asks_for_each_of_its_data_once(browser, base_url, path):
     assert paths_asked_with_every_stock_panel_open(browser, base_url).count(path) == 1
 
 
+@pytest.fixture(scope="module")
+def stock_notes(browser, base_url):
+    """TEST's page with Show details open: the note under its chart, each details card's note by the card's title,
+    and the indicators those notes were written from."""
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/stock/TEST")
+    tab.page.click("summary:text-is('Show details')")
+    tab.settle()
+    notes = {"chart": tab.page.locator(".chart-card .chart-note").first.inner_text(),
+             **tab.page.evaluate("""() => Object.fromEntries([...document.querySelectorAll(".stock-details .card:has(> .chart-note)")]
+               .map((card) => [card.querySelector(".panel-title").textContent, card.querySelector(":scope > .chart-note").textContent]))""")}
+    indicators = tab.context.request.get(f"{base_url}/ui/stock/TEST/indicators?bars=126").json()
+    tab.context.close()
+    return notes, indicators
+
+
+@pytest.mark.parametrize("title, term", [("RSI (14)", "RSI"), ("MACD histogram", "MACD histogram"), ("Drawdown", "Drawdown")])
+def test_each_indicator_note_opens_with_what_its_term_means_in_term_meanings_words(stock_notes, title, term):
+    assert stock_notes[0][title].startswith(f"{term}: {TERM_MEANINGS[term]}. ")
+
+
+def test_the_drawdown_note_gives_the_deepest_fall_since_the_first_day_held(stock_notes):
+    notes, indicators = stock_notes
+    first = date.fromisoformat(indicators["history_from"])
+    # Chrome's en-IN writes September as "Sept", and num() rounds a half away from zero
+    day = f"{first.day} {'Sept' if first.month == 9 else f'{first:%b}'} {first.year}"
+    deepest = Decimal(str(indicators["max_drawdown_pct"])).quantize(Decimal("0.1"), ROUND_HALF_UP)
+    assert notes["Drawdown"].endswith(f" Deepest since {day}: {deepest}%.")
+
+
+def test_the_grey_band_note_says_what_volatility_means(stock_notes):
+    assert f"volatility ({TERM_MEANINGS['Volatility']}: " in stock_notes[0]["chart"]
+
+
 def test_on_a_phone_the_chat_send_box_is_above_the_bottom_nav(browser, base_url):
     tab = Tab(browser, base_url, 360)
     tab.go("#/chat")
     composer, nav = tab.page.locator(".composer").bounding_box(), tab.page.locator("#bnav").bounding_box()
     assert composer["y"] + composer["height"] <= nav["y"], (composer, nav)
+
+
+ALFA = "ALFA, our self-learning model"
+# NYKAA's facts, and the reply our code wrote from them, as the served agent gave them on 2026-11-16
+NYKAA_FACTS = FACT_SEPARATOR.join(("Stock: FSN E-Commerce Ventures Limited (NYKAA.NS), NSE, INR; last close 360.85 on 2026-11-16.",
+                                   "[fundamental] Price to book (P/B) 62.80x (2026-11-16).",
+                                   "[fundamental] Latest free cash flow is 4,904,300,000 INR. (FY ending 2026-03-31)."))
+NYKAA_REPLY = ("Here is what our facts say about the valuation of FSN E-Commerce Ventures Limited (NYKAA.NS). "
+               "Price to book (P/B) is 62.80x (2026-11-16).")
+
+
+def alfa_frame(spoke, **turn):
+    """A turn as the agent server sends it to /ui/agent/ask."""
+    return {"spoke": spoke, "because": "", "as_of": "2026-11-13", "confidence": None, "phrased_by": None, "unphrased_because": "",
+            "asked_writer": False, **turn}
+
+
+OURS_INSTEAD = "Our code's sentence, where ALFA held back"
+OURS_IN_ITS_PLACE = alfa_frame(True, served="TEST closed at ₹1217.00 on 13 Nov 2026: +1.2% over 5 days.", confidence=0.5,
+                               because="low confidence", phrased_by=BUILT)
+HANDED_OVER_HELD_BACK = alfa_frame(False, served=OFF_TOPIC, shown=OFF_TOPIC.capitalize(), because="not about money")
+TWO_PARTS = "how is TEST performing and should I buy it"
+
+
+def chats_asked():
+    """Each chat the tests send: the question, ALFA's turn (None: ALFA is off), and /chat's reply (None: the server's own).
+    Built when asked for, so a change to how a reply is laid out fails these tests and not the whole file's collection."""
+    facts = SimpleNamespace(spoke=True, intent=FACTS, ticker="NYKAA.NS", evidence=NYKAA_FACTS, as_of="2026-11-16", served=NYKAA_REPLY,
+                            phrased_by=BUILT)
+    return {"spoke": ("Analyze TEST", alfa_frame(True, served="its last close is 1217.00 .", shown="Its last close is 1217.00.", confidence=0.81), None),
+            "held back": ("Analyze TEST", alfa_frame(False, served=REFUSAL, because="its confidence is under the cut"), None),
+            "ours in its place": ("Analyze TEST", OURS_IN_ITS_PLACE, None),
+            "handed over, ours in its place": ("is TEST strong?", None, {"text": OURS_IN_ITS_PLACE["served"], "intent": "agent",
+                                                                        "tools_used": ["self_learning_agent"], "data": {"agent": OURS_IN_ITS_PLACE}}),
+            "handed over": ("what did the RBI say about rates?", None,
+                            {"text": "The repo rate stays at 5.50%.", "intent": "agent", "tools_used": ["self_learning_agent"]}),
+            "handed over, held back": ("how is your mom doing", None, {"text": "Here are some things you can ask me:\n- Analyze RELIANCE",
+                                                                    "intent": "help", "tools_used": [],
+                                                                    "data": {"no_answer": True, "agent": HANDED_OVER_HELD_BACK}}),
+            "two parts, ALFA's and ours": (TWO_PARTS, alfa_frame(True, served="TEST is up.\n\nI have no signal.", confidence=0.999,
+                                                                 because="buy: low confidence", phrased_by=f"{ALFAS_WORDS}, {BUILT}"), None),
+            "two parts, the writer's and ours": (TWO_PARTS, alfa_frame(True, served="TEST is up.\n\nI have no signal.",
+                                                                       because="buy: low confidence", asked_writer=True,
+                                                                       phrased_by=f"microsoft/Phi-4-mini-instruct, {BUILT}"), None),
+            "news in our words": ("any news on TEST?", alfa_frame(True, served="TEST closed at ₹1217.00 on 13 Nov 2026.",
+                                                                  intent="reference recent", phrased_by=BUILT, asked_writer=True,
+                                                                  because="sec filings unread: EDGAR answered 503",
+                                                                  unphrased_because="it ties 1 to NSE, which no passage does"), None),
+            "facts": ("is Nykaa expensive?", alfa_frame(**vars(facts), shown=present(facts, {"NYKAA.NS": "FSN E-Commerce Ventures"}, {})), None),
+            "nykaa": ("how is nykaa performing?", None, None)}
+
+
+REPLIES = """() => [...document.querySelectorAll(".log .bubble.me ~ .bubble")].map((b) => ({ cls: b.className,
+  meta: b.querySelector(".meta")?.textContent ?? "", by: (b.querySelector(".meta")?.textContent ?? "").split(" · ")[0],
+  starts_in_view: ((r, log) => r.top >= log.top - 1 && r.top < log.bottom)(b.getBoundingClientRect(), b.parentElement.getBoundingClientRect()),
+  parts: [...(b.querySelector(".md")?.children ?? [])].map((el) => [el.tagName, el.tagName === "UL" ? [...el.children].map((li) => li.textContent) : el.textContent]) }))"""
+
+
+def asked_in_chat(browser, base_url, width, question, alfa, chat, **context_options):
+    """The chat once question was sent, ALFA answering with its turn or off, and /chat with chat or the server's own reply."""
+    tab, answer = Tab(browser, base_url, width, service_workers="block", **context_options), lambda body: lambda route: route.fulfill(json=body)
+    if alfa:
+        tab.page.route("**/ui/agent/status", answer({"available": True}))
+        tab.page.route("**/ui/agent/ask", answer(alfa))
+    if chat:
+        tab.page.route("**/chat", answer(chat))
+    tab.go("#/chat")
+    tab.page.fill(".composer input", question)
+    tab.page.press(".composer input", "Enter")
+    tab.settle()
+    return tab
+
+
+@pytest.fixture(scope="module")
+def chats(browser, base_url):
+    """Each question of chats_asked sent in the chat: the replies under it, each as its class, who its note names,
+    whether its top is in the chat log's view, and its parts as (tag, text), a list's text being its items."""
+    out = {}
+    for name, asked in chats_asked().items():
+        tab = asked_in_chat(browser, base_url, 1366, *asked)
+        out[name] = tab.page.evaluate(REPLIES)
+        tab.context.close()
+    return out
+
+
+def test_alfas_answer_comes_first_and_our_tested_reply_under_it(chats):
+    assert [(b["cls"], b["by"]) for b in chats["spoke"]] == [("bubble bot agent", ALFA), ("bubble bot", "analyze")]
+
+
+def test_our_tested_reply_leads_when_alfa_holds_back(chats):
+    assert [(b["cls"], b["by"]) for b in chats["held back"]] == [("bubble bot", "analyze"), ("bubble bot agent", ALFA)]
+
+
+def test_alfas_answer_is_in_view_with_our_long_reply_under_it(chats):
+    assert chats["spoke"][0]["starts_in_view"]
+
+
+@pytest.mark.parametrize("chat", ["ours in its place", "handed over, ours in its place"])
+def test_our_codes_sentence_in_alfas_place_is_not_shown_as_alfas_and_shows_no_confidence(chats, chat):
+    """It led as ALFA's answer, "confidence 0.98 · worded by our code", the confidence that of the draft it replaced."""
+    assert [(b["cls"], b["meta"]) for b in chats[chat] if b["by"] != "analyze"] == [
+        ("bubble bot", f"{OURS_INSTEAD} · data as of 2026-11-13")]
+
+
+def test_our_tested_reply_leads_when_our_codes_sentence_is_in_alfas_place(chats):
+    assert [b["by"] for b in chats["ours in its place"]] == ["analyze", OURS_INSTEAD]
+
+
+def test_a_chat_reply_alfa_wrote_shows_once_as_alfas(chats):
+    assert [(b["cls"], b["by"]) for b in chats["handed over"]] == [("bubble bot agent", ALFA)]
+
+
+def test_a_question_handed_to_alfa_that_it_held_back_on_shows_our_reply_as_ours_and_its_refusal_as_its(chats):
+    """Our list of questions was drawn as ALFA's, under "ALFA, our self-learning model, held back: not about money"."""
+    assert [(b["cls"], b["by"], b["parts"][0][1]) for b in chats["handed over, held back"]] == [
+        ("bubble bot", "help", "Here are some things you can ask me:"), ("bubble bot agent", ALFA, OFF_TOPIC.capitalize())]
+
+
+@pytest.mark.parametrize("chat, meta", [
+    ("two parts, ALFA's and ours", f"{ALFA} · data as of 2026-11-13 · confidence 1.00 · worded by {ALFAS_WORDS} and our code"),
+    ("two parts, the writer's and ours", f"{ALFA} · data as of 2026-11-13 · from its sources · worded by Phi-4-mini-instruct and our code")])
+def test_two_answers_given_together_are_shown_as_alfas_naming_who_worded_each(chats, chat, meta):
+    """ALFA's own answer beside our code's read "Our code's sentence, where ALFA held back", and the writer's beside ours
+    "worded by Phi-4-mini-instruct" alone."""
+    assert [(b["cls"], b["meta"]) for b in chats[chat]][0] == ("bubble bot agent", meta)
+
+
+def test_a_news_reply_our_code_wrote_says_so_and_not_why_the_language_models_was_held_back(chats):
+    """It read "in its own words (no passage says “…”; it ties 1 to NSE, which no passage does)". A source it could not
+    read is no draft of ALFA's held back."""
+    assert [b["meta"] for b in chats["news in our words"] if b["by"] == ALFA] == [
+        f"{ALFA} · data as of 2026-11-13 · worded by our code · the language model's wording was held back"]
+
+
+def alfas_facts_reply(chats):
+    return next(b["parts"] for b in chats["facts"] if b["by"] == ALFA)
+
+
+def test_a_facts_reply_says_our_code_wrote_it(chats):
+    assert [b["meta"] for b in chats["facts"] if b["by"] == ALFA] == [f"{ALFA} · data as of 2026-11-16 · worded by our code"]
+
+
+def test_a_facts_reply_is_headed_by_its_share_and_company_facts(chats):
+    tag, text = alfas_facts_reply(chats)[0]
+    assert (tag, text) == ("H4", f"FSN E-Commerce Ventures (NYKAA.NS) · {TITLES[FACTS]}")
+
+
+def test_a_facts_reply_lists_each_fact_it_used_under_facts_used(chats):
+    parts = alfas_facts_reply(chats)
+    assert parts[parts.index(["P", "Facts used"]) + 1] == ["UL", NYKAA_FACTS.split(FACT_SEPARATOR)]
+
+
+def test_a_facts_reply_ends_with_its_source_and_day(chats):
+    assert alfas_facts_reply(chats)[-1][1].startswith("Source · Yahoo Finance via StockIntel, as of ")
+
+
+def test_a_share_outside_the_panel_is_answered_by_its_name(chats):
+    assert "(NYKAA.NS)" in chats["nykaa"][0]["parts"][0][1]
 
 
 def test_each_pattern_chart_names_its_proven_edges(visits):
@@ -263,10 +498,18 @@ def test_each_pattern_chart_names_its_proven_edges(visits):
 
 
 @pytest.fixture(scope="module")
-def axe_findings(browser, base_url):
-    """axe's serious and critical findings on every page, every disclosure open, in each theme, at a phone's and a laptop's width:
-    each rule with the elements it flagged."""
-    axe = pytest.importorskip("axe_playwright_python.sync_playwright", reason="axe is not installed: pip install -e '.[dev]'").Axe()
+def axe():
+    return pytest.importorskip("axe_playwright_python.sync_playwright", reason="axe is not installed: pip install -e '.[dev]'").Axe()
+
+
+def serious_findings(axe, page):
+    """axe's serious and critical findings on the page: each rule with the elements it flagged."""
+    return {v["id"]: [n["target"] for n in v["nodes"]] for v in axe.run(page).response["violations"] if v["impact"] in ("serious", "critical")}
+
+
+@pytest.fixture(scope="module")
+def axe_findings(browser, base_url, axe):
+    """serious_findings on every page, every disclosure open, in each theme, at a phone's and a laptop's width."""
     out = {}
     for theme in THEMES:
         for width in AXE_WIDTHS:
@@ -277,8 +520,7 @@ def axe_findings(browser, base_url):
                 for name in names:
                     tab.go(f"#/{name}")
                     tab.open_every_disclosure()
-                    out[(theme, width, name)] = {v["id"]: [n["target"] for n in v["nodes"]] for v in axe.run(tab.page).response["violations"]
-                                                 if v["impact"] in ("serious", "critical")}
+                    out[(theme, width, name)] = serious_findings(axe, tab.page)
                 tab.context.close()
     return out
 
@@ -293,6 +535,13 @@ def test_no_page_has_a_serious_accessibility_finding(axe_findings, theme, width)
 @pytest.mark.parametrize("theme", THEMES)
 def test_no_sign_in_page_has_a_serious_accessibility_finding(axe_findings, theme, width):
     assert {name: axe_findings[(theme, width, name)] for name in SIGNED_OUT_PAGES if axe_findings[(theme, width, name)]} == {}
+
+
+@pytest.mark.parametrize("width", AXE_WIDTHS)
+@pytest.mark.parametrize("theme", THEMES)
+def test_a_chat_with_alfas_answer_over_a_long_reply_has_no_serious_accessibility_finding(browser, base_url, axe, theme, width):
+    tab = asked_in_chat(browser, base_url, width, *chats_asked()["spoke"], color_scheme=theme)
+    assert serious_findings(axe, tab.page) == {}
 
 
 def test_leaving_explore_mid_load_keeps_the_new_page(browser, base_url):

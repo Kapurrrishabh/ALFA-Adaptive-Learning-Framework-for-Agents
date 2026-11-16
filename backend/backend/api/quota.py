@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+from typing import Any, Dict
 from zoneinfo import ZoneInfo
 
 from backend.config import MARKETS
@@ -45,3 +46,9 @@ def charge(store: Store, who: str, kind: str, now: datetime) -> None:
 def refund(store: Store, who: str, kind: str, now: datetime) -> None:
     """Pass the charge's own `now`, so a call that runs past midnight is refunded on the day it was charged."""
     store.refund(who, kind, day_ist(now))
+
+
+def asked_language_model(turn: Dict[str, Any]) -> bool:
+    """Whether an ALFA turn's request reached the writer, the language model on the Space, whether or not its words were
+    served. ALFA's own model runs on the agent's machine, and our code's sentence (BUILT) costs nothing."""
+    return turn["asked_writer"]

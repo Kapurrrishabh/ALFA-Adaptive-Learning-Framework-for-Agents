@@ -17,6 +17,8 @@ NEW_EMAIL = "new@example.com"       # a second user, who has not set up a portfo
 RUN_REQUESTS = 700   # provisional: signed-in requests the pages sent in one full browser run (683 on 2026-11-01, 676 on 2026-11-02, 665 with 360 px added); recount when the suite grows
 STOCKS = pd.DataFrame({"symbol": ["TEST", "PEER"], "name": ["Test Industries Ltd.", "Peer Power Ltd."],
                        "sector": ["Industrials", "Energy"], "nifty200": [True, True]})
+# a share outside the panel and ALFA's price files, named only by NSE's list of shares, as hub.names adds them
+LISTED_ONLY = pd.DataFrame({"symbol": ["NYKAA"], "name": ["FSN E-Commerce Ventures Limited"], "sector": [None], "nifty200": [False]})
 FUND = 118989       # HDFC Mid Cap Fund, Direct Growth: the one scheme in NAV_TEXT with a NAV history here
 
 
@@ -132,7 +134,7 @@ def base_url(tmp_path_factory, outbox):
         app = create_app(orch, accounts)
         hub = app.state.hub
         hub._panel, hub._panel_at = panel_from_frames({s: provider.ohlcv(resolve_symbol(s)) for s in STOCKS["symbol"]}), time.time()
-        hub._names = STOCKS
+        hub._names = pd.concat([STOCKS, LISTED_ONLY], ignore_index=True)
         server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
         thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
         thread.start()

@@ -7,20 +7,29 @@ and the one rule that the row a served question is built into is the row trainin
 
 import csv
 import json
+import os
 import re
+import threading
+import time
+from collections import Counter
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from backend.models import serving as models
-from backend.models.agent import PARAPHRASED, QUOTED, Reference, Router, assemble, combined, finance, lexical
+from backend.models.agent import PARAPHRASED, QUOTED, Reference, Router, assemble, combined, finance, lexical, phrase
+from backend.models.agent import core, facts_reply
+from backend.models.agent.context import evidence_room
 from backend.models.agent.core import Agent, answered
-from backend.models.agent.reference import LESSON_FLOOR
+from backend.models.agent.present import KEY_FIGURES
+from backend.models.agent.reference import LESSON_FLOOR, UNANSWERED, Looked, SearchFailed
 from backend.knowledge_base.retrieval import Chunk, Hybrid
+from backend.database.sources.provider import DataUnavailable
 from backend.models.core import pretrained
 from backend.models.core.config import ModelConfig
-from backend.models.data import advisory, prices, returns
+from backend.models.data import advisory, prices, returns, stock_qa
 from backend.models.data.encode import build_sources
 from backend.models.data.qa_pairs import PASSAGES, QUESTION_TOKENS
 from backend.models.networks.generator import ANSWER_TEMPERATURE, ANSWER_TOP_P
@@ -28,6 +37,7 @@ from backend.models.learning import Calibrator
 from backend.models.learning.abstain import Abstainer
 from backend.models.networks import PriceWindowClassifier, ReturnGenerator
 from backend.models.core.tokenizer.wordpiece import pretokenize
+from backend.models.guardrails import guardrails
 
 LENGTH = 128
 FIRST_BAR = date(2020, 1, 1)
@@ -290,6 +300,936 @@ def test_too_little_history_is_an_error_not_a_shorter_window(tmp_path):
         finance.Market(tmp_path).snapshot("SHORT")
 
 
+# --- a listed share with no file, fetched when asked --------------------------
+
+SHARES = {"NYKAA.NS": "FSN E-Commerce Ventures", "TAKE.NS": "Take Solutions", "DOLLAR.NS": "Dollar Industries",
+          "M&M.NS": "Mahindra & Mahindra", "360ONE.NS": "360 ONE WAM"}
+
+
+class Yahoo:
+    """Yahoo in place of the network: `bars` days for any share asked for, or no rows when `bars` is 0."""
+
+    def __init__(self, bars=advisory.BARS_NEEDED):
+        self.bars, self.asked = bars, []
+
+    def __call__(self, ticker, path):
+        self.asked.append(ticker)
+        if not self.bars:
+            raise RuntimeError(f"yahoo returned no daily prices for {ticker}")
+        path.parent.mkdir(exist_ok=True)
+        price_file(path.parent, ticker, self.bars)
+
+
+def fetching(tmp_path, yahoo):
+    """A market holding one collector file, RELIANCE.NS, that may fetch any of SHARES."""
+    price_file(tmp_path, "RELIANCE.NS")
+    return finance.Market(tmp_path, shares=SHARES, fetch=yahoo)
+
+
+def test_a_listed_share_with_no_file_is_fetched_when_asked_and_not_again_the_same_day(tmp_path, router):
+    yahoo = Yahoo()
+    asking = agent(fetching(tmp_path, yahoo), router, written="it is doing fine .")
+    turns = [asking.answer("how is nykaa doing ?", subject="NYKAA.NS") for _ in range(2)]
+    assert [(turn.ticker, turn.spoke) for turn in turns] == [("NYKAA.NS", True)] * 2
+    assert yahoo.asked == ["NYKAA.NS"]
+
+
+@pytest.mark.parametrize("question", ["should i take profits now ?", "what is the dollar doing", "how is ZZZ.NS doing ?",
+                                      "how is take solutions doing ?"])
+def test_a_listed_share_is_never_read_from_a_word_or_its_name_and_an_unlisted_symbol_is_never_fetched(
+        tmp_path, router, question):
+    """180 NSE symbols are dictionary words: "should i take profits now ?" would have fetched TAKE.NS."""
+    yahoo = Yahoo()
+    turn = agent(fetching(tmp_path, yahoo), router, model=ExplodingModel()).answer(question)
+    assert (turn.because, yahoo.asked) == ("no subject", [])
+
+
+@pytest.mark.parametrize("text,named", [("M&M.NS", "M&M.NS"), ("360ONE.NS", "360ONE.NS"),
+                                        ("is NYKAA.NS overbought ?", "NYKAA.NS"), ("RELIANCE.NS", "RELIANCE.NS")])
+def test_a_listed_share_resolves_by_its_symbol_typed_or_handed_over_whole(tmp_path, text, named):
+    """The word pattern cannot read "M&M.NS" or "360ONE.NS", which is how the app hands a share over."""
+    assert fetching(tmp_path, Yahoo()).resolve(text) == named
+
+
+def test_an_empty_reply_from_yahoo_is_a_named_refusal_not_an_error(tmp_path, router, monkeypatch):
+    """yfinance answers an unreachable host and an unknown symbol alike, with an empty frame and no exception."""
+    import pandas as pd
+    from backend.database.live import prices as yahoo_prices
+    monkeypatch.setattr(yahoo_prices.yfinance, "download", lambda *_, **__: pd.DataFrame())
+    price_file(tmp_path, "RELIANCE.NS")
+    market = finance.Market(tmp_path, shares=SHARES, fetch=lambda ticker, path: yahoo_prices.fetch(ticker, path, 1))
+    turn = agent(market, router, model=ExplodingModel()).answer("how is nykaa doing ?", subject="NYKAA.NS")
+    assert (turn.spoke, turn.served, turn.ticker) == (False, finance.NO_PRICES, "")
+    assert turn.because.startswith("no prices: yahoo returned no daily prices for NYKAA.NS")
+
+
+def test_a_share_listed_too_recently_for_a_snapshot_is_refused_by_name_not_raised(tmp_path, router):
+    """A snapshot of 60 days raised out of `answer`, and out of the chat socket with it."""
+    short = advisory.BARS_NEEDED - 1
+    turn = agent(fetching(tmp_path, Yahoo(bars=short)), router, model=ExplodingModel()).answer(
+        "how is nykaa doing ?", subject="NYKAA.NS")
+    assert (turn.spoke, turn.served) == (False, finance.NO_PRICES)
+    assert turn.because == f"no prices: NYKAA.NS has {short} days of prices, and its figures need {advisory.BARS_NEEDED}"
+
+
+def test_a_fetched_file_from_before_its_markets_close_is_fetched_again_and_refused_rather_than_served_when_that_fails(
+        tmp_path, router):
+    yahoo = Yahoo()
+    asking = agent(fetching(tmp_path, yahoo), router, written="it is doing fine .")
+    asking.answer("how is nykaa doing ?", subject="NYKAA.NS")
+    old = finance.last_close(finance.market_of("NYKAA.NS"), time.time()) - 60
+    os.utime(tmp_path / "fetched" / "NYKAA.NS.csv", (old, old))
+    yahoo.bars = 0
+    turn = asking.answer("how is nykaa doing ?", subject="NYKAA.NS")
+    assert (yahoo.asked, turn.spoke, turn.served) == (["NYKAA.NS", "NYKAA.NS"], False, finance.NO_PRICES)
+
+
+def test_a_file_the_collector_keeps_is_fetched_again_once_its_market_has_closed_since_and_is_never_written(tmp_path,
+                                                                                                           router):
+    """The collector runs on a day's timer, so a price answer read TCS at 2,505.00 from 2 Nov beside facts of 16 Nov."""
+    yahoo = Yahoo()
+    market = fetching(tmp_path, yahoo)
+    held = tmp_path / "RELIANCE.NS.csv"
+    before = finance.last_close(finance.market_of("RELIANCE.NS"), time.time()) - 60
+    os.utime(held, (before, before))
+    kept = held.read_bytes()
+    turn = agent(market, router, written="it is doing fine .").answer("how is reliance doing ?")
+    assert (turn.spoke, yahoo.asked, market.paths["RELIANCE.NS"]) == \
+        (True, ["RELIANCE.NS"], tmp_path / "fetched" / "RELIANCE.NS.csv")
+    assert (held.read_bytes(), held.stat().st_mtime) == (kept, pytest.approx(before))
+
+
+def test_a_file_the_collector_keeps_from_before_its_markets_close_is_refused_when_it_cannot_be_fetched_again(tmp_path,
+                                                                                                             router):
+    yahoo = Yahoo(bars=0)
+    market = fetching(tmp_path, yahoo)
+    os.utime(tmp_path / "RELIANCE.NS.csv", (0, 0))
+    turn = agent(market, router, model=ExplodingModel()).answer("how is reliance doing ?")
+    assert (turn.spoke, turn.served, yahoo.asked) == (False, finance.NO_PRICES, ["RELIANCE.NS"])
+
+
+@pytest.mark.parametrize("live,mtime", [(True, None), (False, 0)], ids=["written since the close", "offline"])
+def test_a_file_the_collector_keeps_is_read_as_it_is_when_written_since_its_markets_close_or_offline(tmp_path, router,
+                                                                                                     live, mtime):
+    yahoo = Yahoo()
+    price_file(tmp_path, "RELIANCE.NS")
+    if mtime is not None:
+        os.utime(tmp_path / "RELIANCE.NS.csv", (mtime, mtime))
+    market = finance.Market(tmp_path, shares=SHARES, fetch=yahoo) if live else finance.Market(tmp_path)
+    turn = agent(market, router, written="it is doing fine .").answer("how is reliance doing ?")
+    assert (turn.ticker, turn.spoke, yahoo.asked) == ("RELIANCE.NS", True, [])
+
+
+def test_a_share_or_an_index_closes_with_its_own_market():
+    """Read as a US symbol, the Nifty's file counted as written after the close for eleven hours after NSE closed, and a
+    .BO share was priced in dollars."""
+    assert [finance.market_of(ticker).code for ticker in ("^NSEI", "^BSESN", "^GSPC", "TCS.NS", "RELIANCE.BO", "AAPL")] \
+        == ["NSE", "BSE", "US", "NSE", "BSE", "US"]
+
+
+@pytest.mark.parametrize("given", [{"shares": SHARES}, {"fetch": Yahoo()}])
+def test_a_share_list_and_a_fetch_come_together_or_not_at_all(tmp_path, given):
+    price_file(tmp_path, "AAPL")
+    with pytest.raises(ValueError, match="together"):
+        finance.Market(tmp_path, **given)
+
+
+@pytest.mark.parametrize("symbol", ["../AAPL.NS", "A/B.NS", "nykaa.NS", "NYKAA"])
+def test_a_share_symbol_that_could_reach_a_url_or_path_unchecked_is_refused_at_construction(tmp_path, symbol):
+    price_file(tmp_path, "AAPL")
+    with pytest.raises(ValueError, match=re.escape(symbol)):
+        finance.Market(tmp_path, shares={symbol: "a company"}, fetch=Yahoo())
+
+
+def test_a_fetched_table_is_written_whole_in_the_collectors_format_and_reads_back(tmp_path):
+    import pandas as pd
+    from backend.database.live import prices as yahoo_prices
+    fields = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+    frame = pd.DataFrame([[10, 11, 9, 10.5, 10.4, 1000], [float("nan")] * 6, [11, 12, 10, 11.5, 11.4, 2000]],
+                         index=pd.to_datetime(["2020-01-01", "2020-01-02", "2020-01-03"]),
+                         columns=pd.MultiIndex.from_product([["NYKAA.NS"], fields]))
+    path = tmp_path / "fetched" / "NYKAA.NS.csv"
+    yahoo_prices.write(yahoo_prices.table_for(frame, "NYKAA.NS"), path)
+    lines = path.read_text().splitlines()
+    assert lines[0] == "date,open,high,low,close,adj_close,volume" and lines[1].startswith("2020-01-01,10")
+    assert [written.name for written in path.parent.iterdir()] == ["NYKAA.NS.csv"]
+    assert prices.load_bars(path)[0] == ["2020-01-01", "2020-01-03"]
+
+
+def test_a_fetch_that_fails_stops_every_fetch_for_a_while_so_a_hung_yahoo_costs_one_question(tmp_path, monkeypatch):
+    """yfinance's cookie and crumb calls ignore the 10 s timeout, so a hung Yahoo cost every question about 40 s."""
+    clock = [time.time()]
+    monkeypatch.setattr(finance, "time", SimpleNamespace(time=lambda: clock[0]))
+    yahoo = Yahoo(bars=0)
+    market = fetching(tmp_path, yahoo)
+    for ticker, later in (("NYKAA.NS", 0), ("TAKE.NS", finance.YAHOO_SLOW_S + 1),
+                          ("TAKE.NS", finance.YAHOO_BACK_OFF_S)):
+        clock[0] += later
+        with pytest.raises(finance.NoPrices):
+            market.hold(ticker)
+    assert yahoo.asked == ["NYKAA.NS", "TAKE.NS"]
+
+
+def test_a_fetch_over_the_time_limit_is_given_up_on_and_its_late_file_is_still_used(tmp_path, monkeypatch):
+    """The back-off limited how often a hung Yahoo stalled, not how long: one stall held the generating lock 40 s."""
+    monkeypatch.setattr(finance, "YAHOO_SLOW_S", 0.05)
+    yahoo, released, written = Yahoo(), threading.Event(), threading.Event()
+
+    def hung(ticker, path):
+        released.wait(5)
+        yahoo(ticker, path)
+        written.set()
+    market = fetching(tmp_path, hung)
+    for ticker in ("NYKAA.NS", "TAKE.NS"):
+        with pytest.raises(finance.NoPrices):
+            market.hold(ticker)
+    released.set()
+    assert written.wait(5)
+    market.hold("NYKAA.NS")
+    assert yahoo.asked == ["NYKAA.NS"]
+
+
+def test_a_fetched_share_is_known_by_its_listed_name(tmp_path):
+    market = fetching(tmp_path, Yahoo())
+    market.hold("NYKAA.NS")
+    assert market.subject("NYKAA.NS").names == ("fsn e-commerce ventures",)
+
+
+# --- a share's dated facts, for a question the router places there ----------
+
+FORWARD_PE = {"value": 18.14, "unit": "x", "source": "yahoo", "period": "snapshot retrieved 2026-11-15"}
+
+
+def analysis(**metrics):
+    """The app's analysis of RELIANCE as `AnalysisService.analyze(...).to_dict()` gives it, cut to what `facts` reads."""
+    return {"symbol": "RELIANCE", "name": "Reliance Industries Limited", "market": "NSE", "currency": "INR",
+            "analysis_timestamp": "2026-11-15T18:13:22+00:00", "quality": {"last_date": "2026-11-13"},
+            "results": {"fundamental": {"details": {"metrics": metrics or {"forward_pe": FORWARD_PE}}}}}
+
+
+class Analyses:
+    """The app's analysis in place of Yahoo: `analysed` for any share asked about, or Yahoo's failure when it is None."""
+
+    def __init__(self, analysed=None, fails=False):
+        self.analysed, self.fails, self.asked = analysed or analysis(), fails, []
+
+    def __call__(self, ticker):
+        self.asked.append(ticker)
+        if self.fails:
+            raise RuntimeError(f"yahoo gave no analysis of {ticker}: no data")
+        return self.analysed
+
+
+ASSESSED = "give me a simple fundamental and technical assessment of {} as of the latest completed trading session ."
+ASSESSMENT = ASSESSED.format("RELIANCE.NS")
+WRITTEN_FROM_FACTS = "reliance industries limited trades at 18.14 times the profit it is expected to make ."
+
+
+def facts_router(*asked):
+    known = finance.examples() + [(finance.FACTS, "csv:integrated_stock_read", finance._squeeze(question.format("")))
+                                  for question in (ASSESSED, *asked)]
+    return Router(known, lexical([text for _, _, text in known], pretokenize))
+
+
+def shared_words(texts):
+    """A similarity by the long words each text shares with the question, so which facts are picked depends on it."""
+    def words(text):
+        return {word for word in pretokenize(text) if len(word) > 4}
+    return lambda question: [len(words(question) & words(text)) for text in texts]
+
+
+def facts_agent(tmp_path, analyse, written=WRITTEN_FROM_FACTS, model=None, facts_cut=0.9, asked=()):
+    price_file(tmp_path, "RELIANCE.NS")
+    return Agent(finance, finance.Market(tmp_path, analyse=analyse), facts_router(*asked), Abstainer(0.01),
+                 FakeTokenizer(written), model or FakeModel(), Config, Abstainer(0.9), facts=shared_words,
+                 facts_abstainer=Abstainer(facts_cut) if core.GENERATOR_WRITES_FACTS else None)
+
+
+@pytest.fixture
+def generator_writes_facts(monkeypatch):
+    """The facts route with ALFA's generator writing the answers, as it served before our code wrote them."""
+    monkeypatch.setattr(core, "GENERATOR_WRITES_FACTS", True)
+
+
+@pytest.mark.usefixtures("generator_writes_facts")
+def test_a_facts_question_is_answered_from_the_shares_dated_analysis(tmp_path):
+    analyses = Analyses()
+    turn = facts_agent(tmp_path, analyses).answer(ASSESSMENT)
+    assert (turn.intent, turn.spoke, turn.served, turn.as_of) == (finance.FACTS, True, WRITTEN_FROM_FACTS, "2026-11-13")
+    assert turn.evidence == ("Stock: Reliance Industries Limited (RELIANCE.NS), NSE, INR. ; "
+                             "[fundamental] Forward P/E 18.14x (2026-11-13).")
+    assert (turn.asked, analyses.asked) == (ASSESSMENT, ["RELIANCE.NS"])
+
+
+@pytest.mark.usefixtures("generator_writes_facts")
+def test_a_facts_answer_stating_a_figure_its_passage_lacks_is_refused(tmp_path):
+    turn = facts_agent(tmp_path, Analyses(), written="reliance industries limited trades at 21.40 times profit .").answer(
+        ASSESSMENT)
+    assert (turn.spoke, turn.because, turn.unsupported) == (False, "unsupported figure", ["21.40"])
+
+
+@pytest.mark.usefixtures("generator_writes_facts")
+def test_a_facts_answer_giving_a_figure_as_another_metrics_is_refused(tmp_path):
+    """Every figure is in the passage, so only the label guard stands between this answer and the user."""
+    roa = {"value": 11.0, "unit": "%", "source": "yahoo", "period": "FY ending 2026-03-31"}
+    turn = facts_agent(tmp_path, Analyses(analysis(forward_pe=FORWARD_PE, roa=roa)),
+                       written="reliance industries limited had a forward p / e of 11.00% .").answer(ASSESSMENT)
+    assert (turn.spoke, turn.because) == (False, "mislabelled figure: 11.00% as forward p / e")
+
+
+@pytest.mark.usefixtures("generator_writes_facts")
+@pytest.mark.parametrize("facts_cut,spoke", [(0.4, True), (0.6, False)])
+def test_a_facts_answer_is_spoken_by_the_facts_cut_not_the_advisory_one(tmp_path, facts_cut, spoke):
+    """Facts answers' confidence averaged 0.45, and the advisory cut, fitted near 0.8, refused nearly all of them."""
+    turn = facts_agent(tmp_path, Analyses(), model=FakeModel(0.5), facts_cut=facts_cut).answer(ASSESSMENT)
+    assert (turn.spoke, turn.because) == (spoke, "" if spoke else "low confidence")
+
+
+@pytest.mark.usefixtures("generator_writes_facts")
+@pytest.mark.parametrize("written", ["our data has no esg figures for reliance industries limited .",
+                                     "for reliance industries limited , momentum is rising ."])
+def test_a_facts_answer_is_not_read_for_a_share_where_the_advisory_answer_forms_put_one(tmp_path, written):
+    """Those slots refused 56-71% of the frozen set's grounded short answers: "names another share: data"."""
+    turn = facts_agent(tmp_path, Analyses(), written=written).answer(ASSESSMENT)
+    assert (turn.spoke, turn.because) == (True, "")
+
+
+@pytest.mark.usefixtures("generator_writes_facts")
+def test_a_facts_answer_naming_its_own_share_by_its_full_ticker_is_served(tmp_path):
+    """The Stock line gave the bare symbol, so "reliance.ns", as questions and advisory answers name it, was another share."""
+    turn = facts_agent(tmp_path, Analyses(), written="reliance.ns is valued against the profit it is expected to make .") \
+        .answer(ASSESSMENT)
+    assert (turn.spoke, turn.because) == (True, "")
+
+
+def test_the_facts_passage_fits_the_window_with_the_separators_between_its_lines(tmp_path):
+    """Its lines fill the window, and with their separators left uncounted the passage was built over it and the turn
+    raised out of `assemble`."""
+    many = {key: {"value": 10.0 + at, "unit": "%", "source": "yahoo", "period": "FY ending 2026-03-31"}
+            for at, key in enumerate(("gross_margin", "roa", "revenue_cagr", "latest_quarter_revenue_yoy", "forward_pe"))}
+    turn = facts_agent(tmp_path, Analyses(analysis(**many)), written="its gross margin is 10.00% .").answer(ASSESSMENT)
+    room = evidence_room(LENGTH, finance.FACTS_QUESTION_TOKENS)
+    assert turn.spoke and len(FakeTokenizer().encode(turn.evidence)) <= room
+
+
+ROA = {"value": 11.0, "unit": "%", "source": "yahoo", "period": "FY ending 2026-03-31"}
+PROFITABLE = "how profitable is {} ?"
+DIVIDEND_ASKED = "what is the dividend yield of {} ?"
+
+
+def test_a_facts_question_is_answered_in_our_words_from_its_passage_and_never_by_the_generator(tmp_path):
+    """Read by hand, 54 of the 68 facts answers step36000 would speak were wrong in their words, every figure right."""
+    turn = facts_agent(tmp_path, Analyses(analysis(roa=ROA)), model=ExplodingModel(), asked=(PROFITABLE,)).answer(
+        PROFITABLE.format("RELIANCE.NS"))
+    assert (turn.intent, turn.spoke, turn.because, turn.served) == (finance.FACTS, True, "", turn.answer)
+    assert "Reliance Industries Limited (RELIANCE.NS)" in turn.served
+    assert turn.served.endswith(" Return on assets is 11.00% (FY ending 2026-03-31).")
+
+
+def test_a_facts_line_the_passage_left_out_is_answered_and_shown_among_the_facts_used(tmp_path):
+    """59 of 323 replies said a figure was not held when the share's facts held it: the picker fits the passage to the
+    generator's window, and the reply was given nothing else."""
+    many = {key: {"value": 10.0 + at, "unit": "%", "source": "yahoo", "period": "FY ending 2026-03-31"}
+            for at, key in enumerate(stock_qa.FUNDAMENTAL_LABELS)}
+    price_file(tmp_path, "RELIANCE.NS")
+    picked_last = lambda texts: lambda question: [-float("Dividend" in text) for text in texts]
+    turn = Agent(finance, finance.Market(tmp_path, analyse=Analyses(analysis(**many))), facts_router(DIVIDEND_ASKED),
+                 Abstainer(0.01), FakeTokenizer(), ExplodingModel(), Config, Abstainer(0.9), facts=picked_last).answer(
+        DIVIDEND_ASKED.format("RELIANCE.NS"))
+    assert turn.served.endswith(" Dividend yield is 19.00% (FY ending 2026-03-31).")
+    assert turn.evidence.endswith(f"{stock_qa.FACT_SEPARATOR}[fundamental] Dividend yield 19.00% (FY ending 2026-03-31).")
+
+
+TCS_PASSAGE = stock_qa.FACT_SEPARATOR.join((
+    "Stock: Tata Consultancy Services Limited (TCS.NS), NSE, INR; last close 2,407.50 on 2026-11-13.",
+    "[profile] Tata Consultancy Services Limited provides information technology (IT) and IT enabled services.",
+    "Sector Technology, industry Information Technology Services (yahoo profile).",
+    "[fundamental] P/E is 22.5 (absolute bands; not sector-adjusted). (2026-11-13).",
+    "[fundamental] Debt/equity is 0.10. (FY ending 2026-03-31).",
+    "[fundamental] Revenue changed +5.4% year on year. (FY ending 2026-03-31 vs FY ending 2025-03-31).",
+    "[fundamental] Return on equity is 45.9%. (FY ending 2026-03-31).",
+    "[fundamental] Dividend yield 1.14% (2026-11-13).",
+    "[forecast, model output] 80% expected 5d range 2,350.10–2,466.90 (EWMA volatility; historical coverage 78%). "
+    "(2026-11-13).", "[fundamental] Not available in our data: peg."))
+# the share's facts when its passage holds every one
+TCS_LINES = TCS_PASSAGE.split(stock_qa.FACT_SEPARATOR)
+
+
+def lacks_any(told, name="Tata Consultancy Services Limited (TCS.NS)"):
+    return any(frame.split("{what}")[0].format(name=name) in told for frame in facts_reply.GAPS)
+
+
+@pytest.mark.parametrize("question,answering", [
+    ("what does TCS do ?", "Tata Consultancy Services Limited provides information technology (IT) and IT enabled "
+                           "services. Yahoo lists its sector as Technology and its industry as Information Technology Services."),
+    ("is TCS expensive ?", "P/E is 22.5 (absolute bands; not sector-adjusted) (2026-11-13)."),
+    ("how much debt does TCS have ?", "Debt/equity is 0.10 (FY ending 2026-03-31)."),
+    ("how fast is TCS growing ?", "Revenue changed +5.4% year on year (FY ending 2026-03-31 vs FY ending 2025-03-31)."),
+    ("is TCS making money ?", "Return on equity is 45.9% (FY ending 2026-03-31)."),
+    ("what dividend does TCS pay ?", "Dividend yield is 1.14% (2026-11-13)."),
+    ("how fast are TCS sales rising ?", "Revenue changed +5.4% year on year (FY ending 2026-03-31 vs FY ending 2025-03-31)."),
+    ("is TCS risky ?", "Our model's reading: 80% expected 5d range 2,350.10–2,466.90 (EWMA volatility; historical "
+                       "coverage 78%) (2026-11-13).")],
+    ids=["profile", "valuation", "debt", "growth", "profit", "dividend", "growth with a price word", "model output"])
+def test_a_facts_reply_gives_the_lines_of_the_area_its_question_asks_about_after_one_lead_in(question, answering):
+    """Every figure and date as the passage gives them, and none of the other areas' lines."""
+    told = facts_reply.reply(question, TCS_PASSAGE, TCS_LINES).text
+    assert told.endswith(f". {answering}") and "Tata Consultancy Services Limited (TCS.NS)" in told
+    assert guardrails.figures(told[:-len(answering)]) == []
+
+
+@pytest.mark.parametrize("question,lacking,closest", [
+    ("what is the forward P/E of TCS ?", "its forward P/E", "P/E is 22.5 (absolute bands; not sector-adjusted) (2026-11-13)."),
+    ("what is the earnings per share of TCS ?", "its EPS", "Not available in our data: peg."),
+    ("who are the main competitors of TCS ?", "a list of its competitors", "Not available in our data: peg.")],
+    ids=["a metric", "a metric spelt out", "an area"])
+def test_a_facts_reply_says_plainly_what_its_passage_lacks_then_gives_the_closest_facts(question, lacking, closest):
+    told = facts_reply.reply(question, TCS_PASSAGE, TCS_LINES).text
+    gaps = [frame.format(name="Tata Consultancy Services Limited (TCS.NS)", what=lacking) for frame in facts_reply.GAPS]
+    assert any(told.startswith(gap) for gap in gaps) and told.endswith(f". {closest}")
+
+
+def test_a_facts_question_naming_several_areas_is_answered_from_every_fact_its_passage_holds():
+    """Taken by its first area, a scorecard asking for growth, profit and debt was answered on debt alone."""
+    told = facts_reply.reply("score TCS on its growth , its profit and its debt .", TCS_PASSAGE, TCS_LINES).text
+    assert all(facts_reply.stated(line) in told for line in TCS_LINES[1:])
+
+
+def test_a_facts_reply_varies_its_lead_in_with_the_question_and_picks_the_same_one_in_every_process():
+    asked = ["is TCS expensive ?", "is TCS expensive now ?", "is TCS too expensive ?", "is TCS expensive today ?"]
+    told = [facts_reply.reply(question, TCS_PASSAGE, TCS_LINES).text for question in asked]
+    assert len({text.split(" P/E is")[0] for text in told}) > 1
+    # a hash salted per process, as hash() is, would pick another lead-in on another run
+    assert told[0].startswith("Our facts give this on the valuation of Tata Consultancy Services Limited (TCS.NS).")
+
+
+@pytest.mark.parametrize("question,at", [("what is the price to earnings ratio for TCS.NS ?", 3),
+                                         ("is TCS making money ?", 6)], ids=["a metric", "an area"])
+def test_a_facts_reply_answers_from_a_line_of_the_share_its_passage_left_out_and_lists_it_with_the_facts(question, at):
+    """59 of 323 replies said our facts lacked a figure the share's facts held: 57 a P/E the picker left out."""
+    # the share's line with its source, as `stock_qa.facts` writes it; the passage's lines are as the picker leans them
+    lines = [*TCS_LINES[:at], TCS_LINES[at].replace(". (", ". (source yahoo; "), *TCS_LINES[at + 1:]]
+    passage = stock_qa.FACT_SEPARATOR.join(TCS_LINES[:at] + TCS_LINES[at + 1:])
+    told = facts_reply.reply(question, passage, lines)
+    assert told.text.endswith(f". {facts_reply.stated(TCS_LINES[at])}") and not lacks_any(told.text)
+    assert told.evidence == stock_qa.FACT_SEPARATOR.join((passage, TCS_LINES[at]))
+
+
+@pytest.mark.parametrize("peak", [
+    "[risk] Price is 35.9% below its peak in the loaded history. (2021-11-16 to 2026-11-13).",
+    "[risk] The price is 35.87% below its highest close in the loaded history (as of 2026-11-13)."])
+def test_a_price_question_is_answered_by_how_far_the_price_is_below_its_peak_and_never_told_it_is_not_held(peak):
+    """DMART was told nothing in our facts gave readings of its price, then shown how far it was below its peak."""
+    passage = stock_qa.FACT_SEPARATOR.join((TCS_LINES[0], "[fundamental] Price to book (P/B) 8.64x (2026-11-13).", peak))
+    told = facts_reply.reply("how much has the price of TCS moved against the market ?", passage,
+                             passage.split(stock_qa.FACT_SEPARATOR)).text
+    assert told.endswith(f". {facts_reply.stated(peak)}") and "P/B" not in told and not lacks_any(told)
+
+
+PRICE_LINES = ("Price change to 2026-11-13: 1 day +0.50%, 1 week -1.20%, 1 month +3.10% (computed from yahoo daily bars).",
+               "[technical] Price is above the 50-day average (2,350.00) and the average is rising. (2026-11-13).",
+               "[risk] The price is 4.20% below its highest close in the loaded history (as of 2026-11-13).")
+
+
+@pytest.mark.parametrize("question", ["why did TCS rise even though the market fell ?",
+                                      "is the rise in TCS getting stronger or weaker ?",
+                                      "is selling volume increasing in TCS ?",
+                                      "what does today's trading volume say about TCS ?",
+                                      "compare the relative strength of TCS with its sector index ."])
+def test_a_question_on_how_its_price_moved_is_answered_by_its_price_lines_not_its_profile_or_valuation(question):
+    """Naming no area, "is selling volume increasing in Titan" was answered with its P/E and EV/sales."""
+    told = facts_reply.reply(question, TCS_PASSAGE, [*TCS_LINES, *PRICE_LINES]).text
+    assert told.endswith(" ".join(map(facts_reply.stated, PRICE_LINES))) and "P/E" not in told
+
+
+@pytest.mark.parametrize("question", ["is the business of TCS getting stronger ?",
+                                      "what does TCS do at the global level ?"])
+def test_a_question_on_its_business_with_a_price_move_word_is_answered_by_its_profile_not_its_price_lines(question):
+    """Both were answered with TCS's price change and averages, for their "stronger" and "level"."""
+    told = facts_reply.reply(question, TCS_PASSAGE, [*TCS_LINES, *PRICE_LINES]).text
+    assert told.endswith(" ".join(map(facts_reply.stated, TCS_LINES[1:3]))) and "Price change" not in told
+
+
+def test_a_facts_reply_answering_one_metric_of_two_ends_saying_which_it_lacks():
+    told = facts_reply.reply("what are the P/E and forward P/E of TCS ?", TCS_PASSAGE, TCS_LINES).text
+    gaps = [frame.format(name="Tata Consultancy Services Limited (TCS.NS)", what="its forward P/E")
+            for frame in facts_reply.GAPS]
+    assert "P/E is 22.5" in told and any(told.endswith(f". {gap}") for gap in gaps)
+
+
+@pytest.mark.parametrize("question", ["who are the main competitors of TCS ?", "what is the beta of TCS ?"])
+def test_a_facts_reply_never_gives_the_definitions_line_as_a_fact(question):
+    """`stock_qa.facts` writes it second for every share, and its "a beta of 1 means" names a beta TCS's facts lack."""
+    lines = [TCS_LINES[0], stock_qa.DEFINITIONS, *TCS_LINES[1:]]
+    told = facts_reply.reply(question, stock_qa.FACT_SEPARATOR.join(lines), lines).text
+    assert "Definitions" not in told and lacks_any(told)
+
+
+BETA_BIONICS = "Stock: Beta Bionics, Inc. (BBNX), US, USD; last close 21.30 on 2026-11-13."
+BETA = "[risk] Beta to the benchmark is 1.21 (correlation 0.35). (2025-11-13 to 2026-11-13)."
+
+
+@pytest.mark.parametrize("stock,question,answering,other", [
+    ("Stock: Persistent Systems Limited (PERSISTENT.NS), NSE, INR; last close 5,012.00 on 2026-11-13.",
+     "is Persistent Systems expensive ?", "[fundamental] P/E is 61.4 (absolute bands; not sector-adjusted). (2026-11-13).",
+     "[technical] RSI(14) is 55.0 — neutral momentum zone. (2026-11-13)."),
+    (BETA_BIONICS, "what is the beta of Beta Bionics ?", BETA, "[profile] Beta Bionics, Inc. develops a bionic pancreas."),
+    (BETA_BIONICS, "is Beta Bionics risky ?", BETA, "[profile] Beta Bionics, Inc. develops a bionic pancreas.")],
+    ids=["its question", "a line naming a metric", "a line of the area"])
+def test_a_facts_reply_reads_its_question_and_its_lines_without_the_shares_names(stock, question, answering, other):
+    """Read with them, "Persistent" asks for an RSI and "Beta Bionics" gives a beta."""
+    passage = stock_qa.FACT_SEPARATOR.join((stock, other, answering))
+    told = facts_reply.reply(question, passage, passage.split(stock_qa.FACT_SEPARATOR)).text
+    assert told.endswith(f". {facts_reply.stated(answering)}") and facts_reply.stated(other) not in told
+
+
+def test_a_facts_reply_our_code_wrote_is_labelled_as_ours(tmp_path):
+    """Labelled "", the browser showed it as ALFA's answer from its sources, or "in its own words" past a writer."""
+    turn = facts_agent(tmp_path, Analyses(analysis(roa=ROA)), model=ExplodingModel(), asked=(PROFITABLE,)).answer(
+        PROFITABLE.format("RELIANCE.NS"))
+    assert (turn.spoke, turn.phrased_by, core.alfa_spoke(turn)) == (True, core.BUILT, False)
+
+
+def test_a_facts_reply_is_shown_with_term_meanings_entry_for_the_figure_it_gives(tmp_path):
+    from backend.advisory.report import TERM_MEANINGS
+    from backend.models.agent.present import present
+    dividend = {"value": 0.4, "unit": "%", "source": "yahoo", "period": "FY ending 2026-03-31"}
+    turn = facts_agent(tmp_path, Analyses(analysis(dividend_yield=dividend)), asked=(DIVIDEND_ASKED,)).answer(
+        DIVIDEND_ASKED.format("RELIANCE.NS"))
+    assert f"- Dividend yield: {TERM_MEANINGS['Dividend yield']}." in present(turn, {}, {})
+
+
+def test_alfas_figures_say_they_read_closes_not_adjusted_for_dividends_and_do(tmp_path):
+    """INFY's 20-day move read +4.9% in ALFA's figures and +7.3% in our analysis on one screen, with nothing to say why:
+    ALFA trained on closes as traded, and our analysis reads closes adjusted for a dividend inside the window."""
+    from backend.models.agent.present import figures_line
+    path = price_file(tmp_path, "INFY.NS")
+    rows = list(csv.reader(open(path)))
+    for row in rows[1:-1]:          # a dividend went ex on the last day
+        row[5] = f"{float(row[4]) * 0.98:.2f}"
+    csv.writer(open(path, "w", newline="")).writerows(rows)
+    evidence, shown, _ = finance.Market(tmp_path).snapshot("INFY.NS")
+    raw = [float(row[4]) for row in rows[1:]]
+    assert shown["return_20d"] == f"{raw[-1] / raw[-21] - 1:+.1%}"
+    assert figures_line(evidence, "₹").startswith("**Key figures**, on closes not adjusted for dividends · ")
+
+
+def test_a_facts_reply_our_code_wrote_keeps_its_own_capitals():
+    """"Apple Inc. designs, manufactures and markets…" was shown as "Apple Inc. Designs"."""
+    from backend.models.agent.present import present
+    said = "For Apple Inc. (AAPL), our facts on its business are these. Apple Inc. designs, manufactures and markets phones."
+    turn = core.Turn("what does apple do ?", "", "AAPL", finance.FACTS, said, said, "[profile] Apple Inc. designs phones.",
+                     float("nan"), None, True, 0.5, [], "", "2026-11-13", core.BUILT)
+    assert said in present(turn, {}, {})
+
+
+@pytest.mark.usefixtures("generator_writes_facts")
+def test_a_facts_answer_the_generator_gives_a_meaning_of_its_own_is_refused(tmp_path):
+    dividend = {"value": 0.4, "unit": "%", "source": "yahoo", "period": "FY ending 2026-03-31"}
+    written = "for reliance industries limited , its dividend yield , spare cash as a share of market value , was 0.40% ."
+    turn = facts_agent(tmp_path, Analyses(analysis(dividend_yield=dividend)), written=written,
+                       asked=(DIVIDEND_ASKED,)).answer(DIVIDEND_ASKED.format("RELIANCE.NS"))
+    assert (turn.spoke, turn.because) == (False, "its own meaning of dividend yield")
+
+
+@pytest.mark.parametrize("analyses", [None, Analyses(fails=True)], ids=["offline", "yahoo failed"])
+def test_a_facts_question_with_no_analysis_to_read_is_refused_by_name(tmp_path, analyses):
+    turn = facts_agent(tmp_path, analyses, model=ExplodingModel()).answer(ASSESSMENT)
+    assert (turn.spoke, turn.served, turn.ticker, turn.intent) == (False, finance.NO_FACTS, "RELIANCE.NS", finance.FACTS)
+    assert turn.because.startswith("no facts: ")
+
+
+def test_an_index_is_refused_facts_without_an_analysis_being_read(tmp_path):
+    """Analysed as a US share, the Nifty's beta was quoted against the S&P 500, and no facts row covers an index."""
+    analyses = Analyses()
+    price_file(tmp_path, "^NSEI")
+    turn = facts_agent(tmp_path, analyses, model=ExplodingModel()).answer(ASSESSED.format("the nifty"), subject="^NSEI")
+    assert (turn.served, turn.ticker, turn.because) == (finance.NO_FACTS, "^NSEI",
+                                                        "no facts: ^NSEI is an index, and the facts route trained on shares only")
+    assert analyses.asked == []
+
+
+def test_an_analysis_newer_than_the_date_asked_for_is_refused_not_read(tmp_path):
+    turn = facts_agent(tmp_path, Analyses(), model=ExplodingModel()).answer(ASSESSMENT, as_of="2026-10-01")
+    assert turn.because == "no facts: the analysis of RELIANCE.NS reads prices to 2026-11-13, after 2026-10-01"
+
+
+def test_an_analysis_is_kept_until_its_markets_next_close_then_fetched_again(tmp_path):
+    """Kept a flat day, one fetched at 11:00 quoted that morning's price as the day's close until the next morning."""
+    analyses = Analyses()
+    price_file(tmp_path, "RELIANCE.NS")
+    market = finance.Market(tmp_path, analyse=analyses)
+    assert market.facts("RELIANCE.NS") == market.facts("RELIANCE.NS") and analyses.asked == ["RELIANCE.NS"]
+    kept = tmp_path / "facts" / "RELIANCE.NS.json"
+    closed = finance.last_close(finance.market_of("RELIANCE.NS"), time.time())
+    os.utime(kept, (closed + 1, closed + 1))
+    market.facts("RELIANCE.NS")
+    assert analyses.asked == ["RELIANCE.NS"]
+    os.utime(kept, (closed - 60, closed - 60))
+    market.facts("RELIANCE.NS")
+    assert analyses.asked == ["RELIANCE.NS"] * 2
+
+
+@pytest.mark.parametrize("now,closed", [("2026-11-16T10:00+05:30", "2026-11-15T15:30+05:30"),
+                                        ("2026-11-16T15:30+05:30", "2026-11-16T15:30+05:30"),
+                                        ("2026-11-16T03:00+00:00", "2026-11-15T16:00-05:00")], ids=["NSE open", "NSE close",
+                                                                                                    "US overnight"])
+def test_a_markets_last_close_is_the_latest_one_at_or_before_now(now, closed):
+    from datetime import datetime
+    market = finance.market_of("RELIANCE.NS" if "+05:30" in now else "AAPL")
+    assert finance.last_close(market, datetime.fromisoformat(now).timestamp()) == datetime.fromisoformat(closed).timestamp()
+
+
+def test_an_analysis_fetched_again_is_written_whole_so_a_failed_write_leaves_the_last_one_readable(tmp_path, monkeypatch):
+    """Written in place, a fetch that failed halfway, or one still writing after it was given up on, left half a file."""
+    from pathlib import Path
+    first = analysis()
+    price_file(tmp_path, "RELIANCE.NS")
+    market = finance.Market(tmp_path, analyse=Analyses(first))
+    market.facts("RELIANCE.NS")
+    kept = tmp_path / "facts" / "RELIANCE.NS.json"
+    os.utime(kept, (0, 0))
+    market.analyse, write = Analyses(analysis(forward_pe={**FORWARD_PE, "value": 21.4})), Path.write_text
+
+    def half_then_full_disk(path, text, **options):
+        write(path, text[: len(text) // 2], **options)
+        raise OSError("no space left on device")
+    monkeypatch.setattr(Path, "write_text", half_then_full_disk)
+    with pytest.raises(OSError, match="no space"):
+        market.facts("RELIANCE.NS")
+    assert json.loads(kept.read_text()) == first
+
+
+def test_a_slow_analysis_is_given_up_on_and_backs_off_price_fetches_too(tmp_path, monkeypatch):
+    """One Yahoo, one worker and one back-off for prices and analyses alike, so a hung Yahoo stalls one question."""
+    monkeypatch.setattr(finance, "YAHOO_SLOW_S", 0.05)
+    released, yahoo = threading.Event(), Yahoo()
+
+    def hung(ticker):
+        released.wait(5)
+        return analysis()
+    price_file(tmp_path, "RELIANCE.NS")
+    market = finance.Market(tmp_path, shares=SHARES, fetch=yahoo, analyse=hung)
+    with pytest.raises(finance.NoFacts, match="in 0.05 s"):
+        market.facts("RELIANCE.NS")
+    with pytest.raises(finance.NoPrices, match="not fetched until then"):
+        market.hold("NYKAA.NS")
+    released.set()
+    assert yahoo.asked == []
+
+
+@pytest.mark.parametrize("places_facts,scorer,cut,generated", [
+    (True, None, None, False), (False, shared_words, None, False), (True, shared_words, Abstainer(0.5), False),
+    (True, shared_words, None, True), (False, None, Abstainer(0.5), True)],
+    ids=["router without scorer", "scorer without router", "a facts cut our code's answers never read",
+         "no facts cut for the generator's answers", "facts cut alone"])
+def test_a_facts_scorer_a_facts_cut_and_a_router_placing_facts_questions_come_together_or_not_at_all(
+        monkeypatch, market, router, places_facts, scorer, cut, generated):
+    monkeypatch.setattr(core, "GENERATOR_WRITES_FACTS", generated)
+    with pytest.raises(ValueError, match="facts scorer exactly when"):
+        Agent(finance, market, facts_router() if places_facts else router, Abstainer(0.01), FakeTokenizer(),
+              FakeModel(), Config, Abstainer(0.9), facts=scorer, facts_abstainer=cut)
+
+
+def test_the_facts_route_keeps_the_old_intents_examples_and_adds_its_frames_and_only_the_dev_short_templates():
+    """A test template among the examples would be placed by matching itself, and its score reported as held out."""
+    known, old = finance.examples(facts=True), finance.examples()
+    added = {text for _, _, text in known[len(old):]}
+
+    def asked(split):
+        return {finance._squeeze(question.format(t="")) for _, question in finance.short_templates(split)}
+    assert known[:len(old)] == old
+    assert asked("dev") <= added and not asked("test") & added
+
+
+def test_the_short_templates_test_split_is_a_fifth_of_each_category_the_same_on_every_run():
+    held = json.loads(finance.SHORT_TEMPLATES.read_text(encoding="utf-8"))
+    category = {row["id"]: row["category"] for row in held["templates"]}
+    assert {row["id"] for row in held["templates"] if row["split"] == "test"} == \
+        stock_qa.held_out(sorted(category), 0.2, category, "price_short_v1")
+
+
+def test_a_short_template_labelled_with_no_route_is_refused_by_name(tmp_path, monkeypatch):
+    held = json.loads(finance.SHORT_TEMPLATES.read_text(encoding="utf-8"))
+    held["categories"]["volume"]["label"] = "volume"
+    monkeypatch.setattr(finance, "SHORT_TEMPLATES", tmp_path / "templates.json")
+    finance.SHORT_TEMPLATES.write_text(json.dumps(held), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"\['volume'\], which no route answers"):
+        finance.short_templates("dev")
+
+
+def test_the_short_templates_ship_with_the_package():
+    """Read from the installed package on the VM, where only package-data patterns are copied."""
+    import tomllib
+    from fnmatch import fnmatch
+    from backend.paths import PACKAGE
+    patterns = tomllib.loads((PACKAGE.parent / "pyproject.toml").read_text())["tool"]["setuptools"]["package-data"]
+    assert any(fnmatch(finance.SHORT_TEMPLATES.relative_to(PACKAGE).as_posix(), pattern)
+               for pattern in patterns["backend"])
+
+
+@pytest.mark.parametrize("text,facts", [
+    ("is expensive ?", True), ("how much debt does have ?", True), ("what does do ?", True),
+    ("what does the rsi say about ?", False), ("what does your model say about risk in ?", False),
+    ("give me a summary of how is trading .", False), ("give me a summary of how is tradinng", False),
+    ("is likely to be eventful from here ?", False), ("should i buy for its dividend ?", False),
+    ("should i hold through earnings", False), ("what does next week look like for", False),
+    ("what does the price action say about", False), ("is this a cheap entry on", False),
+    ("how volatile is 's revenue", True), ("how diversified is 's business", True),
+    ("what does the dip in mean", False), ("what does 's slump mean", False), ("what does tata steel make", True),
+    ("what does sell ?", True), ("is 's debt high", True), ("what is 's business model", True),
+    ("what is 's long term debt", True), ("what is the p/e of right now", True),
+    ("what is 's one year revenue growth", True), ("is it time to exit before earnings", False),
+    ("is it time to sell now that the dividend is paid", False), ("should i book profits after its earnings", False),
+    ("what does the dip do to", False), ("what does the selloff do to", False),
+    ("did its price rise on the profit news", False), ("is 's price sliding on weak revenue", False),
+    ("did tank on its debt news", False), ("did rise on its earnings", False), ("when does report earnings", False),
+    ("when is 's next earnings date ?", False)])
+def test_a_question_goes_to_facts_by_its_words_only_when_it_names_nothing_a_price_intent_answers(text, facts):
+    """The price intents' words are their own questions', so "hold" and "next week" were not missed again. "what does"
+    alone or "what does the dip do to" named a profile, a move word beside "profit" went unseen, "when does it report
+    earnings" got its profit figures for a date, and everyday words such as "high" kept facts questions off."""
+    assert finance.asks_facts(text) == facts
+
+
+def test_no_facts_frame_and_no_trained_unsupported_phrasing_holds_a_price_word():
+    """"high" was a price word, so "is tcs's debt high" and the facts frame "is {t} priced too high ?" were kept off."""
+    asked = [text for label, _, text in finance.examples() if label == finance.UNANSWERABLE] + \
+        [frame.format(t="") for frame in finance.FACTS_PARAPHRASES]
+    assert [text for text in asked if finance._PRICE_WORD.search(f"{text} ")] == []
+
+
+def test_a_question_the_word_rule_names_gets_the_facts_bonus_and_its_margin_still_faces_the_routing_cut():
+    """At a margin of 1.0 the word rule put "should i book profit in tcs now", a buy question, past every cut."""
+    known = finance.examples(facts=True)
+    near = 0.8 - finance.FACTS_BONUS / 2
+    scores = np.array([0.8 if label == "buy" else near if label == finance.FACTS else 0.0 for label, _, _ in known])
+    router = finance.FactsFirst(known, lambda text: scores)
+    placed = router.route("is expensive ?")
+    assert (placed.label, placed.margin) == (finance.FACTS, pytest.approx(finance.FACTS_BONUS / 2))
+    assert router.route("should i buy for its dividend ?").label == "buy"
+
+
+def test_a_question_the_word_rule_names_placed_on_the_unsupported_intent_is_answered_from_the_facts():
+    """Seven of the 60 facts_dev questions, "how much debt does tcs have" among them, matched "the debt load" there."""
+    known = finance.examples(facts=True)
+    scores = np.array([0.9 if label == finance.UNANSWERABLE else 0.0 for label, _, _ in known])
+    router = finance.FactsFirst(known, lambda text: scores)
+    assert [router.route(text).label for text in ("how much debt does have ?", "who is the chief executive of ?")] == \
+        [finance.FACTS, finance.UNANSWERABLE]
+
+
+def test_a_question_the_word_rule_names_keeps_the_old_examples_wider_unsupported_margin_as_facts():
+    """The added facts frames took five control questions under the routing cut that the old examples alone place on
+    the unsupported intent past it."""
+    known, old = finance.examples(facts=True), set(finance.examples())
+    scores = np.array([0.5 if example in old and example[0] == finance.UNANSWERABLE else
+                       0.52 if example[0] == finance.FACTS else 0.0 for example in known])
+    router = finance.FactsFirst(known, lambda text: scores)
+    assert [(placed.label, placed.margin) for placed in map(router.route, ("is debt free ?", "who runs ?"))] == \
+        [(finance.FACTS, pytest.approx(0.5)), (finance.FACTS, pytest.approx(0.02))]
+
+
+def test_a_question_placed_on_facts_that_names_an_indicator_no_evidence_holds_is_unsupported():
+    """The MACD and RSI templates put "what does the 20-day EMA say about tcs" on facts past the routing cut."""
+    known = finance.examples(facts=True)
+    scores = np.array([0.9 if label == finance.FACTS else 0.0 for label, _, _ in known])
+    router = finance.FactsFirst(known, lambda text: scores)
+    assert [router.route(text).label for text in ("what does the 20-day EMA say about ?", "what does the MACD say ?",
+                                                  "is emami expensive ?")] == \
+        [finance.UNANSWERABLE, finance.FACTS, finance.FACTS]
+
+
+@pytest.mark.parametrize("question,intent", [("is going down ?", "drawdown"), ("is dropping", "drawdown"),
+                                             ("how is trending", "performance"), ("is strong", "performance"),
+                                             ("has entered a correction", "drawdown")])
+def test_a_short_direction_question_stays_on_its_intent_beside_the_dev_templates_asking_why_it_moved(monkeypatch,
+                                                                                                    question, intent):
+    """"why is {t} going down?" is a dev facts template one word from "tcs going down?", which it took off a sure
+    drawdown answer. The one on a "normal correction" sent "is tcs in a correction" to facts and its current ratio."""
+    from backend.models.agent.run.ask import router_from
+    from backend.models.external import sentence
+    monkeypatch.setattr(sentence, "similarity", overlap)
+    assert router_from("pretrained", finance.examples(facts=True), None, None, None, facts=True).route(
+        question).label == intent
+
+
+def test_a_trading_question_is_not_placed_on_facts_by_a_facts_frame_one_word_from_it(monkeypatch):
+    """With "is {t} profitable ?" a facts frame, "is tcs profitable to trade" was a sure facts answer."""
+    from backend.models.agent.run.ask import router_from
+    from backend.models.external import sentence
+    monkeypatch.setattr(sentence, "similarity", overlap)
+    assert router_from("pretrained", finance.examples(facts=True), None, None, None, facts=True).route(
+        "is profitable to trade").label != finance.FACTS
+
+
+def test_a_dev_template_takes_its_label_from_its_categorys_exceptions():
+    """USR-005 is a performance template and USR-170 a buy one, but only the facts lines answer either."""
+    labels = {text: label for label, _, text in finance.examples(facts=True)[len(finance.examples()):]}
+    assert [labels["is doing better this year?"], labels["is near a possible buying level?"]] == [finance.FACTS] * 2
+
+
+def test_a_question_placed_on_a_dev_buy_template_is_asked_in_the_buy_intents_trained_wording(market):
+    """With the template's own words as its key, a question placed on "is this a good time to buy {t}?" raised."""
+    known, old = finance.examples(facts=True), len(finance.examples())
+    scores = np.zeros(len(known))
+    scores[next(at for at, (label, _, _) in enumerate(known) if at >= old and label == "buy")] = 1.0
+    turn = Agent(finance, market, finance.FactsFirst(known, lambda text: scores), Abstainer(0.01),
+                 FakeTokenizer("it is doing fine ."), FakeModel(), Config, Abstainer(0.9),
+                 facts=shared_words).answer("is this a good time to buy AAPL ?")
+    assert (turn.intent, turn.asked) == ("buy", advisory.ask("buy", "AAPL", advisory.canonical_phrasing("buy")))
+
+
+def overlap(texts):
+    """A cosine of word counts, the same for a text whatever else is known, as the pretrained encoder's is."""
+    def bag(text):
+        counts = Counter(pretokenize(text))
+        norm = sum(n * n for n in counts.values()) ** 0.5 or 1.0
+        return {word: n / norm for word, n in counts.items()}
+    known = [bag(text) for text in texts]
+    return lambda question: np.array([sum(n * words.get(word, 0.0) for word, n in bag(question).items())
+                                      for words in known])
+
+
+@pytest.mark.parametrize("question", ["how risky is ?", "is overbought right now ?", "should i buy ?",
+                                      "what does the rsi say about ?", "how far has fallen from its high ?"])
+def test_the_served_router_leaves_an_old_intents_question_where_the_facts_off_router_puts_it_and_no_less_sure(
+        monkeypatch, question):
+    """The added examples took "how risky is infosys" under the routing cut, and "how risky is {t} ?" as a facts
+    frame would have placed it on facts."""
+    from backend.models.agent.run.ask import router_from
+    from backend.models.external import sentence
+    monkeypatch.setattr(sentence, "similarity", overlap)
+    on = router_from("pretrained", finance.examples(facts=True), None, None, None, facts=True)
+    off = router_from("pretrained", finance.examples(), None, None, None, facts=False)
+    placed, before = on.route(question), off.route(question)
+    assert placed.label == before.label and placed.margin >= before.margin > 0
+
+
+def test_the_facts_gate_is_fitted_counting_an_old_unsupported_question_placed_on_facts_as_placed_right():
+    """Counted wrong, the gate refused at a cut set by the very questions the route was made to answer."""
+    from backend.models.agent.router import Route
+    from backend.models.external.route_encoders import ANSWERED_BY_FACTS
+    from backend.models.training import route
+    on_facts = SimpleNamespace(route=lambda text: Route(finance.FACTS, "", text, 1.0, 0.5))
+    asked = [(finance.UNANSWERABLE, "word", "what is its free cash flow ?"), ("volatility", "word", "how much does it swing ?")]
+    assert route.measure(on_facts, asked, ANSWERED_BY_FACTS) == [("word", True, 0.5), ("word", False, 0.5)]
+
+
+def test_the_gate_fitter_measures_the_facts_route_as_it_is_served(monkeypatch):
+    """Without the facts route's words in front, its cut and the facts label were read off a router never served."""
+    import sys
+    from backend.models.external import route_encoders, sentence
+    from backend.models.training import route
+    routers, measure = [], route.measure
+    monkeypatch.setattr(route, "scorers", lambda *args: [])
+    monkeypatch.setattr(route, "measure", lambda router, *args: routers.append(router) or measure(router, *args))
+    monkeypatch.setattr(route_encoders, "facts_label", lambda router, gate, asked: routers.append(router))
+    monkeypatch.setattr(sentence, "similarity", lambda texts: lexical(texts, pretokenize))
+    monkeypatch.setattr(sys, "argv", ["route_encoders", "--facts", "--weights"])
+    route_encoders.main()
+    assert [type(router) for router in routers] == [finance.FactsFirst] * 2
+
+
+def test_the_gate_fitter_reports_both_halves_of_the_held_out_routing_set(capsys):
+    """No set the gate was fitted or checked on had the word rule name a price question, so its mistakes went unseen."""
+    from backend.models.agent.router import Route
+    from backend.models.external import route_encoders
+    on_facts = SimpleNamespace(route=lambda text: Route(finance.FACTS, finance.FACTS, text, 1.0, 1.0))
+    route_encoders.held_out(on_facts, Abstainer(0.5), lambda question: None)
+    assert [line.split(";")[0] for line in capsys.readouterr().out.splitlines()] == [
+        "  held-out dev: 46/130 placed right past the cut, 84 wrong past it",
+        "  held-out test: 41/116 placed right past the cut, 75 wrong past it"]
+
+
+@pytest.mark.parametrize("copied", ["an example", "a dev question"])
+def test_no_question_of_the_held_out_test_half_is_routed_as_the_text_of(copied):
+    """Eight were the round's new examples once the share was taken out, and were placed by matching themselves: three
+    of the 18 gains reported as held out. The dev half is what the router was tuned on."""
+    from backend.models.external import route_encoders
+    held, resolve = json.loads(route_encoders.HELD_OUT.read_text(encoding="utf-8")), route_encoders.served_resolve()
+
+    def bare(text):
+        return " ".join(text.lower().replace("?", " ").split())
+
+    def routed(question):
+        ticker = resolve(question)
+        return bare(finance.without_subject(question, ticker) if ticker else question)
+    against = ({bare(text) for _, _, text in finance.examples(facts=True)} if copied == "an example"
+               else {routed(row["question"]) for row in held["dev"]})
+    assert [row["question"] for row in held["test"] if routed(row["question"]) in against] == []
+
+
+def promoted_generator(tmp_path, **entry):
+    """A generator file and a registry promoting it with `entry`'s fields, as a promotion writes them."""
+    from backend.models.serving import registry
+    artifact = tmp_path / "generator.npz"
+    artifact.write_bytes(b"weights")
+    (tmp_path / "registry.json").write_text(json.dumps({registry.GENERATOR: {"digest": registry.digest(artifact),
+                                                                             **entry}}))
+    return artifact
+
+
+@pytest.mark.parametrize("entry,live,on", [({}, True, False), ({"trained_on": ["advisory_casual"]}, True, False),
+                                           ({"trained_on": ["advisory_casual", finance.STOCK_QA]}, False, False),
+                                           ({"trained_on": ["advisory_casual", finance.STOCK_QA]}, True, True)],
+                         ids=["record before trained_on", "advisory rows only", "facts rows offline", "facts rows live"])
+def test_the_facts_route_is_on_only_live_for_a_generator_promoted_as_trained_on_facts_rows_and_keeps_the_gate(tmp_path,
+                                                                                                             entry, live, on):
+    """Offline no analysis is read, so a facts question routed there could only be refused."""
+    from backend.models.agent.run.ask import routing
+    known, gate, facts = routing("pretrained", promoted_generator(tmp_path, **entry), tmp_path / "registry.json", live=live)
+    assert (facts, gate) == (on, "route_gate_bge.json")
+    assert any(label == finance.FACTS for label, _, _ in known) == on
+
+
+def test_a_candidate_the_registry_does_not_promote_never_turns_the_facts_route_on(tmp_path):
+    from backend.models.agent.run.ask import routing
+    promoted_generator(tmp_path, trained_on=[finance.STOCK_QA])
+    candidate = tmp_path / "candidate.npz"
+    candidate.write_bytes(b"other weights")
+    assert routing("pretrained", candidate, tmp_path / "registry.json", live=True)[1:] == ("route_gate_bge.json", False)
+
+
+def test_a_generator_trained_on_facts_rows_is_refused_a_router_whose_gate_was_not_measured_with_them(tmp_path):
+    from backend.models.agent.run.ask import routing
+    with pytest.raises(ValueError, match="--router pretrained"):
+        routing("alfa", promoted_generator(tmp_path, trained_on=[finance.STOCK_QA]), tmp_path / "registry.json", live=True)
+
+
+def test_the_facts_cut_is_the_one_fitted_for_this_generator_and_its_absence_names_the_script(tmp_path):
+    from backend.models.agent.run.ask import FACTS_CUT, facts_cut_from
+    from backend.models.serving import registry
+    served = promoted_generator(tmp_path)
+    with pytest.raises(FileNotFoundError, match="fit_facts_cut"):
+        facts_cut_from(tmp_path, served)
+    Abstainer(0.45).save(tmp_path / FACTS_CUT.format(registry.digest(served)))
+    assert facts_cut_from(tmp_path, served).cut == 0.45
+
+
+def test_a_generator_trained_on_facts_rows_is_served_live_with_no_facts_cut_while_our_code_writes_facts_answers(
+        tmp_path, monkeypatch):
+    """No facts cut is shipped to the VM, and requiring one there restarted the agent again and again."""
+    from backend.models.agent.run import ask
+    from backend.models.external import sentence
+    from backend.models.learning import AGENT
+    from backend.models.serving import registry
+    served = promoted_generator(tmp_path)
+    monkeypatch.setattr(registry, "trained_on", lambda role, artifact, path=None: (finance.STOCK_QA,))
+    monkeypatch.setattr(ask, "load_model", lambda artifacts, dataset, checkpoint: (FakeTokenizer(), FakeModel(),
+                                                                                    SimpleNamespace(max_text_length=LENGTH, seed=0)))
+    monkeypatch.setattr(sentence, "similarity", overlap)
+    monkeypatch.setattr(ask, "nse_shares", lambda: SHARES)
+    monkeypatch.setattr(ask, "prices_from", Yahoo)
+    monkeypatch.setattr(ask, "analyses_from", Analyses)
+    (tmp_path / "prices").mkdir()
+    price_file(tmp_path / "prices", "RELIANCE.NS")
+    Abstainer(0.04).save(tmp_path / "gate.json")
+    agent = ask.build(tmp_path, served.name, str(tmp_path / "prices"), str(tmp_path / "gate.json"),
+                      str(tmp_path / "log.sqlite"), 0.6, 10, "", router="pretrained", live=True, labeller=AGENT)[0]
+    assert finance.FACTS in agent.router.labels and agent.facts_abstainer is None
+
+
 # --- the row the decoder reads ---------------------------------------------
 
 def test_a_served_row_is_laid_out_exactly_as_a_training_row(market):
@@ -302,6 +1242,38 @@ def test_a_served_row_is_laid_out_exactly_as_a_training_row(market):
     source, keep = build_sources(
         tokenizer.encode(asked)[: finance.QUESTION_TOKENS], [tokenizer.encode(evidence)], 1, LENGTH)
     assert np.array_equal(context.source[0], source) and np.array_equal(context.keep[0], keep)
+
+
+class Recording(FakeModel):
+    """Keeps the source it was asked to answer from, which is the row the decoder read."""
+
+    def generate(self, source, keep, *sampling):
+        self.source = source
+        return super().generate(source, keep, *sampling)
+
+
+@pytest.mark.usefixtures("generator_writes_facts")
+def test_a_served_facts_row_is_laid_out_exactly_as_a_training_row(tmp_path):
+    """The facts window was computed twice: serving cut a facts question at the advisory 24 tokens and every test passed."""
+    from backend.models.training import prepare_stock_qa
+    question = ASSESSMENT.replace(" .", ", and tell me what its gross margin and return on assets say about how well "
+                                        "the business turns sales into profit for its owners .")
+    many = {key: {"value": 10.0 + at, "unit": "%", "source": "yahoo", "period": "FY ending 2026-03-31"}
+            for at, key in enumerate(("gross_margin", "roa", "revenue_cagr", "latest_quarter_revenue_yoy", "forward_pe"))}
+    analysed, tokenizer, model = analysis(**many), FakeTokenizer("its gross margin is 10.00% ."), Recording()
+    # shares a word with the question only by the company's name, which the scorer takes out of both
+    analysed["results"]["fundamental"]["details"]["profile"] = {"summary": "Reliance Industries Limited is a Reliance company."}
+    price_file(tmp_path, "RELIANCE.NS")
+    market = finance.Market(tmp_path, analyse=Analyses(analysed))
+    turn = Agent(finance, market, facts_router(), Abstainer(0.01), tokenizer, model, Config, Abstainer(0.9),
+                 facts=shared_words, facts_abstainer=Abstainer(0.9)).answer(question)
+    row = {"id": "STKQ-0001-RELIANCE", "split": "train", "stocks": ["RELIANCE"], "template_id": "csv:integrated_stock_read",
+           "interaction_type": "single_turn", "question": question, "facts": stock_qa.facts(analysed),
+           "short_answer": "its gross margin is 10.00% ."}
+    kept, dropped = prepare_stock_qa.generator_rows([row], {"test_stocks": [], "validation_stocks": [], "test_templates": []},
+                                                    shared_words, tokenizer.encode, market.names)
+    assert turn.intent == finance.FACTS and len(tokenizer.encode(question)) > finance.FACTS_QUESTION_TOKENS
+    assert not dropped and np.array_equal(model.source[0], kept["train"][0][0])
 
 
 def test_evidence_too_long_for_the_window_is_refused_not_truncated():
@@ -353,14 +1325,86 @@ def test_an_unsupported_figure_refuses_even_at_full_confidence(market, router):
     turn = agent(market, router, written="it trades at 4242.42 .", confidence=1.0).answer(
         "how is AAPL doing ?")
     assert turn.unsupported == ["4242.42"] and turn.because == "unsupported figure"
-    assert turn.served == finance.REFUSAL and turn.answer == "it trades at 4242.42 ."
+    assert turn.served != turn.answer == "it trades at 4242.42 ."
+
+
+@pytest.mark.parametrize("written,because", [
+    ("aapl sits above both its 20 and 50 day averages .", ""),
+    ("aapl sits between its 20 and 50 day averages .", "wrong trend: says between, the figures say above"),
+    ("aapl sits below the 20 and 50 day averages .", "wrong trend: says below, the figures say above")])
+def test_a_price_answer_whose_trend_words_its_averages_contradict_refuses_even_at_full_confidence(market, router, written,
+                                                                                                 because):
+    """No guard read words, so 54 spoken answers on outside shares put the price between its averages when it was not."""
+    turn = agent(market, router, written=written, confidence=1.0).answer("how is AAPL doing ?")
+    assert (turn.intent, turn.served == written, turn.because) == ("performance", not because, because)
+
+
+@pytest.mark.parametrize("written,named", [
+    ("over 20 days aapl is doing fine .", "aapl"),                        # a share we hold, by its symbol
+    ("nykaa is doing fine .", "nykaa"), ("fsn e-commerce ventures is doing fine .", "fsn e-commerce ventures"),
+    ("maruti. ns is doing fine .", "maruti.ns"),                          # a symbol no list of ours carries
+    ("i cannot tell you which way ge goes .", "ge"),                      # where the share goes: GE, too short a name
+    ("i do not have a directional signal for cat , and a one week call on it is a coin toss .", "cat"),  # after "for"
+    ("the move is small . amacda , is below both its averages .", "amacda"),      # or no share's name at all
+    ("ns is doing fine .", "ns")])                                        # or a symbol's suffix alone
+def test_an_answer_naming_another_share_refuses_even_at_full_confidence(tmp_path, router, written, named):
+    """Outside the 101 it trained on, the generator named another share in 349 of 700 answers, every figure supported."""
+    price_file(tmp_path, "AAPL")
+    turn = agent(fetching(tmp_path, Yahoo()), router, written=written, confidence=1.0).answer("how is RELIANCE.NS doing ?")
+    assert (turn.served == written, turn.because) == (False, f"names another share: {named}")
+
+
+@pytest.mark.parametrize("written,because", [
+    ("maruti. ns is doing fine .", "names another share: maruti.ns"),
+    ("aapl sits between its 20 and 50 day averages .", "wrong trend: says between, the figures say above")],
+    ids=["a wrong name", "a wrong trend"])
+def test_a_sure_price_answer_a_guard_refuses_is_replaced_by_our_codes_sentence_and_the_turn_says_whose(market, router,
+                                                                                                       written, because):
+    """256 of 540 turns on unseen shares were refused, most for a garbled name, while the price files held the answer.
+    ALFA's words and confidence stay in the turn, for the feedback log to judge as the answer that did not speak."""
+    turn = agent(market, router, written=written, confidence=1.0).answer("how is AAPL doing ?")
+    assert (turn.spoke, turn.served, turn.because, turn.phrased_by) == (
+        True, phrase.price_move(market.subject("AAPL"), market.snapshot("AAPL")), because, core.BUILT)
+    assert (turn.answer, turn.confidence, turn.stated) == (written, 1.0, None)
+
+
+@pytest.mark.parametrize("index", ["^NSEI", "^BSESN"])
+def test_our_codes_price_sentence_gives_an_index_in_points_not_dollars(tmp_path, router, index):
+    """"^NSEI closed at $23278.50" was served: every symbol not ending in .NS was priced in dollars."""
+    price_file(tmp_path, index)
+    market = finance.Market(tmp_path)
+    turn = agent(market, router, written="maruti. ns is doing fine .", confidence=1.0).answer(
+        "how is the nifty doing ?", subject=index)
+    assert (turn.phrased_by, turn.served.startswith(f"{index} closed at {market.snapshot(index)[1]['close']} on ")) == (
+        core.BUILT, True)
+
+
+def test_a_sure_price_answer_under_the_cut_is_replaced_by_the_answer_form_our_code_fills_from_the_figures(market, router):
+    """Every intent but how the price moved has its trained answer form, whose RSI words come from the same figures."""
+    turn = agent(market, router, written="it is fine .", confidence=0.5, cut=0.9).answer("is AAPL overbought ?")
+    _, shown, _ = market.snapshot("AAPL")
+    facts = {name: float(shown[name]) for name in ("close", "sma_20", "sma_50", "rsi_14")}
+    forms = {advisory.row("overbought", "AAPL", facts, shown, phrasing)[1] for phrasing in range(3)}
+    assert (turn.spoke, turn.because, turn.phrased_by, turn.served in forms) == (True, "low confidence", core.BUILT, True)
+    assert "overbought territory" in turn.served and guardrails.unsupported_figures(turn.served, turn.evidence) == []
+
+
+@pytest.mark.parametrize("question,written", [
+    ("how is RELIANCE.NS doing ?", "reliance. ns is doing fine ."),
+    ("how is RELIANCE.NS doing ?", "it is doing fine, take a look ."),
+    ("how is AAPL doing ?", "aapl is doing fine ."), ("how is NYKAA.NS doing ?", "nykaa is doing fine .")])
+def test_an_answer_naming_its_own_share_or_a_word_a_share_is_named_by_is_served(tmp_path, router, question, written):
+    """"reliance" and "take" (TAKE.NS) are English words, which an answer about any share may use. "aapl" and "nykaa"
+    are names the guard reads for, and the evidence states them."""
+    price_file(tmp_path, "AAPL")
+    turn = agent(fetching(tmp_path, Yahoo()), router, written=written).answer(question)
+    assert (turn.spoke, turn.served) == (True, written)
 
 
 def test_a_confidence_under_the_cut_refuses_a_supported_answer(market, router):
     turn = agent(market, router, written="it is doing fine .", confidence=0.5, cut=0.9).answer(
         "how is AAPL doing ?")
-    assert turn.because == "low confidence" and turn.served == finance.REFUSAL
-    assert turn.answer == "it is doing fine ."
+    assert turn.because == "low confidence" and turn.served != turn.answer == "it is doing fine ."
 
 
 def test_a_supported_confident_answer_is_served(market, router):
@@ -504,6 +1548,18 @@ def test_the_passage_that_is_quoted_is_one_that_names_the_subject_not_the_best_r
         "should i set a stop loss on AAPL ?")
     assert turn.served == "AAPL holders often set one below the last close."
     assert "document d4" in turn.evidence and PASSAGE not in turn.evidence
+
+
+@pytest.mark.parametrize("fetched,quoted", [("Apple Inc. said fourth-quarter revenue rose.", False),
+                                            ("Apple shares held their upward trend through the quarter.", True)],
+                         ids=["off its topic", "on it"])
+def test_a_passage_that_speaks_of_no_area_the_question_asks_about_is_not_quoted(registered, router, fetched, quoted):
+    """24 of round 7's 64 quotes met a question on a share's trend, risk or debt with its infobox or its history."""
+    chunk = Chunk(fetched, [], "https://www.sec.gov/Archives/edgar/data/320193/ex99.htm", "2026-07-29")
+    turn = agent(registered, router, gate_cut=1e9, model=ExplodingModel(),
+                 reference=reference("never written", model=ExplodingModel(), live=FakeLive([chunk]))).answer(
+        "how strong is the current trend in AAPL ?")
+    assert (turn.spoke, turn.served == fetched) == (quoted, quoted)
 
 
 def test_a_company_with_an_sec_number_is_searched_for_before_the_corpus_is_read(registered, router):
@@ -852,41 +1908,26 @@ DRAFT = "it is up 13.8% over 20 days and closed at 165.00 ."
 ASKED = "how is AAPL doing ?"
 
 
-def test_a_rewrite_that_keeps_every_figure_is_served_and_names_its_writer(market, router):
-    """The rewrite is what is read; ALFA's draft stays in the turn as what the model wrote."""
-    plain = "AAPL has risen 13.8% over the last 20 days and closed at 165.00."
-    turn = phrased_agent(market, router, DRAFT, FakeWriter(plain)).answer(ASKED)
-    assert turn.spoke and turn.served == plain and turn.answer == DRAFT
-    assert (turn.phrased_by, turn.unphrased_because) == ("test-lm", "")
+def test_an_answer_of_alfas_that_passes_every_guard_is_served_in_its_own_words_and_never_reworded(market, router):
+    """ALFA's answer comes first, and the language model only last: never over an answer of ALFA's that passed."""
+    turn = phrased_agent(market, router, DRAFT, ExplodingWriter()).answer(ASKED)
+    assert (turn.spoke, turn.served, turn.phrased_by, turn.unphrased_because) == (True, DRAFT, "", "")
 
 
-@pytest.mark.parametrize("reply,reason", [
-    ("AAPL has been rising lately.", "leaves out"),                                            # drops the figures
-    ("Up 13.8% in 20 days, closed at 165.00, and 9.99% this week.", "figure 9.99%"),            # adds one
-    ("Up 13.8% in 20 days because of rates, closed at 165.00.", "gives a reason"),             # adds a cause
-    ("Up 13.8% in 20 days, closed at 165.00, and it will rise further.", "claims a direction"),  # adds a call
-    ("Up 13.8% in 20 days, closed at ₹165.00.", "writes ₹"),                                   # swaps currency
-    ("Up:\n- 13.8% in 20 days\n- closed at 165.00", "breaks into lines"),                     # a list
-    ("Up a lot, 13.8% in 20 days, and closed at 165.00.", "sizes a figure"),                    # adds a size
-])
-def test_a_rewrite_that_changes_the_facts_serves_alfas_words_and_says_why(market, router, reply, reason):
-    turn = phrased_agent(market, router, DRAFT, FakeWriter(reply)).answer(ASKED)
-    assert turn.spoke and turn.served == DRAFT and turn.phrased_by == ""
-    assert reason in turn.unphrased_because
-
-
-def test_a_writer_out_of_quota_serves_alfas_words_with_the_reason(market, router):
-    from backend.database.sources.provider import DataUnavailable
-    writer = FakeWriter(error=DataUnavailable("model Space failed on /write: GPU quota exceeded"))
-    turn = phrased_agent(market, router, DRAFT, writer).answer(ASKED)
-    assert turn.spoke and turn.served == DRAFT and "GPU quota exceeded" in turn.unphrased_because
+def test_a_facts_reply_is_served_as_our_code_wrote_it_and_never_handed_to_the_writer(tmp_path):
+    """Reworded, "HDFC Bank has no debt." for our "the facts do not include figures on its debt" passed every check the
+    rewording met: none reads a negation."""
+    built = facts_agent(tmp_path, Analyses(analysis(roa=ROA)), model=ExplodingModel(), asked=(PROFITABLE,))
+    built.writer = ExplodingWriter()
+    turn = built.answer(PROFITABLE.format("RELIANCE.NS"))
+    assert turn.spoke and turn.served == turn.answer
 
 
 def test_whether_to_speak_is_still_decided_on_alfas_own_draft(market, router):
     """The cut and the faithfulness record were measured on the generator's draft, so a refusal is never
-    handed to the language model to dress up."""
+    handed to the language model to dress up: our code's sentence speaks in its place."""
     turn = phrased_agent(market, router, DRAFT, ExplodingWriter(), confidence=0.5, cut=0.9).answer(ASKED)
-    assert not turn.spoke and turn.served == finance.REFUSAL
+    assert (turn.spoke, turn.because, turn.phrased_by) == (True, "low confidence", core.BUILT)
 
 
 NEWS = Chunk("Mint, 6 Oct 2026: Reliance Industries commissioned its new refinery unit.", [],
@@ -905,6 +1946,21 @@ def test_a_question_about_lately_is_answered_from_the_newswire_alone(market, rou
         "any news on RELIANCE.NS ?")
     assert turn.spoke and turn.served.endswith(plain) and turn.phrased_by == "test-lm"
     assert turn.served.startswith("RELIANCE.NS closed at ₹") and NEWS.document in turn.evidence
+
+
+def test_a_question_for_the_days_high_is_refused_plainly_not_answered_from_the_news(market, router):
+    """Its "today" sent "what is the intraday high of hdfc bank today" to the newswire, which answered with a headline."""
+    plain = "Reliance Industries commissioned a new refinery unit (Mint, 6 Oct 2026)."
+    turn = agent(market, router, gate_cut=1e9, reference=news_reference(FakeWriter(plain))).answer(
+        "what is the intraday high of RELIANCE.NS today ?")
+    assert (turn.spoke, turn.served, turn.ticker) == (False, finance.NO_DAY_RANGE, "RELIANCE.NS")
+
+
+@pytest.mark.parametrize("question", ["how far is RELIANCE.NS from its 60 day high ?", "is RELIANCE.NS at a 50-day low ?",
+                                      "why is RELIANCE.NS trading low today ?"])
+def test_a_question_on_a_spans_high_or_a_low_price_is_not_refused_as_asking_for_the_days_high(market, router, question):
+    """The day's-high rule read "60 day high" and "trading low today" as the day's bar, and ALFA refused them all."""
+    assert agent(market, router, gate_cut=1e9).answer(question).served != finance.NO_DAY_RANGE
 
 
 def test_a_lately_question_with_no_news_gives_the_price_move_and_says_nothing_explains_it(market, router):
@@ -1074,12 +2130,85 @@ def test_the_language_model_reads_the_news_and_our_own_sentence_gives_the_prices
     turn = agent(market, router, gate_cut=1e9, reference=news_reference(writer)).answer("any news on RELIANCE.NS ?")
     assert moved not in writer.asked[0] and "PRICES" not in writer.asked[0]
     assert turn.served == f"{phrase.price_move(finance.Market.subject(market, 'RELIANCE.NS'), market.snapshot('RELIANCE.NS'))} " \
+                          f"{phrase.news_dated([NEWS], market.snapshot('RELIANCE.NS'))} " \
                           "Reliance Industries commissioned a refinery unit (Mint, 6 Oct 2026)."
     quoting = news_reference(FakeWriter(f"RELIANCE.NS is {moved} over 5 days after the refinery unit (Mint, 6 Oct 2026)."))
     turn = agent(market, router, gate_cut=1e9, reference=quoting).answer("any news on RELIANCE.NS ?")
-    assert turn.phrased_by == "" and f"figure {moved}" in turn.unphrased_because
+    assert turn.phrased_by == core.BUILT and f"figure {moved}" in turn.unphrased_because
     assert turn.served == phrase.recent_plain(finance.Market.subject(market, "RELIANCE.NS"),
                                               market.snapshot("RELIANCE.NS"), [NEWS])
+
+
+PREVIEW = Chunk("Mint, 21 Jan 2020: Reliance Industries is expected to report a higher profit.", [],
+                "https://n.test/preview", "2020-01-21")
+
+
+@pytest.mark.parametrize("writer,said", [
+    (FakeWriter("Reliance Industries is expected to report a higher profit (Mint, 21 Jan 2020)."),
+     "The news that follows is from 21 Jan 2020, {} days before that close. Reliance Industries is expected"),
+    (None, "On 21 Jan 2020, {} days before that close, Mint wrote: Reliance Industries is expected")],
+    ids=["reworded", "plain"])
+def test_news_beside_the_prices_says_how_long_before_their_close_it_was_written(market, router, writer, said):
+    """A 7 Oct preview of results already out was told on 16 Nov in the present tense, as if it were news."""
+    turn = agent(market, router, gate_cut=1e9, reference=news_reference(writer, news=(PREVIEW,))).answer(
+        "any news on RELIANCE.NS ?")
+    gap = (date.fromisoformat(str(market.snapshot("RELIANCE.NS")[2])[:10]) - date(2020, 1, 21)).days
+    assert turn.served.startswith("RELIANCE.NS closed at ₹") and said.format(gap) in turn.served
+
+
+PLANNED = Chunk("Mint, 6 Oct 2026: Reliance Industries said its new refinery unit opens on 2026-11-05.", [],
+                "https://n.test/unit", "2026-10-06")
+
+
+def test_a_writer_reply_writing_a_passages_day_another_way_is_served(market, router):
+    """figures() read "2026-11-05" as 2026, -11 and -05, so "5 November 2026" was refused for a figure 5."""
+    writer = FakeWriter("Reliance Industries said its new refinery unit opens on 5 November 2026 (Mint, 6 Oct 2026).")
+    turn = agent(market, router, gate_cut=1e9, reference=news_reference(writer, news=(PLANNED,))).answer(
+        "any news on RELIANCE.NS ?")
+    assert (turn.phrased_by, turn.unphrased_because) == ("test-lm", "")
+
+
+def test_a_writer_reply_giving_a_day_no_passage_gives_is_refused_in_plain_words(market, router):
+    """The reason reached the user as the date's pieces: "it leaves out -03, -11, -16, -31, 2026"."""
+    writer = FakeWriter("Reliance Industries said its new refinery unit opens on 5 December 2026 (Mint, 6 Oct 2026).")
+    turn = agent(market, router, gate_cut=1e9, reference=news_reference(writer, news=(PLANNED,))).answer(
+        "any news on RELIANCE.NS ?")
+    assert turn.unphrased_because == "it gives the date 5 Dec 2026, which the source does not"
+
+
+PASSED = "Reliance Industries commissioned its new refinery unit (Mint, 6 Oct 2026)"
+
+
+@pytest.mark.parametrize("writer,reason", [
+    (FakeWriter(f"{PASSED}, and 9.99% this year."), "figure 9.99%"),                            # adds one
+    (FakeWriter(f"{PASSED} because of rates."), "gives a reason"),                              # adds a cause
+    (FakeWriter(f"{PASSED}, and its price will rise further."), "claims a direction"),          # adds a call
+    (FakeWriter(f"{PASSED}, counted in $."), "writes $"),                                       # swaps currency
+    (FakeWriter("Reliance Industries:\n- commissioned its new refinery unit\n- Mint, 6 Oct 2026"), "breaks into lines"),
+    (FakeWriter(f"{PASSED.replace('Reliance Industries', 'RELIEANCE.NS')}."), "names RELIEANCE.NS"),  # misspelt
+    (FakeWriter(error=DataUnavailable("model Space failed on /write: GPU quota exceeded")), "GPU quota exceeded")])
+def test_a_writer_reply_that_changes_the_news_serves_the_plain_answer_and_says_why(market, router, writer, reason):
+    turn = agent(market, router, gate_cut=1e9, reference=news_reference(writer)).answer("any news on RELIANCE.NS ?")
+    assert turn.served == phrase.recent_plain(finance.Market.subject(market, "RELIANCE.NS"),
+                                              market.snapshot("RELIANCE.NS"), [NEWS]) and turn.phrased_by == core.BUILT
+    assert reason in turn.unphrased_because
+
+
+@pytest.mark.parametrize("writer,asked", [
+    (FakeWriter(f"{PASSED}."), True), (FakeWriter(f"{PASSED} because of rates."), True),
+    (FakeWriter(error=DataUnavailable("model Space failed on /write: GPU quota exceeded")), False)],
+    ids=["its words served", "its words refused", "not reached"])
+def test_a_turn_says_whether_its_request_reached_the_writer(market, router, writer, asked):
+    """A writer the Space could not run was charged to the user as asked."""
+    turn = agent(market, router, gate_cut=1e9, reference=news_reference(writer)).answer("any news on RELIANCE.NS ?")
+    assert turn.asked_writer is asked
+
+
+def test_a_refusal_after_the_writer_read_the_news_says_it_asked_the_writer(market, router):
+    """"what happened in the markets today?" asked the writer, which found no answer, and was refunded as asking none."""
+    turn = agent(market, router, gate_cut=1e9, reference=news_reference(FakeWriter("NONE"))).answer(
+        "what happened with the refinery unit in the markets today ?")
+    assert (turn.spoke, turn.served, turn.asked_writer) == (False, finance.NOT_IN_SOURCES, True)
 
 
 def test_a_writer_that_finds_no_answer_serves_the_plain_answer_not_its_half_refusal(market, router):
@@ -1087,7 +2216,7 @@ def test_a_writer_that_finds_no_answer_serves_the_plain_answer_not_its_half_refu
     is a refusal: only that half was true. The prices and the newest report are what is left to say."""
     writer = FakeWriter("It was founded in 1981. The passages do not provide a reason. None.")
     turn = agent(market, router, gate_cut=1e9, reference=news_reference(writer)).answer("why is RELIANCE.NS falling ?")
-    assert turn.spoke and "founded" not in turn.served and NEWS.text in turn.served
+    assert turn.spoke and "founded" not in turn.served and NEWS.text.partition(": ")[2] in turn.served
 
 
 ASKED_YES_NO = "are refinery stocks falling ?"
@@ -1098,7 +2227,7 @@ def test_a_writer_that_answers_yes_or_no_serves_the_plain_answer(market, router,
     """"are it stocks falling" was served "NO", a verdict the prompt asks the writer not to give."""
     from backend.models.agent import phrase
     turn = agent(market, router, reference=news_reference(FakeWriter(reply))).answer(ASKED_YES_NO)
-    assert turn.spoke and turn.served == phrase.recent_plain(None, None, [NEWS]) and turn.phrased_by == ""
+    assert turn.spoke and turn.served == phrase.recent_plain(None, None, [NEWS]) and turn.phrased_by == core.BUILT
     assert "answers yes or no" in turn.unphrased_because
 
 
@@ -1110,7 +2239,7 @@ def test_a_writer_sentence_no_passage_entails_serves_the_plain_answer_and_names_
     built = news_reference(FakeWriter(f"{verdict} Reliance Industries commissioned a unit (Mint, 6 Oct 2026)."),
                            entails=doubting(verdict))
     turn = agent(market, router, reference=built).answer(ASKED_YES_NO)
-    assert turn.spoke and turn.served == phrase.recent_plain(None, None, [NEWS]) and turn.phrased_by == ""
+    assert turn.spoke and turn.served == phrase.recent_plain(None, None, [NEWS]) and turn.phrased_by == core.BUILT
     assert f"no passage says “{verdict}”" in turn.unphrased_because
 
 
@@ -1260,6 +2389,92 @@ def test_a_question_not_about_money_is_refused_even_when_a_passage_matches(marke
     assert not turn.spoke and turn.served == finance.OFF_TOPIC
 
 
+# The two Wikipedia infobox passages served for TCS and Nykaa, as the corpus stored them
+TCS_INFOBOX = ("(2026) Total equity ₹ 108,478 crore (US$11 billion) (2026) Owner Tata Sons (71.74%) [ 2 ] Number of "
+               "employees 584,519 (March 2026) [ 3 ] Parent Tata Group Subsidiaries TRDDC Website tcs .com Footnotes "
+               "Financials as of 31 March 2025 . [ 4 ] Tata Consultancy Services Limited [ 5 ] ( TCS ) is an Indian")
+NYKAA_INFOBOX = ("₹ 72 crore (US$7.5 million) (2025) Owner Nayar family (53.5%) [ 2 ] Number of employees 2,000+ (2021) "
+                 "Website www .nykaa .com Footnotes Financials as of 31 March 2025 . [ 3 ] FSN E-Commerce Ventures Ltd , "
+                 "doing business as Nykaa , is an Indian retail company, headquartered in Mumbai . It sells beaut")
+
+
+MOON = Chunk("Titan is the largest moon of Saturn, and it has been doing what moons do, orbiting its planet lately.",
+             [], "moon", "")
+ZAGGLE = Chunk("ZAGGLE.NS has been doing well lately, a company note said.", [], "zaggle", "2026-10-01")
+
+
+def infoboxes(*more):
+    held = [Chunk(TCS_INFOBOX, [], "188e9441c1b74e60", ""), Chunk(NYKAA_INFOBOX, [], "d74d2e8b9a944217", ""),
+            Chunk(PASSAGE, [], "d0", "2021-06-01"), *more]
+    return Reference(Hybrid(held, pretokenize), FakeTokenizer(), ExplodingModel(), Config, QUESTION_TOKENS, PASSAGES,
+                     ANSWER_TEMPERATURE, ANSWER_TOP_P)
+
+
+@pytest.mark.parametrize("question,quoted", [
+    ("who owns tata consultancy services ?",
+     "(2026) Total equity ₹ 108,478 crore (US$11 billion) (2026) Owner Tata Sons (71.74%) Number of employees 584,519 "
+     "(March 2026) Parent Tata Group Subsidiaries TRDDC Website tcs.com Footnotes Financials as of 31 March 2025. "
+     "Tata Consultancy Services Limited (TCS) is an Indian"),
+    ("who owns nykaa ?",
+     "₹ 72 crore (US$7.5 million) (2025) Owner Nayar family (53.5%) Number of employees 2,000+ (2021) Website "
+     "www.nykaa.com Footnotes Financials as of 31 March 2025. FSN E-Commerce Ventures Ltd, doing business as Nykaa, "
+     "is an Indian retail company, headquartered in Mumbai. It sells beaut")])
+def test_a_quote_drops_citation_marks_and_the_spaces_the_corpus_split_off_but_keeps_every_figure(question, quoted):
+    assert infoboxes().look_up(question).served == quoted
+
+
+RELIANCE_INFOBOX = ("Reliance Industries Not to be confused with Reliance Group . Reliance Industries Limited Type Public "
+                    "Traded as BSE : 500325 NSE : RELIANCE Founded 1958 Founder Dhirubhai Ambani Headquarters Mumbai Key")
+RELIANCE_PEOPLE = "people Mukesh Ambani ( Chairman and MD ) Products Petroleum Reliance Industries Limited"
+
+
+def test_a_question_on_who_runs_a_company_is_quoted_only_a_passage_naming_its_management():
+    """"who runs reliance industries?" was quoted the start of the infobox, cut off before "Key people", which said nothing
+    of who runs it."""
+    held = infoboxes(Chunk(RELIANCE_INFOBOX, [], "95a5b0fe22e159db", ""), Chunk(RELIANCE_PEOPLE, [], "95a5b0fe22e159dc", ""))
+    assert held.look_up("who runs reliance industries ?").served == "people Mukesh Ambani (Chairman and MD) Products " \
+                                                                     "Petroleum Reliance Industries Limited"
+
+
+@pytest.mark.parametrize("question,subject,off_topic", [("how has zaggle been doing lately ?", "ZAGGLE.NS", False),
+                                                        ("how is your mom doing ?", "", True)])
+def test_a_question_about_a_stock_we_hold_no_prices_for_is_looked_up_not_refused_as_off_topic(market, router, question,
+                                                                                               subject, off_topic):
+    """The first was refused as not about money; it and the second each find a passage that says "doing". The turn
+    carries the stock it was asked under, so "should i buy it" next is not about the conversation's share before."""
+    turn = agent(market, router, model=ExplodingModel(), reference=infoboxes(ZAGGLE)).answer(question, subject=subject)
+    assert (turn.served == finance.OFF_TOPIC) == off_topic and turn.spoke != off_topic and turn.ticker == subject
+
+
+class Unanswering:
+    """Documents read and found not to answer, or a live search that could not be run when `fails`."""
+
+    def __init__(self, fails):
+        self.fails = fails
+
+    def look_up(self, *_):
+        if self.fails:
+            raise SearchFailed("wikipedia: 503 from en.wikipedia.org")
+        return Looked("", ZAGGLE.text, UNANSWERED, [], float("nan"), "", "2026-10-01", "", "it does not say")
+
+
+@pytest.mark.parametrize("fails,refusal", [(False, finance.NOT_IN_SOURCES), (True, finance.UNREACHABLE)],
+                         ids=["not in sources", "unreachable"])
+def test_a_refusal_about_a_stock_we_hold_no_prices_for_carries_the_stock(market, router, fails, refusal):
+    """Carried empty, the conversation kept the share before it, and "should i buy it" next was about that one."""
+    turn = agent(market, router, model=ExplodingModel(), reference=Unanswering(fails)).answer(
+        "how has zaggle been doing lately ?", subject="ZAGGLE.NS")
+    assert (turn.spoke, turn.served, turn.ticker) == (False, refusal, "ZAGGLE.NS")
+
+
+@pytest.mark.parametrize("question,subject", [("how has titan been doing lately ?", "TITAN.NS"),
+                                              ("how has zaggle been doing lately ?", "ZAGGLE.NS")])
+def test_a_stock_we_hold_no_prices_for_is_answered_only_from_a_passage_that_names_it(market, router, question, subject):
+    """With no prices for either, "titan" was served the moon of Saturn and "zaggle" the Nykaa infobox."""
+    turn = agent(market, router, model=ExplodingModel(), reference=infoboxes(MOON)).answer(question, subject=subject)
+    assert (turn.spoke, turn.because) == (False, "no subject")
+
+
 @pytest.mark.parametrize("question", ["what does RSI mean ?", "what is diversification ?",
                                       "what does it mean when the macd line rises above the signal line ?",
                                       "does volume rise before a breakout ?", "why are small caps rallying ?",
@@ -1279,7 +2494,7 @@ def test_market_words_alone_put_a_question_about_money(question):
                                       "what is the volume of a sphere ?", "how do i turn up the volume on my phone ?",
                                       "how do i treat an acne breakout ?",
                                       "how many candles go on a cake, one candle a year ?",
-                                      "why do weather charts put the key below the chart ?"])
+                                      "why do weather charts put the key below the chart ?", "how is your mom doing ?"])
 def test_a_question_about_something_else_is_not_about_money(question):
     assert not finance.about_money(question)
 
@@ -1340,12 +2555,11 @@ def test_a_concept_question_naming_no_company_is_answered_from_the_lessons_first
 
 
 @pytest.mark.parametrize("question", ["how has RELIANCE.NS been doing lately ?",
-                                      "how has RELIANCE.NS been doing over the last month ?",
-                                      "how is RELIANCE.NS performing ?", "how has RELIANCE.NS done this year ?"])
-def test_a_question_sure_to_ask_how_the_price_moved_reads_the_dated_sources_before_the_advisory_path(market, router,
-                                                                                                      question):
+                                      "how has RELIANCE.NS been doing over the last month ?"])
+def test_a_question_sure_to_ask_how_the_price_moved_with_a_look_back_word_reads_the_dated_sources_first(market, router,
+                                                                                                         question):
     """"how is AAPL doing lately" and "how has TCS been doing over the last month" were refused at ALFA's confidence cut
-    while the price files held their answer, and so was every one of its 294 answers on how a price moved."""
+    while the price files held their answer."""
     turn = agent(market, router, model=ExplodingModel(),
                  reference=news_reference(FakeWriter("Reliance commissioned a refinery unit (Mint, 6 Oct 2026)."))).answer(
         question)
@@ -1365,7 +2579,7 @@ def test_a_question_the_router_is_unsure_of_reads_the_dated_sources_only_when_it
 
 
 @pytest.mark.parametrize("filings", [RefusedLive(), ExplodingLive()])
-@pytest.mark.parametrize("question", ["how has AAPL performed ?", "how has AAPL done over the past month ?"])
+@pytest.mark.parametrize("question", ["how has AAPL done over the past month ?"])
 def test_a_question_sure_to_ask_how_the_price_moved_is_answered_from_the_price_files_without_filings(registered, router,
                                                                                                     filings, question):
     """"how is AAPL doing" was refused as unreachable when EDGAR refused us, though the price files held the answer, and
@@ -1375,11 +2589,160 @@ def test_a_question_sure_to_ask_how_the_price_moved_is_answered_from_the_price_f
     assert turn.spoke and turn.served.startswith("AAPL closed at $") and turn.because == ""
 
 
+@pytest.mark.parametrize("news", [False, True], ids=["offline", "with news"])
+def test_a_question_sure_to_ask_how_the_price_moved_with_no_look_back_word_is_answered_by_alfa_first(market, router, news):
+    """`serve` always attaches a Reference, and "how is AAPL doing" was answered by our price sentence, or the writer,
+    before ALFA's generator ran at all. Our sentence is for when ALFA's answer is refused."""
+    written = "aapl sits above both its 20 and 50 day averages ."
+    built = news_reference(ExplodingWriter()) if news else reference("never written", model=ExplodingModel())
+    turn = agent(market, router, written=written, confidence=1.0, reference=built).answer("how is AAPL doing ?")
+    assert (turn.intent, turn.served, turn.phrased_by) == ("performance", written, "")
+
+
+def test_a_question_about_a_fetched_share_in_no_money_words_reaches_its_price_files(tmp_path, router):
+    """"how has nykaa been doing lately ?" was refused as not about money, though the chat handed over NYKAA.NS."""
+    turn = agent(fetching(tmp_path, Yahoo()), router, model=ExplodingModel(),
+                 reference=news_reference(ExplodingWriter(), news=())).answer(
+        "how has nykaa been doing lately ?", subject="NYKAA.NS")
+    assert turn.spoke and turn.intent == "reference recent" and turn.served.startswith("NYKAA.NS closed at ₹")
+
+
+ASKED_TOGETHER = "how is TCS performing and should I buy it"
+
+
+def together(tmp_path, router, question=ASKED_TOGETHER, gate_cut=4.0, writer=None, subject="", **kw):
+    """(market, turn) for `question`. The lexical router's margins are 2.78 for ASKED_TOGETHER and 5.90 and 5.52 for its
+    parts. INFY.NS is held too, so a part can name another share."""
+    price_file(tmp_path, "TCS.NS")
+    price_file(tmp_path, "INFY.NS")
+    market = finance.Market(tmp_path)
+    asking = agent(market, router, written="i do not have a directional signal for it .", gate_cut=gate_cut,
+                   **{"reference": reference("never written", model=ExplodingModel()), **kw})
+    asking.writer = writer
+    return market, asking.answer(question, subject=subject)
+
+
+class Confidences(FakeModel):
+    """Reports `values` one answer at a time."""
+
+    def __init__(self, *values):
+        self.values = list(values)
+
+    def confidence(self, source, produced, keep):
+        return np.array([self.values.pop(0)])
+
+
+def test_two_questions_asked_together_are_answered_in_one_turn_each_from_its_own_path(tmp_path, router):
+    """It sat between buy and performance under the routing cut, so it was served the TCS infobox."""
+    market, turn = together(tmp_path, router)
+    assert (turn.intent, turn.ticker, turn.spoke, turn.because) == ("performance and buy", "TCS.NS", True, "")
+    assert turn.served == "i do not have a directional signal for it ."
+    assert turn.confidence == 0.999 and market.snapshot("TCS.NS")[0] in turn.evidence
+
+
+def test_a_part_refused_by_its_own_guard_is_answered_by_our_code_in_the_turn_and_named(tmp_path, router):
+    """Neither part spoke in ALFA's words, so the turn reports no confidence of ALFA's."""
+    market, turn = together(tmp_path, router, confidence=0.5)
+    assert turn.spoke and turn.served.endswith(" this is not a recommendation to trade .")
+    assert (turn.because, turn.phrased_by) == ("performance: low confidence; buy: low confidence", core.BUILT)
+    assert turn.confidence != turn.confidence and turn.stated is None
+
+
+def test_two_questions_asked_together_are_not_split_when_a_part_is_under_the_routing_cut(tmp_path, router):
+    _, turn = together(tmp_path, router, gate_cut=5.7)
+    assert (turn.spoke, turn.because) == (False, "unclear question")
+
+
+@pytest.mark.parametrize("question,gate_cut", [
+    ("how is TCS performing and should I buy INFY", 4.0),                # another share we hold
+    ("how is TCS performing and what is its dividend ?", 2.5),           # a part routed as asking for what we lack
+    ("how is TCS performing and should I buy apple", 4.0),               # shares resolve() cannot read were answered
+    ("how is TCS performing and is the nifty overbought ?", 3.0),        # with TCS's figures
+    ("how is it doing and should i buy TCS", 4.0),                       # "it" points ahead, to the share named next
+    ("is it a good time to buy apple and how is TCS doing", 4.0),        # "it" points ahead, to no share it names
+    ("is TCS overbought and how is apple doing this week ?", 2.5)])      # "this week" points at no share
+def test_two_questions_asked_together_are_not_split_when_a_part_is_not_about_the_share_or_not_answerable(
+        tmp_path, router, question, gate_cut):
+    """Each cut is under every part's margin and over the whole question's, so only the part itself stops the split."""
+    _, turn = together(tmp_path, router, question, gate_cut, model=ExplodingModel())
+    assert (turn.spoke, turn.because) == (False, "unclear question")
+
+
+def test_a_first_part_may_point_back_to_the_share_the_conversation_is_about(tmp_path, router):
+    _, turn = together(tmp_path, router, "how is it doing and should i buy it", subject="TCS.NS")
+    assert (turn.intent, turn.ticker, turn.spoke) == ("performance and buy", "TCS.NS", True)
+
+
+@pytest.mark.parametrize("named", ["apple", "nykaa"])     # SEC's name for AAPL, an English word; a share not fetched
+def test_two_questions_asked_together_are_not_split_when_a_later_part_names_another_share_by_name(tmp_path, market,
+                                                                                                router, named):
+    """"is it a good time to buy apple" points back, and resolve() cannot read "apple", so it had RELIANCE.NS's figures."""
+    table = tmp_path / "company_tickers.json"
+    table.write_text(json.dumps({"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}}))
+    held = finance.Market(tmp_path, symbols=table, shares=SHARES, fetch=Yahoo())
+    turn = agent(held, router, gate_cut=4.0, model=ExplodingModel(),
+                 reference=reference("never written", model=ExplodingModel())).answer(
+        f"how is RELIANCE.NS performing and is it a good time to buy {named}")
+    assert (turn.spoke, turn.because) == (False, "unclear question")
+
+
+def test_two_questions_asked_together_with_a_look_back_word_are_split_before_the_newswire_reads_them(tmp_path, router):
+    """With the newswire on, the whole question went to the price move and its buy part was dropped unsaid."""
+    _, turn = together(tmp_path, router, "how has TCS done over the last month and should I buy it", 4.7,
+                       reference=news_reference(ExplodingWriter(), news=()))
+    assert (turn.intent, turn.spoke) == ("performance and buy", True)
+
+
+@pytest.mark.parametrize("confidences", [(0.9991, 0.9995), (0.9995, 0.9991)])
+def test_two_answers_given_together_report_the_least_confidence_of_the_two(tmp_path, router, confidences):
+    _, turn = together(tmp_path, router, "how volatile is TCS and is it overbought ?", 3.0,
+                       model=Confidences(*confidences))
+    assert (turn.intent, turn.spoke, turn.confidence) == ("volatility and overbought", True, 0.9991)
+
+
+def test_two_answers_given_together_are_served_in_alfas_and_our_words_and_never_reworded(tmp_path, router):
+    _, turn = together(tmp_path, router, writer=ExplodingWriter())
+    assert (turn.spoke, turn.phrased_by, turn.unphrased_because) == (True, "", "")
+
+
+def test_two_answers_one_in_alfas_words_and_one_in_our_codes_name_both(tmp_path, router):
+    """Joined as "our code", the turn read as our code's alone: shown as "Our code's sentence, where ALFA held back", in
+    our colour, without the confidence of ALFA's own answer to the other part."""
+    _, turn = together(tmp_path, router, model=Confidences(0.999, 0.5))
+    assert (turn.spoke, turn.phrased_by, turn.confidence) == (True, f"{core.ALFA}, {core.BUILT}", 0.999)
+
+
+@pytest.mark.parametrize("question,parts", [
+    (ASKED_TOGETHER, ["how is TCS performing", "should I buy it"]),
+    ("how volatile is TCS and is it overbought ?", ["how volatile is TCS", "is it overbought ?"]),
+    ("what is the difference between stocks and bonds ?", []), ("how do RSI and MACD differ ?", []),
+    ("how has TCS done ?", []),
+    ("how volatile is TCS and is it overbought and should i buy it", [])])   # each part is a pass of the decoder
+def test_a_question_is_split_on_and_only_when_every_part_opens_with_a_question_word(question, parts):
+    assert finance.parts(question) == parts
+
+
+@pytest.mark.parametrize("part,named", [
+    ("should I buy it this week", "should I buy TCS.NS this week"),       # was "should I buy TCS.NS TCS.NS week"
+    ("should i buy that ?", "should i buy TCS.NS ?"),
+    ("should i buy this stock ?", "should i buy TCS.NS stock ?"), ("is this overbought ?", "is TCS.NS overbought ?"),
+    ("how far is it below its high", "how far is TCS.NS below its high")])   # see `naming` on "its"
+def test_a_part_pointing_back_names_the_share_in_place_of_a_pronoun_only(part, named):
+    assert finance.naming(part, "TCS.NS") == named
+
+
+def test_two_answers_given_together_are_shown_under_both_titles_with_their_figures(tmp_path, router):
+    from backend.models.agent.present import present
+    shown = present(together(tmp_path, router)[1], {}, {})
+    assert shown.startswith("### TCS.NS · Recent performance · Should I buy?\n\nI do not have a directional signal for it.")
+    assert f"{KEY_FIGURES} · Last close ₹" in shown
+
+
 APPLE = Chunk("Mint, 6 Oct 2026: Apple shares rose after AAPL launched a new phone.", [], "https://n.test/aapl",
               "2026-10-06")
 
 
-@pytest.mark.parametrize("news,said", [((), "could not read its SEC filings"), ((APPLE,), APPLE.text)])
+@pytest.mark.parametrize("news,said", [((), "could not read its SEC filings"), ((APPLE,), APPLE.text.partition(": ")[2])])
 def test_filings_that_cannot_be_read_cost_their_own_passages_not_the_turn(registered, router, news, said):
     """The reply names the filings only when nothing else was found; the turn records the refusal either way."""
     built = news_reference(None, news=news, filings=RefusedLive())
@@ -1388,21 +2751,117 @@ def test_filings_that_cannot_be_read_cost_their_own_passages_not_the_turn(regist
     assert ("SEC filings" in turn.served) == (not news) and "403 from efts.sec.gov" in turn.because
 
 
-def test_a_rewrite_that_misspells_the_ticker_serves_alfas_words(market, router):
-    turn = phrased_agent(market, router, DRAFT, FakeWriter("AAAPL.NS is up 13.8% over 20 days, closing at 165.00.")).answer(ASKED)
-    assert turn.served == DRAFT and "names AAAPL.NS" in turn.unphrased_because
-
-
 def test_what_a_reader_sees_is_titled_figured_and_sourced(market, router):
     from backend.models.agent.present import present
     turn = agent(market, router, written="its 14 day rsi is 100 , which is overbought .").answer("is AAPL overbought ?")
     shown = present(turn, {}, {})
     assert shown.startswith("### AAPL · Momentum and RSI") and "Its 14 day RSI is 100, which is overbought." in shown
-    assert "**Key figures** · Last close $165.00" in shown and "RSI (14) 100" in shown
+    assert f"{KEY_FIGURES} · Last close $165.00" in shown and "RSI (14) 100" in shown
     recent = agent(market, router, gate_cut=1e9, reference=news_reference(
         FakeWriter("Reliance Industries commissioned a refinery unit (Mint, 6 Oct 2026)."))).answer("any news on RELIANCE.NS ?")
     shown = present(recent, {"RELIANCE.NS": "Reliance Industries"}, {})
     assert shown.startswith("### Reliance Industries (RELIANCE.NS) · What happened lately")
     assert "**Sources**\n- [n.test, 6 Oct 2026](https://n.test/reliance)" in shown
-    quiet = agent(market, router, written="it is fine .", confidence=0.1).answer("is AAPL overbought ?")
-    assert present(quiet, {}, {}) == quiet.served
+    quiet = agent(market, router, model=ExplodingModel()).answer("how risky is AAPL over the next week ?")
+    assert not quiet.spoke and present(quiet, {}, {}) == "I do not have that in the evidence for this question, so I cannot answer it."
+
+
+def test_what_a_reader_sees_gives_an_index_close_in_points_not_dollars(tmp_path, router):
+    """Key figures showed "Last close $25,910.05" for the nifty: every symbol not ending in .NS was priced in dollars."""
+    from backend.models.agent.present import present
+    price_file(tmp_path, "^NSEI")
+    market = finance.Market(tmp_path)
+    turn = agent(market, router, written="maruti. ns is doing fine .", confidence=1.0).answer(
+        "how is the nifty doing ?", subject="^NSEI")
+    assert f"{KEY_FIGURES} · Last close {market.snapshot('^NSEI')[1]['close']} · " in present(turn, {}, {})
+
+
+def test_the_60_day_drawdown_is_labelled_the_biggest_fall_within_the_60_days(market, router):
+    """"Off its 60-day high -12.4%" was on RELIANCE's card the day it closed at its 60-day high: the figure is the worst
+    fall inside the 60 days."""
+    from backend.models.agent.present import present
+    turn = agent(market, router, written="its 14 day rsi is 100 , which is overbought .").answer("is AAPL overbought ?")
+    assert f"Biggest fall from a peak in 60 days {market.snapshot('AAPL')[1]['drawdown_60d']}" in present(turn, {}, {})
+
+
+@pytest.mark.parametrize("question,title", [("should I sell AAPL ?", "Should I sell?"),
+                                            ("should I hold AAPL ?", "Should I hold?"),
+                                            ("should I buy AAPL ?", "Should I buy?")])
+def test_a_buy_answer_is_headed_by_the_trade_its_question_asks_about(market, router, question, title):
+    """"should I sell reliance" was headed "Should I buy?"."""
+    from backend.models.agent.present import present
+    turn = agent(market, router, written="i do not have a directional signal for aapl .").answer(question)
+    assert (turn.intent, present(turn, {}, {}).split("\n")[0]) == ("buy", f"### AAPL · {title}")
+
+
+def test_alfas_lower_case_words_are_shown_as_sentences_with_the_symbol_as_written():
+    """After a part ending "(Economic Times, 7 Oct 2026)", "i do not have…" stayed lower case and "tcs . ns" read "tcs. Ns"."""
+    from backend.models.agent.present import present
+    served = ("TCS.NS closed at ₹2405.00 (Economic Times, 7 Oct 2026)\n\n"
+              "i do not have a directional signal for tcs . ns , and what i can say is little .")
+    turn = SimpleNamespace(spoke=True, intent="performance and buy", ticker="TCS.NS", question=ASKED_TOGETHER,
+                           served=served, evidence="", phrased_by="", because="")
+    assert "\n\nI do not have a directional signal for TCS.NS, and what I can say is little." in present(turn, {}, {})
+
+
+@pytest.mark.parametrize("written,confidence,why", [
+    ("it trades at 4242.42 .", 1.0, "it gave a figure the data does not hold"),
+    ("maruti. ns is doing fine .", 1.0, "it named another share"),
+    ("aapl sits between its 20 and 50 day averages .", 1.0, "it misread where the price stands against its averages"),
+    ("aapl sits above both its 20 and 50 day averages .", 0.5, "it was not sure enough of it")],
+    ids=["unsupported figure", "another share", "wrong trend", "low confidence"])
+def test_our_codes_sentence_in_alfas_place_says_alfas_draft_was_held_back_and_why(market, router, written, confidence,
+                                                                                  why):
+    """It led as ALFA's answer, "confidence 0.98 · worded by our code", for a draft refused for a figure 134444.80."""
+    from backend.models.agent.present import present
+    turn = agent(market, router, written=written, confidence=confidence).answer("how is AAPL doing ?")
+    assert f"\n\nALFA's draft was held back: {why}. This is our code's sentence.\n\n" in present(turn, {}, {})
+
+
+def test_a_part_our_code_answered_in_alfas_place_is_named_by_its_heading(tmp_path, router):
+    from backend.models.agent.present import present
+    _, turn = together(tmp_path, router, model=Confidences(0.999, 0.5))
+    assert ("ALFA's draft for “Should I buy?” was held back: it was not sure enough of it. That part is our code's "
+            "sentence.") in present(turn, {}, {})
+
+
+@pytest.mark.usefixtures("generator_writes_facts")
+def test_a_facts_answer_is_shown_with_what_its_figures_mean_every_fact_it_used_and_the_day_they_are_of(tmp_path):
+    from backend.models.agent.present import present
+    shown = present(facts_agent(tmp_path, Analyses()).answer(ASSESSMENT), {"RELIANCE.NS": "Reliance Industries"}, {})
+    assert shown == ("### Reliance Industries (RELIANCE.NS) · Company facts\n\n"
+                     "Reliance industries limited trades at 18.14 times the profit it is expected to make.\n\n"
+                     "**What these figures mean**\n"
+                     "- Forward P/E: the price against the profit per share expected over the next year.\n\n"
+                     "**Facts used**\n- Stock: Reliance Industries Limited (RELIANCE.NS), NSE, INR.\n"
+                     "- [fundamental] Forward P/E 18.14x (2026-11-13).\n\n"
+                     "Source · Yahoo Finance via StockIntel, as of 13 Nov 2026")
+
+
+def test_a_facts_reply_explains_at_most_four_terms_in_the_reports_words_and_none_from_the_stock_line(monkeypatch):
+    """Written by code from TERM_MEANINGS, so a generated sentence can never define a term wrongly."""
+    from backend.advisory import report
+    from backend.models.agent.present import meanings
+    monkeypatch.setitem(report.TERM_MEANINGS, "Current ratio", "a meaning only this test writes")
+    facts = ["Stock: Beta Drugs Limited (BETA.NS), NSE, INR; last close 1,820.00 on 2026-11-13.",
+             "[fundamental] Current ratio is 1.10. (FY ending 2026-03-31).", "[fundamental] Not available in our data: peg.",
+             "[fundamental] Free cash flow yield is 3.8%. (snapshot retrieved 2026-11-15).",
+             "[technical] RSI(14) is 70.8. (2026-11-13).", "[fundamental] Return on equity is 8.9%. (FY ending 2026-03-31).",
+             "[fundamental] Gross margin 41.00% (FY ending 2026-03-31)."]
+    assert meanings(facts, "") == ["- Current ratio: a meaning only this test writes.",
+                                   f"- Free cash flow yield: {report.TERM_MEANINGS['Free cash flow yield']}.",
+                                   f"- RSI: {report.TERM_MEANINGS['RSI']}.", f"- Equity: {report.TERM_MEANINGS['Equity']}."]
+
+
+def test_a_facts_reply_explains_the_term_it_states_though_four_others_come_before_its_line():
+    """The reply adds the line it took from the share's other lines last, so "what is the price to earnings ratio for
+    AMZN" explained the four terms of its passage and not the P/E it stated."""
+    from backend.advisory.report import TERM_MEANINGS
+    from backend.models.agent.present import present
+    lines = [TCS_LINES[0], "[fundamental] Current ratio is 1.05. (FY ending 2026-03-31).", TCS_LINES[6],
+             "[fundamental] PEG ratio is 1.24. (2026-11-13).", "[fundamental] Free cash flow yield is 0.3%. (2026-11-13)."]
+    told = facts_reply.reply("what is the price to earnings ratio for TCS ?", stock_qa.FACT_SEPARATOR.join(lines),
+                             [*lines, TCS_LINES[3]])
+    turn = SimpleNamespace(spoke=True, intent=finance.FACTS, ticker="TCS.NS", served=told.text, evidence=told.evidence,
+                           as_of="2026-11-13", phrased_by=core.BUILT)
+    assert f"- P/E: {TERM_MEANINGS['P/E']}." in present(turn, {}, {})

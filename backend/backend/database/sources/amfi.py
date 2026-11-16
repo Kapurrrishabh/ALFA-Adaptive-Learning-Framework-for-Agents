@@ -19,7 +19,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 import pandas as pd
 
 from backend.database.sources.panel import CACHE_DIR
-from backend.database.sources.provider import DataUnavailable
+from backend.database.sources.provider import DataUnavailable, unavailable_from
 
 NAV_URL = "https://www.amfiindia.com/spages/NAVAll.txt"
 HISTORY_URL = "https://api.mfapi.in/mf/{code}"
@@ -210,7 +210,7 @@ def parse_history(text: str, code: int) -> pd.Series:
         nav = pd.Series([float(r["nav"]) for r in rows], name="nav",
                         index=pd.to_datetime([r["date"] for r in rows], format="%d-%m-%Y"))
     except (ValueError, KeyError, TypeError) as exc:
-        raise DataUnavailable(f"mfapi.in's history for scheme {code} could not be read: {exc!r}") from exc
+        raise unavailable_from(exc, f"mfapi.in's history for scheme {code} could not be read") from exc
     if found != code or nav.empty:
         raise DataUnavailable(f"mfapi.in has no NAV history for scheme {code}")
     if nav.index.duplicated().any():
@@ -246,7 +246,7 @@ def _download(url: str) -> str:
     try:
         return PoliteSession(timeout=TIMEOUT_S, attempts=ATTEMPTS).get_text(url)
     except RuntimeError as exc:          # refused, gave up after retries, or no contact address set
-        raise DataUnavailable(f"could not download {url}: {exc}") from exc
+        raise unavailable_from(exc, f"could not download {url}") from exc
 
 
 def _todays_copy(url: str, path: Path, check: Callable[[str], object]) -> Path:

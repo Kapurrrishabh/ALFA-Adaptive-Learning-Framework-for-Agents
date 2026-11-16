@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
-from backend.database.sources.provider import DataUnavailable, NewsItem, Provider, normalize_ohlcv
+from backend.database.sources.provider import DataUnavailable, NewsItem, Provider, normalize_ohlcv, unavailable_from
 
 
 def _yf():
@@ -35,7 +35,7 @@ class YahooProvider(Provider):
         try:
             info = _yf().Ticker(symbol).info or {}
         except Exception as exc:
-            raise DataUnavailable(f"yahoo info fetch failed for {symbol}: {exc}") from exc
+            raise unavailable_from(exc, f"yahoo info fetch failed for {symbol}") from exc
         if not info or info.get("regularMarketPrice") is None and "longName" not in info:
             raise DataUnavailable(f"yahoo has no profile for {symbol}")
         return info
@@ -50,7 +50,7 @@ class YahooProvider(Provider):
                 if df is not None and not df.empty:
                     out[key] = df
         except Exception as exc:
-            raise DataUnavailable(f"yahoo statements fetch failed for {symbol}: {exc}") from exc
+            raise unavailable_from(exc, f"yahoo statements fetch failed for {symbol}") from exc
         if not out:
             raise DataUnavailable(f"yahoo has no financial statements for {symbol}")
         return out
@@ -73,7 +73,7 @@ class YahooProvider(Provider):
         try:
             cal = _yf().Ticker(symbol).calendar or {}
         except Exception as exc:
-            raise DataUnavailable(f"yahoo calendar fetch failed for {symbol}: {exc}") from exc
+            raise unavailable_from(exc, f"yahoo calendar fetch failed for {symbol}") from exc
         today = datetime.now(timezone.utc).date()
         out: List[str] = []
         for label, key in (("Earnings", "Earnings Date"), ("Ex-dividend", "Ex-Dividend Date")):
@@ -89,7 +89,7 @@ class YahooProvider(Provider):
         try:
             raw = _yf().Ticker(symbol).news or []
         except Exception as exc:
-            raise DataUnavailable(f"yahoo news fetch failed for {symbol}: {exc}") from exc
+            raise unavailable_from(exc, f"yahoo news fetch failed for {symbol}") from exc
         items: List[NewsItem] = []
         for r in raw[:limit]:
             content = r.get("content", r)  # yfinance >=0.2.5x nests under 'content'

@@ -28,6 +28,7 @@ grounding is checked rather than predicted.
 import re
 from collections import namedtuple
 
+from backend.advisory.domains import FACTS_DOMAIN_WORDS, named_domains
 from backend.models.guardrails import guardrails
 
 from backend.knowledge_base.retrieval import Hybrid
@@ -68,9 +69,19 @@ LATELY = re.compile(RECENT.pattern + r"|\b(fall(s|ing|en)?|fell|drop(s|ped|ping)
 # provisional, on `judge`'s scale (bge cosine) and from 32 questions with a move word: lessons beside the point
 # ("FCF yield" for bond yields) scored 0.53-0.62 and lessons that answered 0.66-0.84
 LESSON_FLOOR = 0.63
+# The corpus was stored as its tokenizer split it: "Tata Sons (71.74%) [ 2 ] ... Website tcs .com ( TCS )". A digit
+# after the mark is left alone, so ".5%" stays a figure.
+_CITATION = re.compile(r"\s*\[\s*\d{1,3}\s*\]")
+_SPACED = re.compile(r"\s+([.,;:!?](?!\d)|[)\]])|(?<=[(\[])\s+")
 # provisional: on 256 labelled lesson, tax and news wordings, the lesson first in `lessons`' order (ask.lessons_from) of
 # BM25's first 4, 6 and 8 sections was served right 202, 207 and 209 times, losing none; 2 more are too few to pick 8
 LESSONS_RANKED = 6
+# The areas a question can ask about and a passage speak of. Not the profile: its words say how a question asks ("what
+# does"), and a company's own description uses none of them.
+TOPICS = {**{area: words for area, words in FACTS_DOMAIN_WORDS.items() if area != "profile"},
+          # "who runs reliance industries" was quoted the start of its infobox, which stopped short of "Key people"
+          "management": ("who runs", "who leads", "who heads", "ceo", "chief executive", "chairman", "chairperson",
+                         "managing director", "key people")}
 
 
 class SearchFailed(RuntimeError):
@@ -84,7 +95,7 @@ class SearchFailed(RuntimeError):
 # `lesson` is a curated lesson's heading and text, which decide whether a question it answers is on topic; `unread`
 # names a source that could not be read for an answer the others gave
 Looked = namedtuple("Looked", "served evidence how unsupported confidence answer day phrased_by unphrased_because "
-                              "lesson unread", defaults=("", "", "", ""))
+                              "lesson unread asked_writer", defaults=("", "", "", "", False))
 
 
 class Reference:
@@ -163,11 +174,11 @@ class Reference:
             return Looked(text, f"document lesson:{title} ; published undated ; passage_1 {text}", LESSON_HOW,
                           [], float("nan"), text, "", lesson=f"{title}. {text}")
         if news_first:
-            # Filings are a network wait the price files do not need, so a question here for its route alone, with no
-            # time or news word ("how is AAPL doing", "over the past month"), is answered without them, as it was before.
+            # Filings are a network wait the price files do not need, so a question here for its window alone, with no
+            # time or news word ("over the past month"), is answered without them, as it was before.
             return self._recent(question, query, as_of, subject, prices, not lately or RECENT.search(question))
         for arm in self._arms(subject, question):
-            chunks = arm(query, as_of, subject)
+            chunks = _on_topic(question, arm(query, as_of, subject) or [])
             if chunks:
                 return self._read(question, chunks, subject)
         return None
@@ -187,12 +198,11 @@ class Reference:
         scores = self.judge(question, [f"{lessons[0][0]}. {lessons[0][1]}"] + [chunk.text for chunk in headlines])
         return lessons[0] if scores[0] >= LESSON_FLOOR and all(scores[0] > score for score in scores[1:]) else None
 
-    def asks_lately(self, question, moves, sure):
-        """Whether prices, filings and headlines answer a question before the advisory path. Always when the router
-        is `sure` it asks how the price `moves`: our sentence from the price files states the 5- and 20-day figures
-        ALFA's answer would, without its confidence having to clear a cut that moves with every refit from feedback.
-        Unsure, it needs a time word or a window; any other intent needs a news word."""
-        return self.news is not None and (moves and (sure or LOOK_BACK.search(question) is not None)
+    def asks_lately(self, question, moves):
+        """Whether prices, filings and headlines answer a question before the advisory path: asking how the price
+        `moves`, it needs a time word or a window, any other intent a news word, and both need news. With neither, ALFA
+        answers first, and our price sentence speaks only when its answer is refused."""
+        return self.news is not None and (moves and LOOK_BACK.search(question) is not None
                                           or NEWS.search(question) is not None)
 
     def _recent(self, question, query, as_of, subject, prices, filed):
@@ -220,12 +230,15 @@ class Reference:
             if self.writer and found else None
         unread = f"sec filings unread: {refused}" if refused else ""
         if written is not None and written.text:
-            return Looked(written.text, evidence, RECENT_HOW, [], float("nan"), "", day, written.by, "", unread=unread)
+            return Looked(written.text, evidence, RECENT_HOW, [], float("nan"), "", day, written.by, "", unread=unread,
+                          asked_writer=True)
         if written is not None and written.because == phrase.NOT_ANSWERED and not prices:
-            return Looked("", evidence, UNANSWERED, [], float("nan"), "", day, "", written.because)
+            return Looked("", evidence, UNANSWERED, [], float("nan"), "", day, "", written.because, asked_writer=True)
         plain = phrase.recent_plain(subject, prices, found, bool(unread))
-        return Looked(plain, evidence, RECENT_HOW, [], float("nan"), plain, day, "",
-                      written.because if written is not None else "", unread=unread)
+        # our code's sentences, which the app showed as ALFA's "in its own words"
+        return Looked(plain, evidence, RECENT_HOW, [], float("nan"), plain, day, phrase.BUILT,
+                      written.because if written is not None else "", unread=unread,
+                      asked_writer=written is not None and written.asked_writer)
 
     def _arms(self, subject, question):
         """The arms in the order they are asked, decided by whether the subject has an identity to ask by.
@@ -327,7 +340,7 @@ class Reference:
         a passage had is the document key in the evidence, which is a URL for a fetched one.
         """
         evidence = _as_evidence(chunks)
-        quote = chunks[0].text
+        quote = _SPACED.sub(r"\1", _CITATION.sub("", chunks[0].text))
         if not self.paraphrase:
             # No decoder pass at all, which is most of the cost of a turn. `answer` is the quote rather than
             # empty so that `answer != served` keeps meaning "a guard changed this", and `how` is what says
@@ -350,6 +363,13 @@ class Reference:
         return Looked(quote if unsupported else written, evidence,
                       QUOTED if unsupported else PARAPHRASED, unsupported, confidence, written,
                       chunks[0].day)
+
+
+def _on_topic(question, chunks):
+    """The `chunks` that speak of an area the question asks about, or all of them when it names none. 24 of round 7's 64
+    quotes met a question on a share's trend, risk or debt with its infobox or its history, and none answered it."""
+    asked = set(named_domains(question, TOPICS))
+    return [chunk for chunk in chunks if not asked or asked & set(named_domains(chunk.text, TOPICS))]
 
 
 def _as_evidence(chunks):

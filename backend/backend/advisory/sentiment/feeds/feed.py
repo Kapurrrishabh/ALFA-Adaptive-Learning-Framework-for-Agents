@@ -9,6 +9,7 @@ source unconstructible -- a field that has to be joined back later is a field th
 `read` raises on a file the manifest does not describe rather than serving it unattributed.
 """
 
+import functools
 import json
 import re
 from collections import namedtuple
@@ -26,6 +27,7 @@ _LEGAL_FORMS = re.compile(
     r"\b(inc|corp|corporation|company|co|plc|ltd|limited|holdings|group|class|and|the)\b\.?", re.I)
 _PUNCTUATION = re.compile(r"[^a-z0-9& ]+")
 _SHORTEST_NAME = 4
+ENGLISH_WORDS = Path("/usr/share/dict/words")      # macOS ships it; on Debian and Ubuntu it is the wamerican package
 
 
 def provenance(manifest_path, source=SOURCE):
@@ -72,6 +74,20 @@ def _variants(title):
     plain = " ".join(_PUNCTUATION.sub(" ", title.lower()).split())
     short = " ".join(_LEGAL_FORMS.sub(" ", plain).split())
     return tuple(sorted({name for name in (plain, short) if len(name) >= _SHORTEST_NAME}))
+
+
+@functools.cache
+def english_words():
+    if not ENGLISH_WORDS.exists():
+        raise RuntimeError(f"{ENGLISH_WORDS} is missing; install it with `apt-get install wamerican`. The chat needs it "
+                           "to tell a stock named in lowercase from an ordinary word.")
+    return frozenset(w for w in ENGLISH_WORDS.read_text().split() if w.isalpha() and w.islower())
+
+
+def is_name(phrase, english):
+    """Whether a lowercase `phrase` alone names a company: two words or more, or one that is neither an English word
+    ("idea", "beta") nor two letters or fewer ("gm", "hp"), which are too often not meant as a stock."""
+    return " " in phrase or (len(phrase) > 2 and phrase not in english)
 
 
 def tag(text, names):

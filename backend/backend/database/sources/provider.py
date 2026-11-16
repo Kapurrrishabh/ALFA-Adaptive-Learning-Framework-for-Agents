@@ -7,18 +7,37 @@ DataUnavailable — providers never fill in substitutes.
 from __future__ import annotations
 
 import abc
+import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from backend.advisory.fusion.evidence import Provenance, utcnow_iso
+from backend.config import Market
 
+log = logging.getLogger("stockintel.provider")
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 
 
 class DataUnavailable(Exception):
     """Raised when a provider cannot supply real data for a request."""
+
+
+def unavailable_from(cause: Exception, gap: str) -> DataUnavailable:
+    """`gap` for the user and `cause` for the log: a provider's own words, such as yfinance's
+    "*** YAHOO! FINANCE IS CURRENTLY DOWN! ***", are not written for users."""
+    log.warning("%s: %r", gap, cause)
+    return DataUnavailable(gap)
+
+
+def closed_bars(df: pd.DataFrame, market: Market, now: datetime) -> pd.DataFrame:
+    """`df` without a bar for `market`'s session still open at `now`: that bar is the moving price, not a close."""
+    local = now.astimezone(ZoneInfo(market.timezone))
+    is_still_open = not df.empty and df.index[-1].date() == local.date() and local.time() < market.closes_at
+    return df.iloc[:-1] if is_still_open else df
 
 
 @dataclass

@@ -25,7 +25,7 @@ def assemble(tokenizer, question, passages, length, question_tokens, slots=1, cu
     against text the model never read is not checked.
     """
     passage_ids = [tokenizer.encode(passage) for passage in passages]
-    room = length - question_tokens - 3
+    room = evidence_room(length, question_tokens)
     if cut:
         shortened = [ids[:room] for ids in passage_ids]
         # Only what was actually cut is decoded back: encoding and decoding a passage that already fits
@@ -42,3 +42,9 @@ def assemble(tokenizer, question, passages, length, question_tokens, slots=1, cu
     source, keep = build_sources(tokenizer.encode(question)[:question_tokens], passage_ids, slots, length)
     # The model works in batches; one turn is a batch of one.
     return Context(question, " ".join(passages), xp.asarray(source)[None], xp.asarray(keep)[None])
+
+
+def evidence_room(length, question_tokens):
+    """How many tokens of one passage a window of `length` reads beside a question of `question_tokens`."""
+    # build_sources spends three on its markers: one before the question and one after each of question and passage
+    return length - question_tokens - 3

@@ -105,7 +105,7 @@ class SelfAgentClient:
                         self._conversations[session] = first["conversation"]
                         if len(self._conversations) > CONVERSATIONS_KEPT:
                             del self._conversations[next(iter(self._conversations))]
-                    ws.send(json.dumps({"question": question}))
+                    ws.send(json.dumps({"question": question, "subject": subject}))
                     while True:
                         frame = json.loads(ws.recv(timeout=TIMEOUT_S))
                         if frame.get("stage") == "turn":

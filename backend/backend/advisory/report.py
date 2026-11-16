@@ -8,11 +8,16 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Sequence
 
+from backend.advisory.fusion.fusion import PRICE_DOMAINS
 from backend.advisory.service import StockAnalysis
 
 CURRENCY = {"INR": "₹", "USD": "$"}
 UNAVAILABLE = "Data unavailable"
 SCORE_SCALE = "from −1 (all negative) to +1 (all positive)"
+
+
+# the bars every provider gives (Provider.ohlcv), unlike ALFA's price files (present.KEY_FIGURES)
+ADJUSTED = "adjusted for dividends and splits"
 
 
 def _money(v: Optional[float], ccy: str = "INR") -> str:
@@ -60,7 +65,7 @@ def render_analysis(a: StockAnalysis, full: bool = False) -> str:
     ccy = a.currency
     out = [f"### {a.name} ({a.provider_symbol})",
            f"Last close **{_money(a.price, ccy)}**. Price data as of {a.quality['last_date']}, from "
-           f"{a.quality['source']}. Analysis timestamp {a.analysis_timestamp}."]
+           f"{a.quality['source']}, {ADJUSTED}. Analysis timestamp {a.analysis_timestamp}."]
     if a.quality.get("source") == "synthetic":
         out.append("⚠ SYNTHETIC DEMO DATA — not real market prices.")
 
@@ -126,11 +131,9 @@ def render_analysis(a: StockAnalysis, full: bool = False) -> str:
         out.append(f"Interest coverage (how many times profit pays the interest): {_metric(m, 'interest_coverage')}.")
         out.append(f"Free cash flow ({TERM_MEANINGS['Free cash flow']}): {_metric(m, 'free_cash_flow')}.")
         out.append(f"P/E ({TERM_MEANINGS['P/E']}): {_metric(m, 'pe')}.")
-        out.append(f"P/B (price against what the company owns minus what it owes, per share): "
-                   f"{_metric(m, 'price_to_book')}.")
-        out.append(f"EV/EBITDA (company value including debt, against profit before interest, tax and depreciation): "
-                   f"{_metric(m, 'ev_to_ebitda')}.")
-        out.append(f"FCF yield (free cash flow against market value): {_metric(m, 'fcf_yield')}.")
+        out.append(f"P/B ({TERM_MEANINGS['P/B']}): {_metric(m, 'price_to_book')}.")
+        out.append(f"EV/EBITDA ({TERM_MEANINGS['EV/EBITDA']}): {_metric(m, 'ev_to_ebitda')}.")
+        out.append(f"FCF yield ({TERM_MEANINGS['Free cash flow yield']}): {_metric(m, 'fcf_yield')}.")
         if f.details["unavailable"]:
             out.append(f"Could not work out from the data: {', '.join(f.details['unavailable'])}.")
     else:
@@ -154,7 +157,8 @@ def render_analysis(a: StockAnalysis, full: bool = False) -> str:
     if r.available:
         s = r.details
         b = s.get("benchmark") if isinstance(s.get("benchmark"), dict) else {}
-        out.append(f"Risk level: {r.state}, measured over {s['period']}.")
+        out.append(f"Risk level: {r.state}. Volatility, Sharpe, Sortino, beta, correlation, VaR and CVaR cover "
+                   f"{s['period']}; max and current drawdown cover {TERM_MEANINGS['Loaded history']}, {s['history_period']}.")
         out.append(f"Volatility ({TERM_MEANINGS['Volatility']}): {s['annualized_vol_pct']}%.")
         out.append(f"Max drawdown ({TERM_MEANINGS['Max drawdown']}): {s['max_drawdown_pct']}%.")
         out.append(f"Current drawdown (how far it is below its peak now): {s['current_drawdown_pct']}%.")
@@ -253,8 +257,16 @@ TERM_MEANINGS = {
     "EBIT": "profit before interest and tax",
     "Current ratio": "short-term assets against short-term debts",
     "P/E": "the price against a year's profit per share",
+    "Forward P/E": "the price against the profit per share expected over the next year",
     "PEG": "the P/E divided by profit growth",
+    "P/B": "price against what the company owns minus what it owes, per share",
+    "EV/EBITDA": "company value including debt, against profit before interest, tax and depreciation",
+    "EV/sales": "company value including debt, against a year's sales",
+    "Return on assets": "profit on everything the company owns",
+    "Gross margin": "the share of revenue left after the direct cost of what was sold",
+    "Dividend yield": "the yearly dividend as a share of the price",
     "Free cash flow": "cash left after running and investing in the business",
+    "Free cash flow yield": "free cash flow against market value",
     "Not a statistically significant difference": "one that could easily be chance",
     "No statistically significant edge": "the moves after past signals could easily be chance",
 }
@@ -302,7 +314,7 @@ def render_domain(a: StockAnalysis, domain: str) -> str:
     score = "No score" if r.score is None else f"Score {r.score:+.2f}, {SCORE_SCALE}"
     head = [f"### {a.name} · {DOMAIN_TITLES.get(domain, domain.replace('_', ' '))}",
             f"Overall: **{r.state}**. {score}. Confidence {r.confidence:.2f} out of 1. "
-            f"Data as of {str(r.as_of)[:10]}.", ""]
+            f"Data as of {str(r.as_of)[:10]}{f', on prices {ADJUSTED}' if domain in PRICE_DOMAINS else ''}.", ""]
     if not r.available:
         return "\n".join(head + [f"{UNAVAILABLE}: {r.error}"])
     events = r.details.get("events") if domain == "news_sentiment" else None

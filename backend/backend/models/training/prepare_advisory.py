@@ -30,7 +30,9 @@ facts nor the split can carry the future backwards.
 from backend.paths import ARTIFACTS, DATA
 
 import argparse
+import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -54,6 +56,9 @@ MIN_PRICE = 1.0
 # phrase whatever the head reports, so it should see the whole range and stay independent of one
 # checkpoint. Concentrated near uniform because that is what a head with 22% R-squared produces.
 OUTLOOK_CONCENTRATION = 4.0
+
+# What a manifest says checked the trend words; a set whose manifest lacks it was built before the check.
+TREND_CHECKED_BY = "guardrails.wrong_trend"
 
 
 def snapshot_rows(ticker, bars, end, probabilities, split, rng, slots, messy):
@@ -118,6 +123,19 @@ def collect(price_dir, stride, cutoff, rng, limit, slots, messy):
     return collected
 
 
+def drop_reason(split, question, evidence, answer):
+    """Why a collected row must not train, or "" when it may; raises on one stating a figure its evidence lacks."""
+    unsupported = guardrails.unsupported_figures(answer, evidence)
+    if unsupported:
+        raise ValueError(
+            f"{question!r} is answered with figures the evidence lacks: {unsupported}. "
+            f"A row like this teaches the model to invent and would not show up in the loss."
+        )
+    # The server refuses trend words its guard reads as wrong, so they must not train
+    wrong = guardrails.wrong_trend(answer, evidence)
+    return f"{split}: says {wrong[0][0]}, the evidence shows {wrong[0][1]}" if wrong else ""
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--prices", default=str(DATA / "prices"))
@@ -150,14 +168,13 @@ def main():
     targets = np.full((len(rows), answer_budget), PAD_ID, dtype=np.uint16)
     splits = np.empty(len(rows), dtype=object)
     truncated = 0
+    dropped = Counter()
 
     for row, (split, question, evidence, answer) in enumerate(rows):
-        unsupported = guardrails.unsupported_figures(answer, evidence)
-        if unsupported:
-            raise ValueError(
-                f"row {row} answers {question!r} with figures the evidence lacks: {unsupported}. "
-                f"A row like this teaches the model to invent and would not show up in the loss."
-            )
+        reason = drop_reason(split, question, evidence, answer)
+        if reason:
+            dropped[reason] += 1
+            continue
         evidence_ids = tokenizer.encode(evidence)
         truncated += len(evidence_ids) > length - QUESTION_TOKENS - 3
         sources[row], keeps[row] = build_sources(
@@ -173,12 +190,19 @@ def main():
             f"{length - QUESTION_TOKENS - 3} tokens; a cut passage drops a figure the answer quotes"
         )
 
+    counts = {}
     for name in ("train", "validation", "unseen") + (("casual",) if args.casual else ()):
         picked = np.flatnonzero(splits == name)
         np.save(artifacts / f"{dataset}_{name}_source.npy", sources[picked])
         np.save(artifacts / f"{dataset}_{name}_keep.npy", keeps[picked])
         np.save(artifacts / f"{dataset}_{name}_target.npy", targets[picked])
+        counts[name] = len(picked)
         print(f"  {name}: {len(picked):,} rows -> {artifacts}/")
+    print(f"  dropped: {dict(dropped) or 'none'}")
+    (artifacts / f"{dataset}_MANIFEST.json").write_text(json.dumps({
+        "prices": args.prices, "stride": args.stride, "cutoff": args.cutoff, "limit": args.limit,
+        "trend_checked_by": TREND_CHECKED_BY, "rows": counts, "dropped": dict(sorted(dropped.items()))},
+        indent=1))
 
 
 if __name__ == "__main__":

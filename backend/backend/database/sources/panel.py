@@ -77,8 +77,12 @@ def listed_shares() -> pd.DataFrame:
 def company_names(index: str = "nifty500") -> Dict[str, str]:
     """symbol -> the company's name as people write it: "Infosys Ltd." becomes "Infosys"."""
     df = _constituents_file(index, INDEX_LISTS)
-    return {sym.strip(): re.sub(r"\s+(Ltd\.?|Limited)$", "", name.strip())
-            for sym, name in zip(df["Symbol"], df["Company Name"])}
+    return {sym.strip(): plain_name(name) for sym, name in zip(df["Symbol"], df["Company Name"])}
+
+
+def plain_name(name: str) -> str:
+    """Any case, because NSE's list of shares writes some names as "360 ONE WAM LIMITED"."""
+    return re.sub(r"\s+(ltd\.?|limited)$", "", name.strip(), flags=re.I)
 
 
 class Listing(NamedTuple):
@@ -148,10 +152,11 @@ def load_panel(symbols: List[str], sectors: Optional[Dict[str, str]] = None, per
     if not fields["Close"]:
         raise DataUnavailable("batch download returned no data")
     merged = {f: pd.concat(v, axis=1).sort_index() for f, v in fields.items()}
-    close = merged["Close"].dropna(how="all", axis=1)
-    keep = list(close.columns)
-    panel = Panel(close=close, open=merged["Open"][keep], high=merged["High"][keep],
-                  low=merged["Low"][keep], volume=merged["Volume"][keep],
+    # Yahoo sent 16 Nov 2026 with no closes, and ranked on that row no share of the Nifty 200 had a rank
+    close = merged["Close"].dropna(how="all", axis=1).dropna(how="all")
+    keep, days = list(close.columns), close.index
+    panel = Panel(close=close, open=merged["Open"].loc[days, keep], high=merged["High"].loc[days, keep],
+                  low=merged["Low"].loc[days, keep], volume=merged["Volume"].loc[days, keep],
                   sectors={s: (sectors or {}).get(s, "Unknown") for s in keep}, source="yahoo")
     missing = sorted(set(symbols) - set(keep))
     if missing:

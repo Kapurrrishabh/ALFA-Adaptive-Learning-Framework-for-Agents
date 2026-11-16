@@ -48,7 +48,8 @@ stockintel = "backend.cli:main"
 include = ["backend*"]
 
 [tool.setuptools.package-data]
-backend = ["knowledge_base/lessons/*.md", "advisory/calculators/resources/*.csv", "models/configs/*.json"]
+backend = ["knowledge_base/lessons/*.md", "advisory/calculators/resources/*.csv", "models/configs/*.json",
+           "models/agent/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

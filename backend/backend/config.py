@@ -39,6 +39,13 @@ MARKETS: Dict[str, Market] = {
                  "", "^GSPC", risk_free_rate=0.042, closes_at=time(16, 0)),
 }
 
+
+def market_of(ticker: str) -> Market:
+    """The market a share's analysis is run in, by its symbol, or the market an index is the benchmark of."""
+    return next((market for market in MARKETS.values() if market.benchmark == ticker
+                 or market.suffix and ticker.endswith(market.suffix)), MARKETS["US"])
+
+
 DEFAULT_MARKET = "NSE"
 DEFAULT_PORTFOLIO = "default"      # the CLI's portfolio, and the old shared key's; `accounts claim` moves it to a user
 # PROVISIONAL: how long a request waits for the one note writer or agent before it is told they are busy. Each waiting

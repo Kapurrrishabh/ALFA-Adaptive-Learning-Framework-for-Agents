@@ -16,6 +16,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from backend.database.sources.provider import unavailable_from
+
 # Still spelled for the collector that has always required it, because that is the name the README
 # documents and the one already exported in the shells that run this.
 CONTACT_VARIABLE = "DATAFORGE_CONTACT"
@@ -121,7 +123,7 @@ class PoliteSession:
             if attempt < self.attempts - 1:
                 time.sleep(BACKOFF_SECONDS * (2**attempt))
 
-        raise RuntimeError(f"gave up on {url} after {self.attempts} attempts: {last_error}")
+        raise RuntimeError(str(unavailable_from(last_error, f"gave up on {url} after {self.attempts} attempts")))
 
     def get_text(self, url, params=None):
         response = self.get(url, params=params)

@@ -257,6 +257,12 @@ def test_index_constituents_refuses_a_list_that_is_not_an_index(nse_directory):
         panel.index_constituents("equity_l")
 
 
+@pytest.mark.parametrize("name", ["360 ONE WAM LIMITED", "360 ONE WAM Ltd."])
+def test_a_company_name_drops_its_legal_form_in_any_case(name):
+    """NSE's list of shares writes some names in capitals, and a fetched share is named from it."""
+    assert panel.plain_name(name) == "360 ONE WAM"
+
+
 def workbook(sheets):
     """An .xlsx built here, so no real statement or personal data enters the repo."""
     import openpyxl

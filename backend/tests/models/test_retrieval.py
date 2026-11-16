@@ -562,3 +562,27 @@ def test_a_source_that_refused_and_found_nothing_travels_rather_than_looking_lik
     live = Live([Filings(session), Encyclopedia(session)], FakeTokenizer())
     with pytest.raises(BlockedByHost, match="no source could be searched"):
         live.passages("what has it announced", [], subject=UNREGISTERED)
+
+
+# requests' own words for an unreachable host, which a refused search put in front of the user
+UNREACHABLE = "HTTPSConnectionPool(host='api.wikimedia.org', port=443): Max retries exceeded"
+
+
+def test_a_source_that_refused_names_itself_and_leaves_the_refusals_words_to_the_log(caplog):
+    session = FakeSession({SEARCH: {}}, fails=[SEARCH])
+    with pytest.raises(BlockedByHost) as raised:
+        Live([Encyclopedia(session)], FakeTokenizer()).passages("what has it announced", [], subject=UNREGISTERED)
+    assert (str(raised.value), "answered 403" in caplog.text) == ("no source could be searched -- wikipedia", True)
+
+
+def test_a_request_that_kept_failing_leaves_the_network_librarys_words_to_the_log(monkeypatch, caplog):
+    import requests
+    from backend.database.live import session
+
+    def unreachable(*_, **__):
+        raise requests.ConnectionError(UNREACHABLE)
+    monkeypatch.setattr(session, "user_agent", lambda: "test")
+    monkeypatch.setattr(requests.Session, "get", unreachable)
+    with pytest.raises(RuntimeError) as raised:
+        session.PoliteSession(obey_robots=False, attempts=1).get(SEARCH)
+    assert (str(raised.value), UNREACHABLE in caplog.text) == (f"gave up on {SEARCH} after 1 attempts", True)

@@ -106,11 +106,14 @@ def _located(stored):
     return ARTIFACTS / (Path(*p.parts[1:]) if p.parts[0] == "artifacts" else p)
 
 
-def promote(role, artifact, measured, sampler, path=DEFAULT_PATH):
-    """Records `artifact` as what `role` serves, or raises `Refused` naming every reason it may not."""
+def promote(role, artifact, measured, sampler, path=DEFAULT_PATH, *, trained_on):
+    """Records `artifact` as what `role` serves, or raises `Refused` naming every reason it may not.
+
+    `trained_on` names every dataset its training read, which is what decides the questions the agent routes to it.
+    """
     path = Path(path)
     entry = {"artifact": _stored(artifact), "digest": digest(artifact), "sampler": sampler,
-             "measured": measured,
+             "measured": measured, "trained_on": list(trained_on),
              "promoted": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     entries = promoted(path)
     reasons = failures(entry, entries.get(role))
@@ -120,6 +123,15 @@ def promote(role, artifact, measured, sampler, path=DEFAULT_PATH):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(entries, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return entry
+
+
+def trained_on(role, artifact, path=DEFAULT_PATH):
+    """The datasets the file promoted to `role` was trained on, when `artifact` is that file; otherwise none.
+
+    A record promoted before they were stated names none: that is advisory_combined's, trained on advisory rows only.
+    """
+    entry = promoted(path).get(role)
+    return tuple(entry.get("trained_on", ())) if entry and entry["digest"] == digest(artifact) else ()
 
 
 def serving(role, path=DEFAULT_PATH):

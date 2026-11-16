@@ -165,6 +165,13 @@ def test_one_feed_refusing_costs_its_items_and_all_refusing_is_an_error(tmp_path
         news.refresh(FeedSession({}), archive, feeds)
 
 
+def test_a_feed_that_could_not_be_read_leaves_the_errors_words_to_the_log(tmp_path, caplog):
+    from backend.database.live import news
+    with pytest.raises(RuntimeError) as raised:
+        news.refresh(FeedSession({}), tmp_path / "wire.jsonl", (("ET", "https://e.test/rss"),))
+    assert (str(raised.value), "403 from" in caplog.text) == ("no news feed could be read: ET (https://e.test/rss)", True)
+
+
 def test_the_newswire_reads_the_newest_items_about_the_subject_up_to_the_as_of_date(tmp_path):
     from backend.database.live import news
     from backend.database.live.sources import NewsWire

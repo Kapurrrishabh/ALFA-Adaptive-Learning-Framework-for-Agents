@@ -271,6 +271,23 @@ def test_a_failed_download_is_tried_again_once_the_wait_is_over(nav_cache, monke
     assert amfi.schemes() and len(calls) == 2
 
 
+def test_a_failed_download_leaves_the_network_librarys_words_to_the_log(tmp_path, monkeypatch, caplog):
+    from backend.database.live import session
+
+    class Unreachable:
+        def __init__(self, **_):
+            pass
+
+        def get_text(self, url):
+            raise RuntimeError(f"gave up on {url} after 3 attempts: HTTPSConnectionPool(host='portal.amfiindia.com', "
+                               "port=443): Max retries exceeded")
+    monkeypatch.setattr(session, "PoliteSession", Unreachable)
+    monkeypatch.setattr(amfi, "NAV_FILE", tmp_path / "navall.txt")
+    with pytest.raises(DataUnavailable, match="could not download") as raised:
+        amfi.schemes()
+    assert ("HTTPSConnectionPool" in str(raised.value), "HTTPSConnectionPool" in caplog.text) == (False, True)
+
+
 def test_saved_app_state_never_carries_a_fund_download(tmp_path):
     """A restored copy gets today's file time, so it would pass for today's download."""
     from backend.database import hfstate
@@ -286,6 +303,12 @@ def test_history_from_mfapi_is_read_oldest_first():
     nav = growing(1)
     got = amfi.parse_history(mfapi_json(118989, nav), 118989)
     assert got.index[0] == nav.index[0] and got.iloc[-1] == pytest.approx(nav.iloc[-1])
+
+
+def test_a_history_mfapi_sends_as_a_web_page_is_a_plain_gap(caplog):
+    with pytest.raises(DataUnavailable, match="could not be read") as raised:
+        amfi.parse_history("<html>maintenance</html>", 118989)
+    assert ("JSONDecodeError" in str(raised.value), "JSONDecodeError" in caplog.text) == (False, True)
 
 
 def test_a_slow_history_download_does_not_hold_up_fund_search(nav_cache, tmp_path, monkeypatch):

@@ -102,15 +102,21 @@ class GroundedGenerator(Module):
             )
         self.text.load_state_dict(encoder)
 
-    def freeze_encoder(self):
+    def freeze_encoder(self, except_top=0):
         """Holds the encoder's layers at their pretrained values while the rest of the model trains.
 
         Task training was measured to halve how well the encoder places sentence shapes it never saw,
         so this asks whether the fine-tune needs to touch those layers at all. The shared token matrix
-        stays trainable on purpose: the decoder's output layer is that same matrix.
+        stays trainable on purpose: the decoder's output layer is that same matrix. `except_top` leaves
+        that many top layers training, and the final norm above them.
         """
-        for parameter in self.text.encoder.parameters():
-            parameter.requires_grad = False
+        layers = list(self.text.encoder.layers)
+        if not 0 <= except_top <= len(layers):
+            raise ValueError(f"cannot leave the top {except_top} of {len(layers)} encoder layers training; "
+                             f"pick 0 to {len(layers)}")
+        for module in layers[: len(layers) - except_top] if except_top else [self.text.encoder]:
+            for parameter in module.parameters():
+                parameter.requires_grad = False
         return self
 
     def generate(self, source_ids, is_real_source_token=None, temperature=0.0, top_p=1.0, rng=None):

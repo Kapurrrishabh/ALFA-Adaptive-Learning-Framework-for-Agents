@@ -17,6 +17,7 @@ goes to a threadpool. One lock around it, because there is one set of weights an
 
 import asyncio
 from datetime import datetime, timezone
+from functools import reduce
 
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
@@ -28,6 +29,8 @@ from backend.models.core.backend import default_rng
 from backend.models.data import advisory
 
 from backend.models import serving as models
+from backend.models.agent.core import TOGETHER, alfa_spoke
+from backend.models.agent.finance import FACTS, NO_PRICES, NO_SUBJECT, points_back
 from backend.models.agent.reference import REFERENCE
 from backend.database import NotYours
 
@@ -52,10 +55,11 @@ class NewTrade(BaseModel):
     price: float
 
 
-def create_app(agent, store, judge, refit, served, show=lambda turn: turn.served):
+def create_app(agent, store, judge, refit, served, digest, show=lambda turn: turn.served):
     """The app. `judge(question, evidence, answer)` returns (is_right or None, why, labeller); `refit`
     takes the feedback log and returns (abstainer, calibrator, learned). `show(turn)` is the markdown a
-    reader sees (models/agent/present.py); the plain `served` text is what is stored and judged."""
+    reader sees (models/agent/present.py); the plain `served` text is what is stored and judged. Each judged
+    row records `digest`, the served generator's, which is how `refit` tells its rows from another build's."""
     app = FastAPI(title="ALFA", description=__doc__)
     app.add_middleware(CORSMiddleware, allow_origins=list(DEVELOPMENT_ORIGINS),
                        allow_methods=["*"], allow_headers=["*"])
@@ -106,7 +110,7 @@ def create_app(agent, store, judge, refit, served, show=lambda turn: turn.served
 
     @app.get("/instruments")
     async def instruments(token=Header(default="", alias="Authorization")):
-        """What can be asked about, from the price files on disk. There is no other universe."""
+        """What can be asked about, from the price files on disk, including shares fetched for a question."""
         _bearer(token)
         return sorted(agent.market.paths)
 
@@ -214,7 +218,7 @@ def create_app(agent, store, judge, refit, served, show=lambda turn: turn.served
 
         await socket.send_json({"stage": "ready", "conversation": conversation,
                                 "answer_cut": agent.abstainer.cut})
-        subject = next((message.ticker for message in reversed(spoken) if message.ticker), "")
+        subject = reduce(_subject_after, spoken, "")
         while True:
             try:
                 frame = await socket.receive_json()
@@ -225,14 +229,15 @@ def create_app(agent, store, judge, refit, served, show=lambda turn: turn.served
                 await socket.send_json({"stage": "refused", "because": "no question in that frame"})
                 continue
             await socket.send_json({"stage": "working", "question": question})
+            # The conversation's share only for a question pointing back to it ("and its volatility?"): "how is your
+            # mom doing" was answered with the last share's prices
             async with generating:
-                turn = await run_in_threadpool(agent.answer, question, frame.get("as_of"), subject)
-            # Only ever replaced, never cleared: a general question in the middle of a conversation about
-            # one instrument does not mean the next one has changed the subject.
-            subject = turn.ticker or subject
+                turn = await run_in_threadpool(agent.answer, question, frame.get("as_of"),
+                                               frame.get("subject") or (subject if points_back(question) else ""))
+            subject = _subject_after(subject, turn)
             await socket.send_json({"stage": "turn", **_as_frame(turn), "shown": show(turn)})
             await socket.send_json({"stage": "stored", **_store_turn(store, token, conversation, turn,
-                                                                    judge, refit, agent)})
+                                                                    judge, refit, agent, digest)})
 
     def _bearer(header):
         scheme, _, token = header.partition(" ")
@@ -244,6 +249,16 @@ def create_app(agent, store, judge, refit, served, show=lambda turn: turn.served
     return app
 
 
+def _subject_after(subject, turn):
+    """The instrument a conversation is about after `turn`, which may be a stored message.
+
+    Kept through a general question in the middle of a conversation about one, which does not change the subject.
+    Cleared by a share whose prices could not be had, or one ALFA could not find at all, so "should i buy it" next is
+    not answered about the one before.
+    """
+    return "" if turn.served in (NO_PRICES, NO_SUBJECT) else turn.ticker or subject
+
+
 def _as_frame(turn):
     """A turn as a client reads it. `wrote` appears only when a guard changed what was served."""
     return {"question": turn.question, "asked": turn.asked, "ticker": turn.ticker,
@@ -252,10 +267,11 @@ def _as_frame(turn):
             "margin": _number(turn.margin), "confidence": _number(turn.confidence),
             "stated": _number(turn.stated), "unsupported": list(turn.unsupported),
             "wrote": turn.answer if turn.answer != turn.served else None,
-            "phrased_by": turn.phrased_by, "unphrased_because": turn.unphrased_because}
+            "phrased_by": turn.phrased_by, "unphrased_because": turn.unphrased_because,
+            "asked_writer": turn.asked_writer}
 
 
-def _store_turn(store, token, conversation, turn, judge, refit, agent):
+def _store_turn(store, token, conversation, turn, judge, refit, agent, digest):
     """Judge the turn, store it with the verdict that judged it, and refit from the log as it stands.
 
     The order is B7's and it matters: the cut that decided this turn was fitted before it, and the one
@@ -264,19 +280,25 @@ def _store_turn(store, token, conversation, turn, judge, refit, agent):
     A turn the decoder never reached is remembered but not judged. The log exists to relate confidence
     to correctness, and that turn has no confidence -- storing a 0.0 would put a number the model never
     reported into the fit. Routing is gated on its own measurement, not on this log. A reference turn is
-    not judged either: a quote has no confidence, and a paraphrase's is another model's.
+    not judged either: a quote has no confidence, and a paraphrase's is another model's. Nor is a turn that
+    answered two questions: its text is several answers, and its confidence the least of theirs. Nor a facts
+    turn: the cut refitted here gates price answers only, and facts confidences ran 0.2 to 0.95 against theirs near 1.
+    A turn our code's sentence answered is judged as the answer of ALFA's it replaced, which did not speak.
     """
-    if turn.answer and not turn.intent.startswith(REFERENCE):
+    if turn.answer and not turn.intent.startswith(REFERENCE) and TOGETHER not in turn.intent and turn.intent != FACTS:
         is_right, why, labeller = judge(turn.question, turn.evidence, turn.answer)
     else:
         is_right, why, labeller = None, ("nothing was generated to judge" if not turn.answer
+                                         else "a turn answering two questions is not one answer, and the cut is "
+                                              "fitted on single answers"
+                                         if TOGETHER in turn.intent
                                          else "the log holds only the advisory generator's answers"), None
     judged = None
     if is_right is not None:
         judged = store.feedback.append(datetime.now(timezone.utc).isoformat(timespec="seconds"),
                                        turn.question, turn.evidence, turn.answer,
                                        _number(turn.confidence), is_right, labeller, why,
-                                       spoke=turn.spoke)
+                                       spoke=alfa_spoke(turn), digest=digest, intent=turn.intent)
     message = store.remember(token, conversation, turn, feedback_id=judged)
     was = agent.abstainer.cut
     abstainer, calibrator, learned = refit(store.feedback)

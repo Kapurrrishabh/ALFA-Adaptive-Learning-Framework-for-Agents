@@ -12,15 +12,20 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any, Dict, List
 
 from backend.advisory.calculators.performance import edge_sign
 from backend.models.external.llm import verify_numbers
 from backend.models.guardrails import added_claims
 
-SYSTEM = """Rewrite the NOTE for an Indian retail investor in 4 short, plain sentences. Keep every number \
+# What the range and each comparison are of, which a rewrite must keep: TCS "is expected to be between ₹2,251 and ₹2,566"
+# and NYKAA's "about the same as 4.684%" passed the figure check
+QUALIFIERS = ("80%", "paths", "no change", "base rate")
+SYSTEM = f"""Rewrite the NOTE for an Indian retail investor in 4 short, plain sentences. Keep every number \
 exactly as written, in rupees (₹). Keep every judgement as it is: "about the same", "within noise", the \
-momentum fifth and the verdict. Add nothing: no new facts, no reasons, no tests or indicators the NOTE \
+momentum fifth and the verdict. Keep the words that say what each range and comparison is of: \
+{", ".join(f'"{q}"' for q in QUALIFIERS)}. Add nothing: no new facts, no reasons, no tests or indicators the NOTE \
 does not name, no predictions, no advice. Never say the price will rise or fall, and never call a model \
 reliable or trustworthy. No lists or headings."""
 
@@ -52,6 +57,8 @@ def facts(symbol: str, close: float, as_of: str, alfa: Dict[str, Any], gru: Dict
     lo, mid, hi = round(alfa["q10"][-1]), round(alfa["q50"][-1]), round(alfa["q90"][-1])
     generative = alfa["drawer"]["name"] == "generative"
     fan_model = "our return model" if generative else "the standard GARCH model"
+    # month and year, not an ISO date, which the figure check skips; that check reads the year and `_required` the month
+    since = f"{datetime.strptime(gru['record']['test_from'], '%Y-%m-%d'):%B %Y}"
     return {
         "stock": symbol, "as_of": as_of, "last_close": f"₹{close:,.2f}", "days_ahead": days, "fan_model": fan_model,
         "return_model_range": f"₹{lo:,} to ₹{hi:,}, middle ₹{mid:,} (80% of {fan_model}'s paths)",
@@ -64,14 +71,15 @@ def facts(symbol: str, close: float, as_of: str, alfa: Dict[str, Any], gru: Dict
         "gru_line": f"ends at ₹{round(gru['close'][-1]):,}",
         "gru_moves": ("beat the volatility band at forecasting how big each day's move will be" if gt["nll_gain_lo"] > 0
                       else "did not beat the volatility band at forecasting how big each day's move will be"),
-        "gru_error": f"{gd['mae_pct']}% on 2024–26, {error_words} the {gd['no_change_mae_pct']}% of assuming no change",
+        "gru_error": f"{gd['mae_pct']}% on forecasts since {since}, {error_words} the "
+                     f"{gd['no_change_mae_pct']}% of assuming no change",
         "gru_direction": f"right {gd['direction_acc'] * 100:.1f}% of the time against {gd['base_rate_acc'] * 100:.1f}% "
                          f"for the base rate, " + {1: "a real but small edge", 0: "which is within noise",
                                                    -1: "which is worse than the base rate"}[direction],
         "momentum": _momentum_words(verdict["rank"], verdict["universe"]),
         "verdict": verdict["verdict"], "stop_loss": f"₹{round(verdict['stop']):,}",
-        # the judgements a rewrite must keep word for word, so it cannot soften or upgrade them
-        "_required": [f"₹{lo:,}", f"₹{hi:,}", verdict["verdict"], str(days)]
+        # the judgements a rewrite must keep word for word, so it cannot soften or upgrade them, and the QUALIFIERS
+        "_required": [f"₹{lo:,}", f"₹{hi:,}", verdict["verdict"], str(days), since, *QUALIFIERS]
                      + ([("within noise", "within the noise")] if direction == 0 else [])
                      + ([("worse", "less often")] if direction < 0 else [])
                      + ([("did not beat", "didn't beat")] if gt["nll_gain_lo"] <= 0 else [])

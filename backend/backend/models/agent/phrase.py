@@ -1,35 +1,35 @@
 """The language model as the agent's last step: what we already decided to say, said plainly.
 
-ALFA's generator, or the passage the reference path chose, decides what the answer is; the language model
-only rewords it. Its words are served when they keep every figure the draft states, add no figure the
-evidence does not, and claim nothing the source does not (`guardrails.added_claims`, and for passages an
-entailment model reading each sentence). Otherwise the draft is served and the turn says why, so a reworded
-answer is never the only version of a fact. The entailment model does not tie a figure to what it measures, so
-`guardrails.unbound_figures` does, for names a passage holds: "TCS shares fell 1.2%" passed it, 1.2% being the Nifty's.
+The passages the reference path chose decide what the answer is; the language model only rewords them. Its
+words are served when they add no figure the evidence does not and claim nothing the source does not
+(`guardrails.added_claims`, and an entailment model reading each sentence). Otherwise our plain answer is
+served and the turn says why, so a reworded answer is never the only version of a fact. The entailment model does
+not tie a figure to what it measures, so `guardrails.unbound_figures` does, for names a passage holds: "TCS shares
+fell 1.2%" passed it, 1.2% being the Nifty's.
 
 This is the setup that passed 22 of 24 analyst notes (advisory/analyst.py). Composing from raw evidence was
 the setup that failed there: a small model handed facts writes fluent misattributions.
 """
 import re
 from collections import namedtuple
+from datetime import date
 
+from backend.advisory.report import CURRENCY
 from backend.advisory.sentiment.feeds.sentiment import NEGATORS
 from backend.knowledge_base import lessons
 from backend.knowledge_base.retrieval.chunk import sentences
-from backend.models.guardrails import added_claims, figures, unbound_figures, unsupported_figures
-from backend.models.guardrails.guardrails import BRACKETED
+from backend.models.agent.finance import market_of
+from backend.models.data import advisory
+from backend.models.guardrails import added_claims, unbound_figures, unsupported_figures
+from backend.models.guardrails.guardrails import BRACKETED, TREND_FIGURES, days, undated
 
-# `text` is empty exactly when the language model's words are not served; `because` then says why
-Phrased = namedtuple("Phrased", "text by because")
+# `text` is empty exactly when the language model's words are not served; `because` then says why. `asked_writer` is
+# whether the request reached the language model, which is what a user is charged for
+Phrased = namedtuple("Phrased", "text by because asked_writer")
+# names our code as the author of words served in place of a language model's or ALFA's
+BUILT = "our code"
 NOT_ANSWERED = "the language model read the passages and found no answer in them"
 HEADLINES_NOT_WHY = "These are headlines, and they do not prove why the market moved."
-
-# No glosses of terms: asked to explain volatility or RSI, the writer added sizes the draft never gives ("has moved a
-# lot", "not very risky") and HHEM fell from 0.89 to as low as 0.15 on 16 advisory answers.
-ANSWER_SYSTEM = """Rewrite the ANSWER for an Indian retail investor in two or three short sentences, in everyday \
-words. Keep each sentence under 15 words. Keep every number exactly as written, with its sign. Keep every judgement \
-as it is, and do not call a figure high, low, a lot or a little. Add nothing else: no new facts, no reasons, no \
-advice, no predictions. Never say a price will rise or fall. No lists or headings."""
 
 # No cap on sentence length here: with one, it answered "how is my portfolio doing" with a Treasury headline
 PASSAGE_SYSTEM = """Answer the QUESTION for an Indian retail investor in two or three short sentences in everyday \
@@ -52,31 +52,12 @@ _BARE_VERDICT = re.compile(r"^\W*(yes|no)\s*([,.;:!]|$)", re.I)
 # Provisional, on sentence.entailment's scale. On 298 replies, 207 by the writer and 91 written to test it, every cut
 # from 0.2 to 0.8 was right on 245 to 250 and 0.5 on 249: too narrow a spread to fit.
 ENTAILED = 0.5
-# a size the draft never gives: "Infosys is quite volatile" for a draft that gave the figure alone
-_SIZES = re.compile(r"\b(a lot|quite|very|highly|extremely|fairly|significant(ly)?|moderate(ly)?|sharp(ly)?|little)\b",
-                    re.I)
 
 
 def currency(ticker):
-    """The currency a price for `ticker` is in, which a rewrite may not swap for the other."""
-    return "₹" if ticker.upper().endswith(".NS") else "$"
-
-
-def rewrite(question, draft, evidence, writer, money):
-    """ALFA's answer reworded, keeping its figures; `draft` is served instead when a check fails."""
-    reply = _ask(writer, ANSWER_SYSTEM, f"QUESTION: {question}\nANSWER: {draft}")
-    if isinstance(reply, Phrased):
-        return reply
-    text, by = reply
-    kept = set(figures(_plain(draft)))
-    reasons = _checked(text, f"{evidence} {draft}", money, question)
-    dropped = sorted(kept - set(figures(_plain(text))))
-    if dropped:
-        reasons.append(f"it leaves out {', '.join(dropped)}")
-    sized = {m.group(0).lower() for m in _SIZES.finditer(text)} - {m.group(0).lower() for m in _SIZES.finditer(draft)}
-    if sized:
-        reasons.append(f"it sizes a figure the draft does not: “{sorted(sized)[0]}”")
-    return Phrased("", "", "; ".join(reasons)) if reasons else Phrased(text, by, "")
+    """The symbol of the currency a price for `ticker` is in, which a rewrite may not swap for the other: none for an
+    index, whose level is in points, or for no ticker."""
+    return "" if not ticker or ticker.startswith("^") else CURRENCY[market_of(ticker).currency]
 
 
 def from_passages(question, chunks, writer, entails, money=None):
@@ -88,12 +69,12 @@ def from_passages(question, chunks, writer, entails, money=None):
         return reply
     text, by = reply
     if _DECLINES.search(text):
-        return Phrased("", "", NOT_ANSWERED)
+        return Phrased("", "", NOT_ANSWERED, True)
     reasons = (["it answers yes or no"] if _BARE_VERDICT.match(text) else []) + _denials(question, text) + \
         _unentailed(text, chunks, entails) + _checked(text, passages, money, question) + \
         [f"it ties {figure} to {name}, which no passage does" for figure, name in
          unbound_figures(text, [chunk.text for chunk in chunks])]
-    return Phrased("", "", "; ".join(reasons)) if reasons else Phrased(text, by, "")
+    return Phrased("", "", "; ".join(reasons), True) if reasons else Phrased(text, by, "", True)
 
 
 def price_sentence(ticker, prices, money):
@@ -105,14 +86,15 @@ def price_sentence(ticker, prices, money):
 
 
 def recent(question, subject, prices, chunks, writer, entails, money):
-    """What happened lately: our sentence on the price move, then the language model's account of the passages.
+    """What happened lately: our sentences on the price move and on when the news is from, then the language model's
+    account of the passages.
 
     The model is not shown the prices. Given both, it wrote "down 0.5% from the previous close of ₹704.80"
     for HDFC Bank: the 5-day change pinned to a quote that said the shares were up, every figure in the
     sources and the claim wrong. So it reads the dated passages only, and the prices are our own words.
     """
     told = from_passages(question, chunks, writer, entails, money)
-    lead = price_move(subject, prices)
+    lead = f"{price_move(subject, prices)} {news_dated(chunks, prices)}"
     return told._replace(text=f"{lead} {told.text}".strip()) if told.text else told
 
 
@@ -126,15 +108,53 @@ def price_move(subject, prices):
             f"{shown['return_5d']} over 5 days and {shown['return_20d']} over 20 days.")
 
 
+def news_dated(chunks, prices):
+    """Our sentence on when the news is from and how long before the close in `prices`, empty without them: a 40-day-old
+    preview of results already out was told in the present tense."""
+    from backend.models.agent.present import readable_day
+    if not prices:
+        return ""
+    first, last = min(chunk.day for chunk in chunks), latest(chunks).day
+    if first == last:
+        return f"The news that follows is from {readable_day(last)}, {_age(last, prices)}."
+    return f"The news that follows is from {readable_day(first)} to {readable_day(last)}; the newest is from " \
+           f"{_age(last, prices)}."
+
+
+def _age(day, prices):
+    """"40 days before that close", "the day of that close" or "1 day after that close", for news of `day` beside the
+    close in `prices`: a weekend's news comes after Friday's close."""
+    gap = (date.fromisoformat(str(prices[2])[:10]) - date.fromisoformat(day)).days
+    count = f"{abs(gap)} day{'s' if abs(gap) != 1 else ''}"
+    return f"{count} before that close" if gap > 0 else f"{count} after that close" if gap < 0 else "the day of that close"
+
+
+def answer_form(intent, phrasing, ticker, shown):
+    """The answer form ALFA trained on for a price intent, filled by our code with the snapshot's figures as shown, and
+    its trend and RSI words read from those same figures, as the trend guard reads them."""
+    facts = {name: float(shown[name]) for name in (*TREND_FIGURES, "rsi_14")}
+    return advisory.row(intent, ticker, facts, shown, phrasing)[1]
+
+
 def recent_plain(subject, prices, chunks, unread=False):
     """The same answer without a language model: the price sentence, then the newest report or the lack of one. With
     no report it says when SEC filings were `unread`, and otherwise claims nothing of filings: not every question reads
     them."""
     said = [price_move(subject, prices)] if prices else []
-    said.append(f"The latest report: {latest(chunks).text}" if chunks else
+    said.append(_reported(latest(chunks), prices) if chunks else
                 "I found no news about it in the archive and could not read its SEC filings just now, so I cannot "
                 "say why." if unread else "I found no news about it in the archive, so I cannot say why.")
     return " ".join(said)
+
+
+def _reported(chunk, prices):
+    """The newest report; beside prices, in our words when it is from and how long before their close."""
+    from backend.models.agent.present import readable_day
+    if not prices:
+        return f"The latest report: {chunk.text}"
+    cited, when = _citation(chunk), f"{readable_day(chunk.day)}, {_age(chunk.day, prices)}"
+    return (f"On {when}, {cited.rpartition(', ')[0]} wrote: {chunk.text[len(cited) + 2:]}" if cited
+            else f"The latest report, from {when}: {chunk.text}")
 
 
 def latest(chunks):
@@ -149,7 +169,7 @@ def _ask(writer, system, content):
     try:
         reply = writer.create(system, [{"role": "user", "content": content}])
     except (LLMUnavailable, DataUnavailable) as error:
-        return Phrased("", "", f"the language model is unavailable: {error}")
+        return Phrased("", "", f"the language model is unavailable: {error}", False)
     return writer.text(reply).strip(), reply.model
 
 
@@ -217,12 +237,15 @@ def _citation(chunk):
 
 
 def _checked(text, source, money, asked=""):
+    from backend.models.agent.present import readable_day
     reasons = ["it breaks into lines, as a list or verse does"] if "\n" in text.strip() else []
     known = f"{source} {asked}".lower()
     reasons += [f"it names {name}, which the source does not" for name in sorted(set(_NAMES.findall(text)))
                 if name.lower() not in known]
+    reasons += [f"it gives the date {readable_day(day)}, which the source does not" for day in days(text)
+                if day not in days(source)]
     reasons += [f"figure {figure} is not in the evidence"
-               for figure in unsupported_figures(_plain(text), _plain(source))]
+               for figure in unsupported_figures(_plain(undated(text)), _plain(source))]
     reasons += added_claims(text, source)
     other = {"₹": "$", "$": "₹"}.get(money)
     if other and other in text and other not in source:

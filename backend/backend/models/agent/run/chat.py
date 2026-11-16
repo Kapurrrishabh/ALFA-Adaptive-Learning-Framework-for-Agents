@@ -33,14 +33,33 @@ import numpy as np
 from backend.models.training.check_answers import answer_rows, load_model  # noqa: E402
 from backend.models.training.fit_abstention import HAND_PICKED  # noqa: E402
 from backend.models.data import advisory  # noqa: E402
-from backend.models.learning import ORACLE, FeedbackLog  # noqa: E402
+from backend.models.learning import AGENT, ORACLE, FeedbackLog  # noqa: E402
 from backend.models.learning.abstain import Abstainer  # noqa: E402
 from backend.models.learning.calibrate import Calibrator  # noqa: E402
 from backend.models.learning.teacher import OracleTeacher  # noqa: E402
+from backend.models.serving import registry  # noqa: E402
 from backend.models.training.train_generator import load_split  # noqa: E402
 
 
-def adapt(feedback, wanted, warmup, labeller=ORACLE):
+def generator_of(path):
+    """What marks the feedback rows the generator at `path` wrote: its digest and, if it is the promoted one, its
+    promotion time, after which rows logged before digests were recorded are its too."""
+    promoted = registry.promoted().get(registry.GENERATOR)
+    if promoted is None:
+        raise LookupError(f"nothing is promoted to {registry.GENERATOR} in {registry.DEFAULT_PATH}, so no feedback "
+                          f"row can be told from another build's; scripts/promote.py records one")
+    digest = registry.digest(path)
+    return {"digest": digest, "since": promoted["promoted"] if digest == promoted["digest"] else None}
+
+
+def _written_by(row, generator):
+    if "digest" in row["extra"]:
+        return row["extra"]["digest"] == generator["digest"]
+    return generator["since"] is not None and \
+        datetime.fromisoformat(row["asked_at"]) > datetime.fromisoformat(generator["since"])
+
+
+def adapt(feedback, wanted, warmup, labeller, generator):
     """(abstainer, calibrator, learned) to serve the next turn with, refitted from the log as it stands.
 
     Below `warmup` judged rows, or before the log holds both a right and a wrong answer, the hand-picked
@@ -49,19 +68,34 @@ def adapt(feedback, wanted, warmup, labeller=ORACLE):
 
     One labeller per fit: a typed question has no gold answer, so the server's judge is the agent rather
     than the oracle, and a cut fitted across both would be fitted to two different standards at once.
+    Until the agent's rows can teach a cut, the oracle's alone fit it (reseed_feedback writes them): a new generator has
+    no agent verdicts, and at the hand-picked cut step36000 answered 84.2% of held turns, against 99.1% at its own.
+    One generator too (`generator_of`): 26 rows of a retired checkpoint once set the served cut.
     """
-    rows = feedback.rows(labeller=labeller)
+    rows = [row for row in feedback.rows(labeller=labeller) if _written_by(row, generator)]
     right = np.array([row["is_right"] for row in rows], dtype=bool)
     if len(rows) < warmup or not right.any() or right.all():
+        if labeller == AGENT:
+            return adapt(feedback, wanted, warmup, ORACLE, generator)
         return Abstainer(HAND_PICKED), None, False
     confidence = np.array([row["confidence"] for row in rows])
     return Abstainer.fit(confidence, right, wanted), Calibrator().fit(confidence, right), True
 
 
-def converse(model, tokenizer, split, chosen, rng, feedback, wanted, warmup, batch_size):
+def require_learned_cut(learned, log, warmup, generator, served):
+    """Stop where `adapt` could teach no cut, for everything that answers as the server does: it served the hand-picked
+    0.998 instead, so a deployment that forgot the reseed looked like a working one."""
+    if not learned:
+        raise LookupError(f"{log} has fewer than {warmup} rows, with both a right and a wrong answer, "
+                          f"judged by the agent or the oracle for generator {generator['digest']} ({served}), so no "
+                          f"answer cut can be fitted; append its oracle rows with `python -m "
+                          f"backend.models.training.reseed_feedback --log {log}` before serving it")
+
+
+def converse(model, tokenizer, split, chosen, rng, feedback, wanted, warmup, batch_size, generator):
     """Run the turns in order, adapting between each one, and report the session."""
     oracle = OracleTeacher(advisory.UNSUPPORTED)
-    abstainer, calibrator, learned = adapt(feedback, wanted, warmup)
+    abstainer, calibrator, learned = adapt(feedback, wanted, warmup, oracle.name, generator)
     opening, spoke, spoke_right, right = abstainer.cut, 0, 0, 0
 
     for turn, row in enumerate(chosen, start=1):
@@ -71,7 +105,8 @@ def converse(model, tokenizer, split, chosen, rng, feedback, wanted, warmup, bat
         speaks = bool(abstainer.answers([sure])[0])
         is_right, why = oracle.judge(question, evidence, answer, gold)
         feedback.append(datetime.now(timezone.utc).isoformat(timespec="seconds"), question, evidence,
-                        answer, sure, is_right, oracle.name, why, turn=turn, spoke=speaks)
+                        answer, sure, is_right, oracle.name, why, turn=turn, spoke=speaks,
+                        digest=generator["digest"])
         spoke += speaks
         spoke_right += speaks and is_right
         right += is_right
@@ -81,7 +116,7 @@ def converse(model, tokenizer, split, chosen, rng, feedback, wanted, warmup, bat
         print(f"  {'answered:' if speaks else 'stayed quiet, would have said:'} {answer}")
         print(f"  confidence {sure:.4f} -> {stated};  oracle: {why}")
         before = abstainer
-        abstainer, calibrator, learned = adapt(feedback, wanted, warmup)
+        abstainer, calibrator, learned = adapt(feedback, wanted, warmup, oracle.name, generator)
         moved = (f"solved for {wanted:.0%}, expects {abstainer.expected:.0%} on "
                  f"{abstainer.coverage:.0%}" if learned else "still hand-picked, too little feedback")
         print(f"  cut {before.cut:.5f} -> {abstainer.cut:.5f} ({moved});  spoke on {spoke}/{turn}, "
@@ -107,6 +142,7 @@ def main():
 
     artifacts = Path(args.artifacts)
     tokenizer, model, config = load_model(artifacts, args.dataset, args.checkpoint)
+    generator = generator_of(artifacts / (args.checkpoint or f"{args.dataset}.npz"))
     split = load_split(artifacts, args.dataset, args.split)
     rng = np.random.default_rng(config.seed)
     chosen = rng.permutation(len(split[0]))[: args.turns]
@@ -114,7 +150,7 @@ def main():
     with FeedbackLog(args.log) as feedback:
         started = len(feedback)
         session = converse(model, tokenizer, split, chosen, rng, feedback, args.wanted, args.warmup,
-                           args.batch_size)
+                           args.batch_size, generator)
         grew = len(feedback) - started
 
     print(f"\n{session['turns']} turns, log {started} -> {started + grew} rows (+{grew})")

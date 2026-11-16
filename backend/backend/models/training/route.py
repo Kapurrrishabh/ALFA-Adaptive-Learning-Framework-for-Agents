@@ -149,10 +149,12 @@ def scorers(artifacts, checkpoint, known, weight):
     return built
 
 
-def measure(router, asked):
-    """(axis, did it get the intent, margin) for every question, in the order asked."""
+def measure(router, asked, also_right=()):
+    """(axis, did it get the intent, margin) for every question, in the order asked. A (intent, label) pair in
+    `also_right` is a question of that intent placed on that label, counted as getting it."""
     routed = [(axis, router.route(text), intent) for intent, axis, text in asked]
-    return [(axis, route.label == intent, route.margin) for axis, route, intent in routed]
+    return [(axis, route.label == intent or (intent, route.label) in also_right, route.margin)
+            for axis, route, intent in routed]
 
 
 def refused_out_of_domain(router, gate):

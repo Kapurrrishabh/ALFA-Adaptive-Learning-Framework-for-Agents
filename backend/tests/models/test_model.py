@@ -2,12 +2,15 @@
 
 import json
 import math
+import re
+import shutil
+import sys
 
 import numpy as np
 import pytest
 
 from backend.models.core import pretrained
-from backend.models.data import indicators, prices, qa_pairs, returns
+from backend.models.data import advisory, indicators, prices, qa_pairs, returns, slots
 from backend.models.core.autograd import functional as F
 from backend.models.core.autograd import no_grad
 from backend.models.core.backend import default_rng
@@ -22,6 +25,9 @@ from backend.models.core.optim import AdamW, clip_grad_norm
 from backend.models.data.masking import mask_tokens
 from backend.models.core.tokenizer.vocab import CLS_ID, CONTINUATION, PAD_ID, SEP_ID, SPECIAL_TOKENS, UNK_ID, UNLABELLED
 from backend.models.core.tokenizer.wordpiece import WordPiece, pretokenize
+from backend.models.training import train_generator
+from backend.models.guardrails import guardrails
+from backend.paths import ARTIFACTS
 
 TINY = ModelConfig(
     vocab_size=64,
@@ -395,6 +401,83 @@ def test_a_frozen_encoder_stays_put_while_the_rest_of_the_model_trains():
     for name, parameter in model.named_parameters():
         moved = not np.array_equal(parameter.data, before[name])
         assert moved != name.startswith("text.encoder."), name
+
+
+def test_a_generator_refuses_to_leave_more_encoder_layers_training_than_it_has():
+    with pytest.raises(ValueError, match="top 3 of 2 encoder layers"):
+        GroundedGenerator(TINY).freeze_encoder(except_top=3)
+
+
+def trainer_artifacts(tmp_path):
+    """The tokenizer, splits and pretrained encoder train_generator reads, two rows each."""
+    WordPiece(list(SPECIAL_TOKENS) + list("abcdefgh")).save(tmp_path / "tokenizer.json")
+    vocab = len(SPECIAL_TOKENS) + 8
+    rng = np.random.default_rng(0)
+    for split in ("train", "validation"):
+        np.save(tmp_path / f"generator_{split}_source.npy", rng.integers(1, vocab, (2, 1, 8)))
+        np.save(tmp_path / f"generator_{split}_keep.npy", np.ones((2, 1, 8), dtype=np.int64))
+        np.save(tmp_path / f"generator_{split}_target.npy",
+                np.concatenate([np.full((2, 1), CLS_ID), rng.integers(1, vocab, (2, 5))], axis=1))
+    config = ModelConfig(vocab_size=vocab, max_text_length=8)
+    pretrained.save(tmp_path / "pretrained.npz", MaskedLanguageModel(config), config)
+    return config
+
+
+def run_trainer(monkeypatch, tmp_path, *flags):
+    monkeypatch.setattr(sys, "argv", ["train_generator", "--artifacts", str(tmp_path), "--batch-size", "2",
+                                      "--epochs", "1", *flags])
+    train_generator.main()
+    return pretrained.load(tmp_path / "generator.npz")
+
+
+def test_the_trainer_builds_a_decoder_as_deep_as_asked(monkeypatch, tmp_path):
+    trainer_artifacts(tmp_path)
+    config, weights = run_trainer(monkeypatch, tmp_path, "--decoder-layers", "3")
+    assert config.decoder_layers == 3 and any(name.startswith("decoder.layers.2.") for name in weights)
+
+
+def test_a_resumed_run_trains_only_the_steps_left_and_keeps_their_numbers(monkeypatch, tmp_path, capsys):
+    """Restarted from a step checkpoint without it, a run trained its first rows again and wrote over the checkpoints
+    the run that died had kept."""
+    trainer_artifacts(tmp_path)
+    run_trainer(monkeypatch, tmp_path, "--epochs", "3", "--start-step", "2", "--log-every", "1",
+                "--checkpoint-every", "1", "--keep-checkpoints")
+    assert re.findall(r"step (\d+)/3", capsys.readouterr().out) == ["3"]
+    assert sorted(path.name for path in tmp_path.glob("generator.step*.npz")) == ["generator.step3.npz"]
+
+
+def test_the_trainer_moves_only_the_top_encoder_layers_and_the_norm_above_them(monkeypatch, tmp_path):
+    config = trainer_artifacts(tmp_path)
+    _, start = pretrained.load(tmp_path / "pretrained.npz")
+    _, weights = run_trainer(monkeypatch, tmp_path, "--unfreeze-encoder-top", "1")
+    trained = (f"text.encoder.layers.{config.num_layers - 1}.", "text.encoder.final_norm.")
+    for name in (name for name in weights if name.startswith("text.encoder.")):
+        assert (not np.array_equal(weights[name], start[name])) == name.startswith(trained), name
+
+
+def test_the_trainer_refuses_to_freeze_the_encoder_and_train_its_top_layers_at_once(monkeypatch, tmp_path, capsys):
+    trainer_artifacts(tmp_path)
+    with pytest.raises(SystemExit):
+        run_trainer(monkeypatch, tmp_path, "--freeze-encoder", "--unfreeze-encoder-top", "2")
+    assert "cannot be combined" in capsys.readouterr().err
+
+
+def test_the_trainer_continues_from_a_whole_generator_without_reading_the_pretrained_encoder(monkeypatch, tmp_path):
+    config = trainer_artifacts(tmp_path)
+    (tmp_path / "pretrained.npz").unlink()
+    phase_one = GroundedGenerator(config, rng=default_rng(1))
+    pretrained.save(tmp_path / "phase_one.npz", phase_one, config)
+    _, weights = run_trainer(monkeypatch, tmp_path, "--init-from", str(tmp_path / "phase_one.npz"), "--epochs", "0")
+    for name, value in phase_one.state_dict().items():
+        np.testing.assert_array_equal(weights[name], value, err_msg=name)
+
+
+def test_the_trainer_refuses_to_continue_from_a_generator_of_another_depth(monkeypatch, tmp_path):
+    config = trainer_artifacts(tmp_path)
+    shallower = ModelConfig(vocab_size=config.vocab_size, max_text_length=config.max_text_length, decoder_layers=1)
+    pretrained.save(tmp_path / "phase_one.npz", GroundedGenerator(shallower), shallower)
+    with pytest.raises(SystemExit, match="different shape"):
+        run_trainer(monkeypatch, tmp_path, "--init-from", str(tmp_path / "phase_one.npz"))
 
 
 def test_no_grad_leaves_parameters_untouched():
@@ -1041,3 +1124,312 @@ def test_the_gru_is_not_served_with_a_range_calibrated_the_old_way(monkeypatch):
     line = _gru_calibrated(monkeypatch, "conformal, refitted on the trailing 365 days of known outcomes", 1.1764)
     with pytest.raises(DataUnavailable, match="rerun python -m backend.models.training.calibrate_path_gru"):
         line()
+
+
+
+# --- slot forms and the advisory rows they are made from ----------------------
+
+SLOT_FACTS = ("Stock: Reliance Industries Limited (RELIANCE.NS), NSE, INR; last close 1,339.70 on 2026-11-13. ; "
+              "[technical] 20-day return is +14.1%. (2026-11-13). ; [technical] RSI(14) is 70.8. (2026-11-13).")
+SLOT_ADVISORY = ("ticker GESHIP.NS ; close 1518.00 ; return_5d +4.0% ; return_20d -1.6% ; volatility_20d 44.5% ; "
+                 "rsi_14 52 ; sma_20 1515.71 ; sma_50 1484.11 ; drawdown_60d -11.9% ; atr_14 58.51 ; "
+                 "outlook turbulent ; outlook_confidence 45%")
+RELIANCE = ("Reliance Industries Limited", "RELIANCE.NS")
+# (passage, the name it gives its share, the ticker, the row's short company name)
+SLOT_SHARES = ((SLOT_FACTS, *RELIANCE, "Reliance Industries"),
+               (SLOT_ADVISORY, "Great Eastern Shipping Co.", "GESHIP.NS", "Great Eastern Shipping"))
+slot_shares = pytest.mark.parametrize("share", SLOT_SHARES, ids=["facts passage", "advisory evidence"])
+
+
+def test_a_marked_source_leads_each_figure_with_the_marker_an_answer_copies_and_names_the_share_by_marker():
+    passage = ("Stock: Reliance Industries Limited (RELIANCE.NS), last close 1,339.70 ; 20-day return is +14.1% ; "
+               "Reliance Industries rose 14.1%")
+    assert slots.mark_source(passage, *RELIANCE, "Reliance Industries") == \
+        "Stock: ι (χ), last close κ 1 1,339.70 ; κ 2 20-day return is +κ 3 14.1% ; ι rose κ 3 14.1%"
+
+
+def test_the_rows_short_company_name_becomes_the_name_marker_and_fills_back_as_the_passages_name():
+    slotted = slots.to_slots("Reliance Industries (RELIANCE.NS) rose 14.1%.", SLOT_FACTS, *RELIANCE,
+                             "Reliance Industries")
+    assert slotted == "ι (χ) rose κ 6."
+    assert slots.from_slots(slotted, SLOT_FACTS, *RELIANCE) == "Reliance Industries Limited (RELIANCE.NS) rose 14.1%."
+
+
+def test_a_sign_the_tokenizer_split_off_a_figure_marker_is_filled_back_onto_its_figure():
+    """Filled as "+ 14.1%" the sign read as prose, so a flipped sign passed the figure check. A date's dash stays."""
+    assert slots.from_slots("rose + κ 6 to κ 2 - κ 3 - κ 4", SLOT_FACTS, *RELIANCE) == \
+        "rose +14.1% to 2026 - 11 - 13"
+    flipped = slots.from_slots("fell - κ 6", SLOT_FACTS, *RELIANCE)
+    assert guardrails.unsupported_figures(flipped, SLOT_FACTS) == ["-14.1%"]
+
+
+@pytest.mark.parametrize("text, name, ticker, marked", [
+    ("Mastercard (MA): MACD is rising.", "Mastercard", "MA", "ι (χ): MACD is rising."),
+    ("Visa (V): EV/sales is high.", "Visa", "V", "ι (χ): EV/sales is high."),
+    ("rec (REC.NS) had a recent fall.", "rec", "REC.NS", "ι (χ) had a recent fall."),
+], ids=["MA in MACD", "V in EV", "rec in recent"])
+def test_a_shares_name_or_ticker_is_marked_as_a_whole_word_only(text, name, ticker, marked):
+    """Marked as any substring, a short name or ticker turned part of another word into the name marker."""
+    assert slots.mark_source(text, name, ticker) == marked
+
+
+@pytest.mark.parametrize("name,ticker,other", [("AAPL", "AAPL", ()), ("Apple", "AAPL", ("",))],
+                         ids=["a name that is the ticker", "an empty other name"])
+def test_slots_refuse_names_that_would_put_one_marker_for_two_things(name, ticker, other):
+    """An empty name puts the name marker between every character; a name equal to the ticker takes its marker."""
+    with pytest.raises(ValueError, match="slots need the share's name"):
+        slots.to_slots("AAPL rose 4.0%.", "ticker AAPL ; return_5d +4.0%", name, ticker, *other)
+
+
+def random_answers(share, count=300):
+    """Answers of words, the share's spellings, the passage's dates and its figures unsigned or with either sign."""
+    passage, *spellings = share
+    dates, figures = re.findall(r"\d{4}-\d{2}-\d{2}", passage), guardrails.figures(passage)
+    rng = np.random.default_rng(0)
+    for _ in range(count):
+        parts = []
+        for _ in range(rng.integers(3, 14)):
+            kind = rng.integers(5)
+            if kind == 0:
+                parts.append(str(rng.choice(spellings)))
+            elif kind == 1:
+                parts.append(str(rng.choice(["it", "rose", "fell", "to", "on", "at", "(", ")", "and", "the", "."])))
+            elif kind == 2 and dates:
+                parts.append(str(rng.choice(dates)))
+            else:
+                magnitude = str(rng.choice(figures)).lstrip("+-")
+                parts.append(str(rng.choice([magnitude, f"+{magnitude}", f"-{magnitude}"])))
+        yield " ".join(parts)
+
+
+@slot_shares
+def test_a_slot_form_fills_back_to_the_answer_it_was_made_from(share):
+    passage, name, ticker, short = share
+    for answer in random_answers((passage, name, ticker)):
+        assert slots.from_slots(slots.to_slots(answer, passage, name, ticker, short), passage, name, ticker) == answer
+
+
+@slot_shares
+def test_a_decoded_slot_form_fills_to_the_signed_figures_the_decoded_answer_holds(share):
+    """What the model writes goes through the tokenizer, which splits a sign off a marker but not off a figure."""
+    tokenizer = WordPiece.load(ARTIFACTS / "tokenizer.json")
+    spoken = lambda text: tokenizer.decode(tokenizer.encode(text))
+    plain = lambda text: [figure.replace(",", "") for figure in guardrails.figures(text)]
+    passage, name, ticker, short = share
+    for answer in random_answers(share):
+        slotted = slots.to_slots(answer, passage, name, ticker, short)
+        assert plain(slots.from_slots(spoken(slotted), passage, name, ticker)) == \
+            plain(spoken(slots.from_slots(slotted, passage, name, ticker))), slotted
+
+
+@slot_shares
+def test_every_marker_a_slot_form_uses_leads_the_figure_it_fills_as_in_the_marked_source(share):
+    passage, name, ticker, short = share
+    marked = slots.mark_source(passage, name, ticker, short)
+    for answer in random_answers(share):
+        for place in re.findall(rf"{slots.FIGURE} (\d+)", slots.to_slots(answer, passage, name, ticker, short)):
+            marker = f"{slots.FIGURE} {place}"
+            assert f"{marker} {slots.from_slots(marker, passage, name, ticker)}" in marked, marker
+
+
+@slot_shares
+def test_a_marked_source_too_long_for_one_window_is_cut_between_fields_into_two_that_each_fit(share):
+    """Cut by tokens instead, build_sources dropped the tail of a figure and its marker, which answers still copy."""
+    from backend.models.data.encode import build_sources
+    tokenizer = WordPiece.load(ARTIFACTS / "tokenizer.json")
+    count = lambda text: len(tokenizer.encode(text))
+    passage, name, ticker, short = share
+    marked = slots.mark_source(passage, name, ticker, short)
+    room = count(marked) - 1
+    first, second = slots.windows(marked, count, room)
+    assert f"{first} ; {second}" == marked and max(count(first), count(second)) <= room
+    source, keep = build_sources([7, 8], [tokenizer.encode(first), tokenizer.encode(second)], slots.WINDOWS, 128)
+    assert keep.sum(axis=1).tolist() == [count(first) + 5, count(second) + 5]
+
+
+def test_a_marked_source_that_fits_one_window_leaves_the_second_empty():
+    from backend.models.data.encode import build_sources
+    tokenizer = WordPiece.load(ARTIFACTS / "tokenizer.json")
+    count = lambda text: len(tokenizer.encode(text))
+    marked = slots.mark_source(SLOT_FACTS, *RELIANCE)
+    assert slots.windows(marked, count, count(marked)) == [marked]
+    _, keep = build_sources([7], [tokenizer.encode(marked)], slots.WINDOWS, 128)
+    assert keep[1].sum() == 0
+
+
+def test_a_field_too_long_for_what_the_first_window_has_left_goes_to_the_second_and_a_later_one_comes_back():
+    """In order, fields of 2, 3 and 1 words in windows of 4 needed a third window."""
+    assert slots.windows("a b ; c d e ; f", lambda text: len(text.split()), 4) == ["a b ; f", "c d e"]
+
+
+def test_a_marked_source_two_windows_cannot_hold_is_refused_not_cut():
+    count = lambda text: len(text.split())
+    with pytest.raises(ValueError, match="fits none of 2 windows of 3"):
+        slots.windows("a b ; c d ; e f", count, 3)
+    with pytest.raises(ValueError, match="fits none of 2 windows of 3"):
+        slots.windows("a b c d", count, 3)
+
+
+def test_advisory_rows_leave_out_trend_words_the_servers_guard_refuses_and_record_the_check(monkeypatch, tmp_path):
+    """Worked out from unrounded figures, a close shown equal to its averages said "above both", which the server
+    refuses; and rows built before the check have no manifest to say they passed it."""
+    from backend.models.training import prepare_advisory
+    monkeypatch.setattr(advisory, "_trend_words", lambda facts: "above both its 20 and 50 day averages")
+    (tmp_path / "prices").mkdir()
+    closes = [100.0] * 60 + [100.004]
+    bars = [f"2020-{1 + day // 28:02d}-{1 + day % 28:02d},{c},{c + 1},{c - 1},{c},{c},1000"
+            for day, c in enumerate(closes)]
+    (tmp_path / "prices" / "TIE.csv").write_text("\n".join(["date,open,high,low,close,adj_close,volume", *bars]))
+    shutil.copy(ARTIFACTS / "tokenizer.json", tmp_path / "tokenizer.json")
+    monkeypatch.setattr(sys, "argv", ["prepare_advisory", "--prices", str(tmp_path / "prices"),
+                                      "--artifacts", str(tmp_path)])
+    prepare_advisory.main()
+    manifest = json.loads((tmp_path / "advisory_MANIFEST.json").read_text())
+    assert manifest["trend_checked_by"] == "guardrails.wrong_trend"
+    assert manifest["dropped"] == {"train: says above, the evidence shows between": 1}
+    kept = len(np.load(tmp_path / "advisory_train_target.npy"))
+    assert kept == manifest["rows"]["train"] == len(advisory.INTENTS) - 1
+
+
+def test_an_alfa_v3_row_reads_its_marked_source_over_two_windows_and_writes_its_answer_in_slot_form():
+    from backend.models.training.prepare_alfa_v3 import Layout
+    tokenizer = WordPiece.load(ARTIFACTS / "tokenizer.json")
+    layout = Layout(tokenizer)
+    source, keep, target = layout.row("how is GESHIP.NS doing?", SLOT_ADVISORY, "GESHIP.NS closed at 1518.00 .",
+                                      "great eastern shipping", "GESHIP.NS", (), advisory.QUESTION_TOKENS)
+    assert source.shape == (slots.WINDOWS, ModelConfig.max_text_length) and keep[1].sum() > 0
+    assert tokenizer.decode([int(i) for i in target if i not in (PAD_ID, CLS_ID, SEP_ID)]) == "χ closed at κ 1."
+    misquoted = layout.row("how is GESHIP.NS doing?", SLOT_ADVISORY, "GESHIP.NS closed at 1519.00 .",
+                           "great eastern shipping", "GESHIP.NS", (), advisory.QUESTION_TOKENS)
+    assert misquoted == "states a figure its evidence lacks or writes otherwise"
+    named = ("Stock: 360 ONE WAM Limited (360ONE.NS), NSE, INR; last close 1,100.00 on 2026-11-13.", "360ONE closed at "
+             "1,100.00.", "360 ONE WAM Limited", "360ONE.NS", (), 32)
+    assert layout.row("how is 360ONE?", *named).startswith("copies a figure marker its marked source never shows")
+
+
+FETCHED = "Stock: Reliance Industries Limited (RELIANCE.NS), NSE, INR; last close 1,339.70 on 2026-11-13."
+FETCHED_PASSAGE = f"{FETCHED} ; [fundamental] P/E is 24.1 (snapshot retrieved 2026-11-16)."
+
+
+@pytest.mark.parametrize("passage, answer, stale, dropped", [
+    (FETCHED_PASSAGE, "Reliance Industries Limited has a P/E of 24.1.", {}, None),
+    (FETCHED_PASSAGE, "On 2026-11-16 its P/E was 24.1.", {},
+     "quotes the day its passage was fetched, which re-dated by its last close it no longer says"),
+    (FETCHED_PASSAGE, "Its P/E was 99.9.", {}, "re-dated by its last close, states a figure its evidence lacks or "
+                                                "writes otherwise"),
+    (FETCHED_PASSAGE.replace("24.1", "30.0"), "Its P/E was 30.0.", {}, "holds a line today's facts no longer write"),
+    (FETCHED_PASSAGE, "Its P/E was 24.1.", {"q1": "its P/E is now trailing"}, "a stale passage: its P/E is now trailing"),
+], ids=["kept, re-dated", "quotes the fetch day", "re-dated and misquoted", "a line no longer written", "stale"])
+def test_an_alfa_v3_facts_row_reads_its_passage_re_dated_by_its_last_close_and_a_stale_one_is_dropped(
+        tmp_path, monkeypatch, passage, answer, stale, dropped):
+    """A passage written the day it was fetched is dated by its share's last close, as stock_qa.facts writes it now."""
+    from backend.models.agent import finance
+    from backend.models.training import prepare_alfa_v3, prepare_stock_qa as qa
+    from backend.models.training.prepare_alfa_v3 import Layout, Rows, facts_rows
+    frozen = tmp_path / finance.STOCK_QA
+    frozen.mkdir(parents=True)
+    (frozen / "split.json").write_text(json.dumps({"test_stocks": [], "validation_stocks": [], "test_templates": []}))
+    (frozen / "universe.json").write_text("[]")
+    row = {"id": "q1", "question": "what is the p/e of reliance?", "template_id": "t1", "split": "train",
+           "stocks": ["RELIANCE.NS"], "symbol": "RELIANCE.NS", "company": "Reliance Industries",
+           "facts": [FETCHED, "[fundamental] P/E is 24.1 (source yahoo:info.trailingPE; 2026-11-13)."]}
+    monkeypatch.setattr(prepare_alfa_v3, "DATA", tmp_path)
+    monkeypatch.setattr(qa, "frozen_rows", lambda _: [row])
+    monkeypatch.setattr(qa, "snapshots_of", lambda _: {"RELIANCE.NS": {"quality": {"last_date": "2026-11-13"}}})
+    monkeypatch.setattr(qa, "passage_answers", lambda _: {"q1": (passage, answer)})
+    rows = Rows(Layout(WordPiece.load(ARTIFACTS / "tokenizer.json")))
+    facts_rows(rows, stale)
+    kept = len(rows.kept[finance.STOCK_QA, "train"])
+    assert (kept, list(rows.dropped)) == ((1, []) if dropped is None else (0, [(finance.STOCK_QA, "train", dropped)]))
+
+
+def test_the_alfa_v3_build_stops_when_train_asks_what_a_held_out_template_asks():
+    """A question held out for its stock alone may be one train asks, as a template naming no share asks every share."""
+    from backend.models.data.encode import build_sources
+    from backend.models.training.prepare_alfa_v3 import Layout, Rows, check_held_out
+    tokenizer = WordPiece.load(ARTIFACTS / "tokenizer.json")
+    rows = Rows(Layout(tokenizer))
+    rows.hold_out("template_test", "how has TCS done this month?", advisory.QUESTION_TOKENS)
+    asked = lambda question: tuple(np.stack([part]) for part in (*build_sources(
+        tokenizer.encode(question)[:advisory.QUESTION_TOKENS], [tokenizer.encode("ticker χ")], 2, 128),
+        np.zeros(4, dtype=np.uint16)))
+    check_held_out({"wide": asked("how has TCS done this week?")}, rows.held_out, [], tokenizer)
+    with pytest.raises(SystemExit, match="train asks 1 questions of template_test's held-out templates"):
+        check_held_out({"wide": asked("how has TCS done this month?")}, rows.held_out, [], tokenizer)
+
+
+def test_promote_takes_a_checkpoint_trained_on_the_v3_template_answers(tmp_path):
+    from backend.models.training import prepare_stock_qa, promote
+    trained_on = ["advisory_casual", prepare_stock_qa.V3_DATASET]
+    (tmp_path / "MANIFEST.json").write_text(json.dumps({"trained_on": trained_on}))
+    assert promote.trained_on(tmp_path / "alfa_v3.npz", None) == ["advisory_casual", "stock_qa/v3"]
+
+
+# --- scoring v3 checkpoints as the server would serve them ---------------------
+
+SCORED_ROW = ("how is GESHIP.NS doing?", SLOT_ADVISORY, "GESHIP.NS closed at 1518.00.", "Great Eastern Shipping Co.",
+              "GESHIP.NS", (), advisory.QUESTION_TOKENS)
+
+
+def test_a_scored_v3_answer_is_filled_from_its_source_and_one_whose_marker_names_no_figure_is_refused():
+    from backend.models.training import score_v3
+    tokenizer = WordPiece.load(ARTIFACTS / "tokenizer.json")
+    right = score_v3.judged("χ closed at κ 1.", SCORED_ROW, "χ closed at κ 1.", True, tokenizer, frozenset())
+    assert right["answer"] == "GESHIP.NS closed at 1518.00." and right["exact"] and not right["refused"]
+    unfilled = score_v3.judged("χ closed at κ 99.", SCORED_ROW, "χ closed at κ 1.", True, tokenizer, frozenset())
+    assert list(unfilled["refused"]) == [score_v3.SLOT_FILL] and unfilled["answer"] is None
+
+
+def test_the_scorer_runs_the_facts_answers_own_guards_on_facts_answers_alone_and_the_trend_guard_on_every_answer():
+    from backend.models.training import score_v3
+    assert score_v3.refusals("The RSI, a gauge of recent gains against recent losses, is 70.8.", SLOT_FACTS,
+                             frozenset()) == {"own meaning": ["rsi"]}
+    explained = ("Its volatility, how much the price swings in a year, was 44.5%, and it closed below both its "
+                 "20 and 50 day averages.")
+    assert score_v3.refusals(explained, SLOT_ADVISORY, frozenset()) == {"wrong trend": [("below", "above")]}
+
+
+@pytest.mark.parametrize("answer,contradicts", [
+    ("Its dividend yield, the yearly dividend as a share of the price, is 0.79%.", False),
+    ("Its dividend yield, the free cash flow against market value, is 0.79%.", True),
+    ("Operating margin, the share of revenue left before running costs, was 12%.", True),
+    ("Its drawdown, the biggest fall from a peak in that window, was -11.9%.", False),
+], ids=["its own meaning", "another term's meaning", "the opposite of its own", "a meaning holding its own"])
+def test_a_term_an_answer_defines_contradicts_term_meanings_in_another_terms_words_or_the_opposite_of_its_own(
+        answer, contradicts):
+    from backend.models.training.score_v3 import defined_terms
+    assert [wrong for *_, wrong in defined_terms(answer)] == [contradicts]
+
+
+def test_the_meaning_judge_reads_debt_to_equity_as_itself_and_not_as_equity():
+    from backend.models.training.score_v3 import defined_terms
+    assert defined_terms("Its debt-to-equity, the company's debt against its owners' money, is 0.4.") == []
+
+
+def test_v2_reads_a_scored_row_unmarked_in_one_passage_and_a_row_over_its_window_is_counted_not_cut():
+    from backend.models.training.score_v3 import plain_layout
+    tokenizer = WordPiece.load(ARTIFACTS / "tokenizer.json")
+    source, keep = plain_layout(tokenizer, ModelConfig(), SCORED_ROW)
+    assert source.shape == keep.shape == (1, ModelConfig.max_text_length)
+    read = tokenizer.decode([int(i) for i in source[0]])
+    assert slots.FIGURE not in read and "1518.00" in read
+    assert plain_layout(tokenizer, ModelConfig(), (SCORED_ROW[0], SLOT_ADVISORY * 3, *SCORED_ROW[2:])) is None
+
+
+def test_the_scorer_refuses_rows_collected_again_that_are_not_the_split_as_stored():
+    from backend.models.training.score_v3 import checked
+    stored = (np.arange(8, dtype=np.uint16).reshape(4, 2), None, np.zeros((4, 1), dtype=np.uint16))
+    kept = [(source, None, target, ()) for source, target in zip(stored[0], stored[2])]
+    reordered = kept[::-1]
+    assert checked("unseen", reordered, stored) is reordered
+    with pytest.raises(SystemExit, match="4 rows, 1 of them not stored"):
+        checked("unseen", kept[:3] + [(stored[0][0] + 1, None, stored[2][0], ())], stored)
+    with pytest.raises(SystemExit, match="3 rows, 0 of them not stored, against the 4 stored"):
+        checked("unseen", kept[:3], stored)
+
+
+def test_the_scorer_refuses_a_checkpoint_beside_another_tokenizer_than_the_rows_are_laid_out_with(tmp_path):
+    from backend.models.training.score_v3 import generated
+    (tmp_path / "tokenizer.json").write_text("{}")
+    with pytest.raises(SystemExit, match="reads another tokenizer"):
+        generated(tmp_path / "v3_runA.npz", False, {})

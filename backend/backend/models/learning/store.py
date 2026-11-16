@@ -68,16 +68,27 @@ class FeedbackLog:
         `labeller` is required rather than defaulted: a row whose judge is unknown cannot be excluded
         from a measurement later, and that is exactly when it matters.
         """
+        row_id = self._insert(asked_at, question, evidence, answer, confidence, is_right, labeller, why, extra)
+        self._connection.commit()
+        return row_id
+
+    def extend(self, rows, labeller):
+        """`rows`, in the terms `rows()` gives them, all judged by `labeller`: all of them or, when one fails, none. A
+        reseed cut off part way once left some in, and appending its file again would have counted those twice."""
+        with self._connection:
+            for row in rows:
+                self._insert(row["asked_at"], row["question"], row["evidence"], row["answer"], row["confidence"],
+                             row["is_right"], labeller, row["why"], row["extra"])
+
+    def _insert(self, asked_at, question, evidence, answer, confidence, is_right, labeller, why, extra):
         if labeller not in (ORACLE, AGENT, HUMAN):
             raise ValueError(f"unknown labeller {labeller!r}; expected one of {ORACLE}, {AGENT}, {HUMAN}")
-        cursor = self._connection.execute(
+        return self._connection.execute(
             "INSERT INTO feedback (asked_at, question, evidence, answer, confidence, is_right,"
             " labeller, why, extra) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (asked_at, question, evidence, answer, float(confidence),
              None if is_right is None else int(bool(is_right)), labeller, why, json.dumps(extra)),
-        )
-        self._connection.commit()
-        return cursor.lastrowid
+        ).lastrowid
 
     def __len__(self):
         return self._connection.execute("SELECT count(*) FROM feedback").fetchone()[0]

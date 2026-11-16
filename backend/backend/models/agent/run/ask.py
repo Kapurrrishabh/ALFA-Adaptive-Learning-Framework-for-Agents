@@ -20,13 +20,13 @@ from pathlib import Path
 
 import numpy as np
 from backend.models import serving as models  # noqa: E402
-from backend.models.agent import Agent, Reference, Router, combined, finance  # noqa: E402
+from backend.models.agent import Agent, Reference, Router, combined, core, finance  # noqa: E402
 from backend.models.serving import registry  # noqa: E402
 from backend.knowledge_base.retrieval import Hybrid, load  # noqa: E402
-from backend.models.agent.run.chat import adapt  # noqa: E402
+from backend.models.agent.run.chat import adapt, generator_of  # noqa: E402
 from backend.models.training.check_answers import load_model  # noqa: E402
 from backend.models.data.qa_pairs import PASSAGES, QUESTION_TOKENS  # noqa: E402
-from backend.models.learning import FeedbackLog  # noqa: E402
+from backend.models.learning import ORACLE, FeedbackLog  # noqa: E402
 from backend.models.learning.abstain import Abstainer  # noqa: E402
 from backend.models.networks.generator import ANSWER_TEMPERATURE, ANSWER_TOP_P  # noqa: E402
 from backend.models.core.tokenizer.wordpiece import pretokenize  # noqa: E402
@@ -45,7 +45,8 @@ DEMO = (
 
 
 # What a live search may cost a waiting user: two tries, ten seconds each, per source. The collector's
-# defaults are a minute and four tries, which is right for a batch and twenty times too long here.
+# defaults are a minute and four tries, which is right for a batch and twenty times too long here. For Yahoo's
+# prices it bounds only the chart request: yfinance's cookie and crumb calls ignore it, which `Market.hold` backs off.
 LIVE_TIMEOUT = 10
 LIVE_ATTEMPTS = 2
 
@@ -99,6 +100,12 @@ def judge_from():
     return sentence.closeness
 
 
+def facts_scorer_from():
+    """The pretrained encoder's similarity, which picks a share's facts for a question as the training rows' were."""
+    from backend.models.external import sentence
+    return sentence.similarity
+
+
 def rerank_from():
     """The cross-encoder's relevance, which orders the lessons BM25 finds; loaded here for the reason `entails_from` is."""
     from backend.models.external import sentence
@@ -115,7 +122,7 @@ def entails_from():
 
 
 def writer_from(phrase):
-    """The language model that rewords answers when `phrase` is asked for, else None (ALFA's words served)."""
+    """The language model that rewords what the news and filings say when `phrase` is asked for, else None."""
     if not phrase:
         return None
     from backend.models.external import remote_models
@@ -126,6 +133,40 @@ def listed_names():
     """{"INFY.NS": "Infosys"} for the Nifty 500, the names Indian questions and headlines use."""
     from backend.database.sources.panel import company_names
     return {f"{symbol}.NS": name for symbol, name in company_names("nifty500").items()}
+
+
+def nse_shares():
+    """{"NYKAA.NS": "FSN E-Commerce Ventures"} for every share on NSE's main board, the ones ALFA may fetch."""
+    from backend.database.sources.panel import listed_shares, plain_name
+    shares = listed_shares()
+    return {f"{symbol}.NS": plain_name(name) for symbol, name in zip(shares["symbol"], shares["name"])}
+
+
+def prices_from():
+    """One share's daily prices from Yahoo while the question waits; imported here for the reason `live_from` is."""
+    from backend.database.live import prices
+    return lambda ticker, path: prices.fetch(ticker, path, LIVE_TIMEOUT)
+
+
+def analyses_from():
+    """The app's own analysis of one share, as the stock Q&A set's snapshots were taken; imported here for the reason
+    `live_from` is. A failure is a RuntimeError, which is what `Market` refuses a Yahoo failure by."""
+    from backend.advisory.service import AnalysisService
+    from backend.database.sources.provider import DataUnavailable
+    from backend.database.sources.quality import DataQualityError
+    from backend.database.sources.yahoo import YahooProvider
+    provider, services = YahooProvider(), {}
+
+    def analyse(ticker):
+        # by its bare symbol, as prepare_stock_qa asked, so the facts name the stock as the rows trained on do
+        market = finance.market_of(ticker).code
+        service = services.setdefault(market, AnalysisService(provider, market))
+        try:
+            # closed bars only: every training snapshot was taken with no session open, and a bar still moving is no close
+            return service.analyze(ticker.removesuffix(".NS"), closed=True).to_dict()
+        except (DataUnavailable, DataQualityError) as error:
+            raise RuntimeError(f"yahoo gave no analysis of {ticker}: {error}") from error
+    return analyse
 
 
 def ranker_from(chunks):
@@ -177,34 +218,74 @@ def reference_from(artifacts, index_name, checkpoint, paraphrase=False, live=Fal
 # models/external/route_encoders.py the pretrained one at 99%. A gate read with another scorer's margins would
 # refuse at a cut nothing measured, so the two are chosen together.
 ROUTERS = {"alfa": "route_gate.json", "pretrained": "route_gate_bge.json"}
+# Measured with the facts route on by route_encoders.py --facts: the pretrained gate stayed where it was, and ALFA's
+# router (advisory_combined's encoder) routed 344 of 373 right against 347 without it.
+FACTS_ROUTERS = ("pretrained",)
 
 
-def router_from(choice, known, model, tokenizer, length):
+def routing(router, served, path=registry.DEFAULT_PATH, *, live):
+    """(router examples, routing cut file, whether the facts route is on) for the generator at `served`.
+
+    On only with `live`, which is how its facts are read, and when its promotion records it trained on the stock Q&A
+    set: advisory_combined never read a facts passage. Offline it would take questions it can only refuse.
+    """
+    facts = live and finance.STOCK_QA in registry.trained_on(registry.GENERATOR, served, path)
+    if facts and router not in FACTS_ROUTERS:
+        raise ValueError(f"{served} was trained on {finance.STOCK_QA}, and the {router} router's gate was not measured "
+                         f"with the facts route; serve it with --router {' or '.join(FACTS_ROUTERS)}")
+    return finance.examples(facts=facts), ROUTERS[router], facts
+
+
+def router_from(choice, known, model, tokenizer, length, *, facts):
     texts = [text for _, _, text in known]
     if choice == "pretrained":
         from backend.models.external import sentence
-        return Router(known, sentence.similarity(texts))
-    return Router(known, combined(texts, model, tokenizer, length))
+        score = sentence.similarity(texts)
+    else:
+        score = combined(texts, model, tokenizer, length)
+    return finance.FactsFirst(known, score) if facts else Router(known, score)
 
 
 def build(artifacts, checkpoint, prices, gate, log, wanted, warmup, price_head, reference=None,
-          symbols=None, scenarios="", writer=None, listed=None, router="alfa"):
-    """The served agent, with every threshold loaded from what solved for it."""
+          symbols=None, scenarios="", listed=None, router="alfa", live=False, *, labeller):
+    """The served agent, with every threshold loaded from what solved for it. `live` lets it fetch prices.
+    `labeller` has no default: one fitted the server's first cut from the oracle and every later one from the agent."""
     # Which checkpoint answers is the registry's to say. A default string here would serve a model on the
     # strength of its file name, and C6's gate exists because one of these files generates much worse.
-    served = Path(checkpoint) if checkpoint else registry.serving(registry.GENERATOR)
-    tokenizer, model, config = load_model(artifacts, served.stem, "")
-    known = finance.examples()
-    routed = router_from(router, known, model, tokenizer, config.max_text_length)
-    gate = gate or str(artifacts / ROUTERS[router])
+    # the registry's path as stored: a checkpoint promoted from a training folder keeps that folder
+    served = artifacts / checkpoint if checkpoint else registry.serving(registry.GENERATOR)
+    tokenizer, model, config = load_model(artifacts, "", served)
+    known, gate_file, facts = routing(router, served, live=live)
+    routed = router_from(router, known, model, tokenizer, config.max_text_length, facts=facts)
+    gate = gate or str(artifacts / gate_file)
     with FeedbackLog(log) as feedback:
-        abstainer, calibrator, learned = adapt(feedback, wanted, warmup)
+        abstainer, calibrator, learned = adapt(feedback, wanted, warmup, labeller,
+                                               generator_of(served))
     advisor = models.load(Path(price_head)) if price_head else None
     market = finance.Market(Path(prices), advisor, symbols,
-                            models.scenarios.load(Path(scenarios)) if scenarios else None, listed)
+                            models.scenarios.load(Path(scenarios)) if scenarios else None, listed,
+                            nse_shares() if live else None, prices_from() if live else None,
+                            analyses_from() if facts else None)
     return Agent(finance, market, routed, Abstainer.load(gate), tokenizer,
                  model, config, abstainer, calibrator, np.random.default_rng(config.seed),
-                 reference=reference, writer=writer), abstainer, learned, served
+                 reference=reference, facts=facts_scorer_from() if facts else None,
+                 facts_abstainer=facts_cut_from(artifacts, served) if facts and core.GENERATOR_WRITES_FACTS
+                 else None), \
+        abstainer, learned, served
+
+
+# One per generator, named by its digest: fit_facts_cut.py fits it on the facts rows that generator answered. Read only
+# while the generator writes facts answers; our code writes them now, and the VM has no such file.
+FACTS_CUT = "facts_cut_{}.json"
+
+
+def facts_cut_from(artifacts, served):
+    """The answer cut for the facts turns of the generator at `served`."""
+    path = artifacts / FACTS_CUT.format(registry.digest(served))
+    if not path.exists():
+        raise FileNotFoundError(f"no facts answer cut for {served.name} at {path}; fit one with "
+                                f"python -m backend.models.training.fit_facts_cut --checkpoint {served}")
+    return Abstainer.load(path)
 
 
 def show(turn):
@@ -252,14 +333,15 @@ def main():
                              "off by default because those words measured fluent and incoherent")
     parser.add_argument("--live", action="store_true",
                         help="search SEC EDGAR for a company that files there and Wikipedia otherwise, "
-                             "before reading the corpus for the first and after it for the second; off by "
-                             "default, and off is the only way this process is offline")
+                             "before reading the corpus for the first and after it for the second, and fetch "
+                             "an NSE share's prices typed as SYMBOL.NS; off by default, and off is the only way "
+                             "this process is offline")
     parser.add_argument("--symbols", default=str(DATA / "raw/sec_edgar/company_tickers.json"),
                         help="SEC's symbol table, which is where an instrument's company name and filing "
                              "number come from; empty leaves it known only by its own symbol")
     parser.add_argument("--phrase", action="store_true",
-                        help="reword each answer with the language model (the model Space's when one is set); "
-                             "its words are served only when they pass the figure and claim checks")
+                        help="reword what the news and filings say with the language model (the model Space's "
+                             "when one is set); its words are served only when they pass the figure and claim checks")
     parser.add_argument("--dense", action="store_true",
                         help="find reference passages by meaning; the endorsed answer came first 22.6%% of the "
                              "time against 12.3%% for BM25")
@@ -276,7 +358,7 @@ def main():
         args.price_head,
         reference_from(artifacts, args.reference_index, args.reference_checkpoint, args.paraphrase,
                        args.live, writer, args.dense),
-        args.symbols, writer=writer, listed=listed_names(), router=args.router)
+        args.symbols, listed=listed_names(), router=args.router, live=args.live, labeller=ORACLE)
     # `expected` rather than `wanted`: the 60% bar is not reachable on this checkpoint, so the fit returns
     # the most precise cut its coverage floor allows and reports the shortfall. Printing the bar alone
     # would claim a precision nothing measured.

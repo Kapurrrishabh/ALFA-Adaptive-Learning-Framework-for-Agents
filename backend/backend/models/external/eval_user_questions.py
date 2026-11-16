@@ -76,14 +76,21 @@ def main():
     args = ap.parse_args()
     from backend.cli import DEFAULT_DB, _orchestrator
     from backend.config import DEFAULT_PORTFOLIO
+    from backend.models.agent.core import BUILT
     from backend.models.agent.present import present
     from backend.models.agent.run.ask import build, listed_names, reference_from, writer_from
+    from backend.models.agent.run.chat import generator_of, require_learned_cut
+    from backend.models.learning import AGENT
     asked = json.loads(QUESTIONS.read_text())
     writer = writer_from(True)
     reference = reference_from(ARTIFACTS, "reference_index.npz", "generator.npz", False, True, writer, dense=True)
-    agent, *_ = build(ARTIFACTS, "", str(DATA / "prices"), "", str(ARTIFACTS / "chat.sqlite"), 0.6, 10,
-                      str(ARTIFACTS / "price_head.npz"), reference, str(DATA / "raw/sec_edgar/company_tickers.json"),
-                      str(ARTIFACTS / "returns.npz"), writer=writer, listed=listed_names(), router="pretrained")
+    # serve.py's answer cut: the agent's verdicts in the served log, not the oracle's in the CLI's
+    log, warmup = str(ARTIFACTS / "served.sqlite"), 10
+    agent, _, learned, served = build(ARTIFACTS, "", str(DATA / "prices"), "", log, 0.6, warmup,
+                                      str(ARTIFACTS / "price_head.npz"), reference,
+                                      str(DATA / "raw/sec_edgar/company_tickers.json"), str(ARTIFACTS / "returns.npz"),
+                                      listed=listed_names(), router="pretrained", labeller=AGENT)
+    require_learned_cut(learned, log, warmup, generator_of(served), served)
     names, sources = listed_names(), json.loads((ARTIFACTS / "reference_sources.json").read_text())
     orch = _orchestrator(Namespace(db=DEFAULT_DB, demo=False))
     type(orch.hub).writer = lambda self: writer
@@ -99,7 +106,7 @@ def main():
         row = {**item, "agent_kind": kind, "agent_ok": agent_ok(item["agent"], kind), "agent_shown": shown,
                "agent_grade": grade(plain(shown)) if turn.spoke else None, "agent_seconds": round(agent_seconds, 1),
                "phrased_by": turn.phrased_by, "unphrased_because": turn.unphrased_because,
-               "premise": f"{turn.answer} {turn.evidence}" if turn.phrased_by else "",
+               "premise": f"{turn.answer} {turn.evidence}" if turn.phrased_by not in ("", BUILT) else "",
                "app_intent": reply.intent, "app_ok": item["app"] in ("any", reply.intent),
                "app_text": reply.text, "app_grade": grade(plain(reply.text)), "app_seconds": round(time.time() - started, 1)}
         rows.append(row)
@@ -108,7 +115,7 @@ def main():
     if not args.skip_hhem:
         from transformers import AutoModelForSequenceClassification
         judge = AutoModelForSequenceClassification.from_pretrained(HHEM, revision=HHEM_REVISION, trust_remote_code=True).eval()
-        worded = [r for r in rows if r["phrased_by"]]
+        worded = [r for r in rows if r["premise"]]
         scores = judge.predict([(r["premise"], plain(r["agent_shown"])) for r in worded]) if worded else []
         for r, score in zip(worded, scores):
             r["hhem"] = round(float(score), 3)

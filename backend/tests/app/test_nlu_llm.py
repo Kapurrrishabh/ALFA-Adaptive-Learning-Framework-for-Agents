@@ -7,7 +7,7 @@ from backend.api.nlu import classify, extract_amount, extract_horizon, extract_r
 from backend.knowledge_base.lessons import knowledge_base
 
 KNOWN = name_index({"RELIANCE": "Reliance Industries Ltd.", "HDFCBANK": "HDFC Bank Ltd.", "TCS": "Tata Consultancy Services Ltd.",
-                    "INFY": "Infosys Ltd.", "M&M": "Mahindra & Mahindra Ltd."}, set())
+                    "INFY": "Infosys Ltd.", "M&M": "Mahindra & Mahindra Ltd."}, set(), set())
 FORMS = knowledge_base().short_forms
 
 
@@ -30,7 +30,7 @@ def test_ticker_extraction_uses_aliases_and_ignores_finance_acronyms():
 
 LISTED = name_index({"NYKAA": "FSN E-Commerce Ventures Ltd.", "IDEA": "Vodafone Idea Limited", "LAURUSLABS": "Laurus Labs Ltd.",
                      "ADANIENT": "Adani Enterprises Limited", "ADANIPORTS": "Adani Ports and Special Economic Zone Limited",
-                     "RPOWER": "Reliance Power Limited", "RELIANCE": "Reliance Industries Limited"}, {"idea"})
+                     "RPOWER": "Reliance Power Limited", "RELIANCE": "Reliance Industries Limited"}, {"idea"}, set())
 
 
 @pytest.mark.parametrize("text,symbols", [
@@ -50,6 +50,40 @@ def test_a_symbol_that_is_an_english_word_needs_capitals_or_more_of_its_name():
     assert extract_tickers("should i buy vodafone idea", LISTED) == [("IDEA", "NSE")]
 
 
+# the dictionary's words as it spells them: it has "metal" and "mind", and no plurals
+LEADING = name_index({"HAPPSTMNDS": "Happiest Minds Technologies Limited", "NDTV": "New Delhi Television Ltd.",
+                      "INDHOTEL": "The Indian Hotels Company Limited", "IMFA": "Indian Metals & Ferro Alloys Limited",
+                      "GODREJCP": "Godrej Consumer Products Limited", "GODREJPROP": "Godrej Properties Limited",
+                      "CENTRALBK": "Central Bank of India", "CDSL": "Central Depository Services (India) Ltd."},
+                     {"happiest", "mind", "new", "the", "central", "bank", "of", "hotel", "metal", "consumer"},
+                     {"delhi", "india", "indian"})
+
+
+@pytest.mark.parametrize("text,symbols", [
+    ("how is godrej consumer doing ?", [("GODREJCP", "NSE")]),  # its leading words, which no other name has
+    ("what did the government say in new delhi", []),           # leading words that are all dictionary words, a place too
+    ("what did the central bank say", []),
+    ("how are indian metals stocks doing?", []),                # and a plural of one
+    ("how has happiest minds been doing lately ?", [("HAPPSTMNDS", "NSE")]),    # all everyday words, so an alias
+    ("indian hotels results", [("INDHOTEL", "NSE")]),
+])
+def test_a_company_is_found_by_its_leading_words_unless_they_are_everyday_words(text, symbols):
+    assert extract_tickers(text, LEADING) == symbols
+
+
+def test_a_word_in_capitals_that_is_only_a_symbol_is_not_a_share_in_text_all_in_capitals():
+    """TAKE Ltd. has no name but its symbol, an English word: TCS conversations were handed TAKE.NS's figures."""
+    take = name_index({"TAKE": "TAKE Limited", "TCS": "Tata Consultancy Services Ltd."}, {"take"}, set())
+    assert (extract_tickers("SHOULD I TAKE PROFITS NOW?", take), extract_tickers("SHOULD I TAKE PROFITS IN TCS?", take)) \
+        == ([], [("TCS", "NSE")])
+
+
+def test_every_listed_share_is_a_value_of_the_index_even_one_whose_names_are_all_english_words():
+    """"Eternal Ltd." gave no phrase, so the app read ETERNAL as unlisted and threw away the alias "zomato" for it."""
+    assert set(name_index({"ETERNAL": "Eternal Ltd.", "IDEA": "Vodafone Idea Limited"}, {"eternal", "idea"}, set()).values()) \
+        == {"ETERNAL", "IDEA"}
+
+
 def test_how_a_stock_is_performing_is_answered_about_the_stock_not_from_the_lessons():
     i = classify("how is the nykaa stock performing and should I buy it and if yes then why", LISTED, FORMS, False)
     assert (i.name, i.symbols) == ("should_buy", [("NYKAA", "NSE")])
@@ -63,6 +97,21 @@ def test_horizon_risk_and_sector_parsing():
     inc, exc = extract_sectors("find pharma stocks but no banks")
     assert inc == ["Healthcare"] and exc == ["Financial Services"]
     assert extract_sectors("Compare it with TCS") == ([], [])
+
+
+@pytest.mark.parametrize("text,horizon", [
+    ("should i hold meta for the long term", "long"), ("i plan to hold it for 6 months", "medium"),
+    ("what is the intraday high of hdfc bank today", None), ("quick question, is tcs overbought", None),
+    ("how much does yes bank swing", None), ("is reliance above its 200 day average", None),
+    ("how much long term debt does L&T carry", None), ("how are short term capital gains taxed in India?", None),
+    ("is tcs a good long term investment", "long"), ("should i buy tcs long term?", "long"),
+    ("is infy a good short term buy", "short"), ("is tcs good in the long run", "long"), ("long term view on tcs", "long"),
+    ("should i buy tcs with a 3 year horizon", "long"),
+])
+def test_only_a_horizon_someone_holds_for_sets_one(text, horizon):
+    """"intraday" in a question about a price set the chat's horizon to short, and CAMPUS's wider check read AVOID
+    instead of HOLD for the rest of it."""
+    assert extract_horizon(text) == horizon
 
 
 @pytest.mark.parametrize("text,session,intent", [
@@ -110,6 +159,12 @@ def test_horizon_risk_and_sector_parsing():
     ("is Infosys overbought?", False, "domain"),
     ("is TCS a better buy than Infosys?", False, "analyze"),
     ("which of TCS and Infosys is a better buy?", False, "analyze"),
+    ("what is the intraday high of TCS today", False, "day_range"),
+    ("how far is TCS from its 60 day high?", False, "analyze"),      # a span's high, not the day's
+    ("is RELIANCE at a 50-day low", False, "analyze"),
+    ("why is INFY trading low today", False, "analyze"),
+    ("why did TCS fall to a 60 day low", False, "explain_move"),
+    ("is TCS in a correction", False, "correction"), ("is the market in a correction?", False, "market_regime"),
 ])
 def test_intent_classification(text, session, intent):
     phrases = ["fundamentally strong", "improving earnings", "positive momentum"]
@@ -237,18 +292,26 @@ def test_narrator_only_accepts_figures_from_the_draft_or_evidence_claims():
 
 
 @pytest.mark.parametrize("text", ["Should I buy TCS?", "Is it a good time to buy INFY?", "TCS buy or not",
-                                  "should I sell RELIANCE", "Is TCS worth buying?", "is RELIANCE.NS a good buy right now?",
-                                  "Is TCS a buy at this price?"])
+                                  "Is TCS worth buying?", "is RELIANCE.NS a good buy right now?",
+                                  "Is TCS a buy at this price?", "should i buy or sell TCS"])
 def test_should_buy_questions_get_the_verdict_intent(text):
     assert classify(text, KNOWN, FORMS, False, []).name == "should_buy"
 
 
-def _analyst_facts(rank=161, edge=(-0.008, 0.02), gru_mae=6.479, drawer="generative", nll_gain_lo=0.019):
+@pytest.mark.parametrize("text", ["should I sell RELIANCE", "should i hold TCS?", "is it time to exit INFY",
+                                  "Is it a good time to sell INFY?", "sell or hold RELIANCE after the results?"])
+def test_a_sell_or_hold_question_gets_the_holders_verdict_intent(text):
+    """"should I sell reliance" was answered "DON'T BUY", which says nothing about a share already owned."""
+    assert classify(text, KNOWN, FORMS, False, []).name == "should_sell"
+
+
+def _analyst_facts(rank=161, edge=(-0.008, 0.02), gru_mae=6.479, drawer="generative", nll_gain_lo=0.019,
+                   test_from="2024-01-01"):
     from backend.advisory import analyst
     from backend.config import FORECAST_DAYS as days
     alfa = {"q10": [663.0] * days, "q50": [714.0] * days, "q90": [766.0] * days, "record": {"vs_garch": -0.0323},
             "drawer": {"name": drawer}}
-    gru = {"close": [712.0] * days, "record": {"test": {"nll_gain_lo": nll_gain_lo, "nll_gain_hi": 0.058, "days": [
+    gru = {"close": [712.0] * days, "record": {"test_from": test_from, "test": {"nll_gain_lo": nll_gain_lo, "nll_gain_hi": 0.058, "days": [
                                                          {"day": days, "mae_pct": gru_mae, "no_change_mae_pct": 6.54,
                                                                     "direction_acc": 0.539, "base_rate_acc": 0.533,
                                                                     "direction_edge_lo": edge[0], "direction_edge_hi": edge[1]}]}}}
@@ -262,6 +325,14 @@ def test_analyst_facts_carry_our_judgements_not_the_writers():
     assert "bottom fifth" in f["momentum"]
     assert "lower than" in _analyst_facts(gru_mae=6.0)["gru_error"]          # 8% below no-change is not "the same"
     assert "real but small edge" in _analyst_facts(edge=(0.01, 0.05))["gru_direction"]
+
+
+def test_analyst_note_dates_the_gru_error_from_its_record_window():
+    from backend.advisory import analyst
+    f = _analyst_facts(test_from="2023-07-03")
+    assert "since July 2023" in f["gru_error"] and "2024" not in f["gru_error"]
+    assert any("2019" in r for r in analyst.check(analyst.note_to_reword(f).replace("July 2023", "June 2019"), f))
+    assert any("leaves out July 2023" in r for r in analyst.check(analyst.note_to_reword(f).replace("July", "June"), f))
 
 
 def test_analyst_facts_call_a_direction_reliably_below_the_base_rate_worse_and_require_it():
@@ -290,8 +361,8 @@ def test_analyst_note_credits_garch_when_garch_drew_the_fan():
 def test_the_writer_never_sees_how_the_two_models_compare_and_the_note_says_it_as_written(drawer, other):
     from backend.advisory import analyst
     f = _analyst_facts(drawer=drawer)
-    draft = (f"Over {f['days_ahead']} days the range is ₹663 to ₹766. The GRU's error is about the same as no change "
-             "and its direction is within noise. The verdict is DON'T BUY.")
+    draft = (f"Over {f['days_ahead']} days 80% of the paths end between ₹663 and ₹766. The GRU's error since January 2024 "
+             "is about the same as no change and its direction is within noise against the base rate. The verdict is DON'T BUY.")
     writer = _Picker(draft)
     out = analyst.write(f, writer)
     assert other not in writer.prompts[0] and f["return_model_record"] not in writer.prompts[0]
@@ -310,8 +381,8 @@ def test_analyst_check_passes_the_note_it_rewords_and_refuses_bad_drafts():
     from backend.advisory import analyst
     f = _analyst_facts()
     assert analyst.check(analyst.note_to_reword(f), f) == []
-    good = (f"Over {f['days_ahead']} days the range is ₹663 to ₹766. The GRU's error is similar to assuming no change, and its "
-            "direction is within noise. The verdict is DON'T BUY.")
+    good = (f"Over {f['days_ahead']} days 80% of the paths end between ₹663 and ₹766. The GRU's error since January 2024 "
+            "is similar to assuming no change, and against the base rate its direction is within noise. The verdict is DON'T BUY.")
     assert any("adds terms" in r for r in analyst.check(good + " A Granger test agrees.", f))
     softened = good.replace("its direction is within noise", "its direction is slightly better than the base rate")
     assert any("leaves out within noise" in r for r in analyst.check(softened, f))
@@ -322,6 +393,28 @@ def test_analyst_check_passes_the_note_it_rewords_and_refuses_bad_drafts():
     assert any("one-day limit" in r for r in analyst.check(good + " The GRU beat the band on daily swings, but only for one day ahead.", f))
     assert any("leaves out ₹766" in r for r in analyst.check("The range starts at ₹663. DON'T BUY.", f))
     assert any("figure 812" in r for r in analyst.check(good + " It may reach ₹812.", f))
+
+
+@pytest.mark.parametrize("kept,reworded,dropped", [
+    ("puts HDFCBANK at ₹663 to ₹766, middle ₹714 (80% of our return model's paths)",
+     "expects HDFCBANK to be between ₹663 and ₹766, with a middle value of ₹714", ["80%", "paths"]),
+    ("about the same as the 6.54% of assuming no change", "about the same as 6.54%", ["no change"]),
+    ("against 53.3% for the base rate", "against 53.3%", ["base rate"]),
+], ids=["the range's share of paths", "what the error is compared with", "what the direction is compared with"])
+def test_analyst_check_refuses_a_rewrite_that_drops_what_a_range_or_comparison_is_of(kept, reworded, dropped):
+    """Phi-4-mini wrote TCS "is expected to be between ₹2,251 and ₹2,566" and NYKAA's error "about the same as 4.684%",
+    and both passed, as every figure in them was in the facts."""
+    from backend.advisory import analyst
+    f = _analyst_facts()
+    note = analyst.note_to_reword(f)
+    assert kept in note
+    assert analyst.check(note.replace(kept, reworded), f) == [f"it leaves out {d}" for d in dropped]
+
+
+def test_the_writers_prompt_names_the_qualifiers_its_check_requires():
+    """The check refused every note that dropped them, and the prompt never asked for them, so more fell back."""
+    from backend.advisory import analyst
+    assert [q for q in ("80%", "paths", "no change", "base rate") if f'"{q}"' not in analyst.SYSTEM] == []
 
 
 def test_analyst_shows_the_writers_note_only_when_it_passes():
@@ -339,8 +432,9 @@ def test_analyst_shows_the_writers_note_only_when_it_passes():
         def text(resp):
             return resp.content
     f = _analyst_facts()
-    ok = analyst.write(f, Writer(f"Over {f['days_ahead']} days the range is ₹663 to ₹766. The GRU's error is about the same as no change "
-                                 "and its direction is within noise. The verdict is DON'T BUY."))
+    ok = analyst.write(f, Writer(f"Over {f['days_ahead']} days 80% of the paths end between ₹663 and ₹766. The GRU's error "
+                                 "since January 2024 is about the same as no change and its direction is within noise against "
+                                 "the base rate. The verdict is DON'T BUY."))
     assert ok["written_by"] == "test-writer" and ok["draft_rejected"] == []
     bad = analyst.write(f, Writer("It will rise to ₹900."))
     assert bad["written_by"] is None and bad["text"] == analyst.computed_note(f) and bad["draft_rejected"]

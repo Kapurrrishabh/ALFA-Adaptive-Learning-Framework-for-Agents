@@ -15,7 +15,6 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Sequence
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -23,7 +22,7 @@ from backend.advisory.statistics import analogues, candlesticks, forecast, patte
 from backend.advisory.fundamental import fundamentals
 from backend.advisory.sentiment import news
 from backend.config import MARKETS, resolve_symbol
-from backend.database.sources.provider import DataUnavailable, NewsItem, Provider
+from backend.database.sources.provider import DataUnavailable, NewsItem, Provider, closed_bars
 from backend.database.sources.quality import DataQualityError, check_ohlcv
 from backend.advisory.fusion.evidence import DomainResult, Provenance, unavailable, utcnow_iso
 from backend.advisory.fusion.fusion import Decision, fuse
@@ -120,9 +119,7 @@ class AnalysisService:
     def closed_history(self, symbol: str) -> pd.DataFrame:
         """history() without a bar whose session is still open: that bar is the moving price, which no forecast
         model trained on, and forecasting from it reran every model on each price refresh."""
-        df = self.history(symbol)
-        now = self.now().astimezone(ZoneInfo(self.market.timezone))
-        return df.iloc[:-1] if df.index[-1].date() == now.date() and now.time() < self.market.closes_at else df
+        return closed_bars(self.history(symbol), self.market, self.now())
 
     def benchmark(self) -> Optional[pd.DataFrame]:
         try:
@@ -167,11 +164,11 @@ class AnalysisService:
         return items
 
     # --- full analysis --------------------------------------------------------
-    def analyze(self, symbol: str, held: bool = False, horizon: str = "medium") -> StockAnalysis:
+    def analyze(self, symbol: str, held: bool = False, horizon: str = "medium", closed: bool = False) -> StockAnalysis:
         t0 = time.perf_counter()
         timings: Dict[str, float] = {}
         sym = resolve_symbol(symbol, self.market.code)
-        df = self.history(symbol)
+        df = self.closed_history(symbol) if closed else self.history(symbol)
         report = check_ohlcv(df, now=self.now())
         timings["ohlcv"] = (time.perf_counter() - t0) * 1000
 
@@ -220,7 +217,9 @@ class AnalysisService:
                 if not info:
                     raise
                 statements, stmt_error = {}, str(exc)
-            out = fundamentals.analyze(sym, info, statements, source=self.provider.name)
+            # valued at the close the analysis reads, as its valuation lines are dated by it
+            valued = fundamentals.priced_at(info, float(df["close"].iloc[-1])) if closed else info
+            out = fundamentals.analyze(sym, valued, statements, source=self.provider.name)
             if stmt_error and not out.available:
                 return unavailable("fundamental", stmt_error)
             if stmt_error:

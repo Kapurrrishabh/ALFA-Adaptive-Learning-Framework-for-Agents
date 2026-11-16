@@ -85,11 +85,24 @@ def main():
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--freeze-encoder", action="store_true",
                         help="hold the encoder's layers at their pretrained values")
+    parser.add_argument("--unfreeze-encoder-top", type=int, default=0,
+                        help="train only the top K encoder layers, holding the rest at their pretrained values")
+    parser.add_argument("--decoder-layers", type=int, default=ModelConfig.decoder_layers)
+    parser.add_argument("--init-from", default="",
+                        help="a whole generator checkpoint to start from, in place of the pretrained encoder alone")
+    parser.add_argument("--start-step", type=int, default=0,
+                        help="resume a run that died at its --init-from step checkpoint: its batches are skipped and "
+                             "its steps keep their numbers, so no row trains twice and no kept checkpoint is "
+                             "overwritten; the optimizer's moments start again from zero")
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--eval-every", type=int, default=1000)
     parser.add_argument("--eval-batches", type=int, default=25)
     parser.add_argument("--checkpoint-every", type=int, default=500)
+    parser.add_argument("--keep-checkpoints", action="store_true",
+                        help="keep each checkpoint as <run>.step<N>.npz too, to score afterwards on splits no run reads")
     args = parser.parse_args()
+    if args.freeze_encoder and args.unfreeze_encoder_top:
+        parser.error("--freeze-encoder holds every encoder layer, so it cannot be combined with --unfreeze-encoder-top")
 
     artifacts = Path(args.artifacts)
     tokenizer = WordPiece.load(artifacts / "tokenizer.json")
@@ -98,22 +111,34 @@ def main():
     extra = load_split(artifacts, args.dataset, args.extra_split) if args.extra_split else None
     source, keep, target = train
 
-    config = ModelConfig(vocab_size=tokenizer.vocab_size, max_text_length=int(source.shape[-1]))
+    config = ModelConfig(vocab_size=tokenizer.vocab_size, max_text_length=int(source.shape[-1]),
+                         decoder_layers=args.decoder_layers)
     model = GroundedGenerator(config)
 
-    # Starting the encoder from noise wastes the pretraining run: reading the passages is the harder
-    # half of this task and the encoder is the half that already knows how to read finance text.
-    stored_config, weights = pretrained.load(artifacts / "pretrained.npz")
-    if stored_config.encoder_fingerprint != config.encoder_fingerprint:
-        raise SystemExit(
-            f"pretrained.npz holds an encoder of a different shape, so its weights cannot be "
-            f"loaded; retrain it or match the config.\n"
-            f"  stored:  {stored_config}\n  current: {config}"
-        )
-    model.load_pretrained_encoder(weights)
-    print(f"encoder initialised from {artifacts}/pretrained.npz")
-    if args.freeze_encoder:
-        model.freeze_encoder()
+    if args.init_from:
+        stored_config, weights = pretrained.load(args.init_from)
+        if stored_config.fingerprint != config.fingerprint:
+            raise SystemExit(
+                f"{args.init_from} holds a generator of a different shape, so this run cannot continue "
+                f"from it; match --decoder-layers and the dataset to it.\n"
+                f"  stored:  {stored_config}\n  current: {config}"
+            )
+        model.load_state_dict(weights)
+        print(f"generator initialised from {args.init_from}")
+    else:
+        # Starting the encoder from noise wastes the pretraining run: reading the passages is the harder
+        # half of this task and the encoder is the half that already knows how to read finance text.
+        stored_config, weights = pretrained.load(artifacts / "pretrained.npz")
+        if stored_config.encoder_fingerprint != config.encoder_fingerprint:
+            raise SystemExit(
+                f"pretrained.npz holds an encoder of a different shape, so its weights cannot be "
+                f"loaded; retrain it or match the config.\n"
+                f"  stored:  {stored_config}\n  current: {config}"
+            )
+        model.load_pretrained_encoder(weights)
+        print(f"encoder initialised from {artifacts}/pretrained.npz")
+    if args.freeze_encoder or args.unfreeze_encoder_top:
+        model.freeze_encoder(except_top=args.unfreeze_encoder_top)
 
     checkpoint = f"{args.run_name or args.dataset}.npz"
     best_checkpoint = f"{args.run_name or args.dataset}.best.npz"
@@ -129,7 +154,7 @@ def main():
     print(f"uniform baseline loss is ln({config.vocab_size}) = {math.log(config.vocab_size):.3f}")
 
     rng = np.random.default_rng(config.seed)
-    step = 0
+    step = args.start_step
     best, best_step = math.inf, 0
     started = time.monotonic()
     model.train()
@@ -146,6 +171,8 @@ def main():
     for epoch in range(args.epochs):
         order = rng.permutation(len(source))
         for index in range(steps_per_epoch):
+            if epoch * steps_per_epoch + index < args.start_step:
+                continue
             rows = order[index * args.batch_size : (index + 1) * args.batch_size]
             optimizer.zero_grad()
             loss = batch_loss(model, source[rows], keep[rows], target[rows], config.vocab_size)
@@ -156,15 +183,18 @@ def main():
 
             if step % args.log_every == 0:
                 elapsed = time.monotonic() - started
-                left = (args.epochs * steps_per_epoch - step) * elapsed / step / 3600
+                rate = (step - args.start_step) / elapsed
+                left = (args.epochs * steps_per_epoch - step) / rate / 3600
                 print(
                     f"step {step:,}/{args.epochs * steps_per_epoch:,}  loss {loss.item():.4f}  "
-                    f"{step / elapsed:.2f} step/s  {left:.1f}h left"
+                    f"{rate:.2f} step/s  {left:.1f}h left"
                 )
             if step % args.eval_every == 0:
                 keep_if_best(report(model, validation, extra, args, config))
             if step % args.checkpoint_every == 0:
                 pretrained.save(artifacts / checkpoint, model, config)
+                if args.keep_checkpoints:
+                    pretrained.save(artifacts / f"{args.run_name or args.dataset}.step{step}.npz", model, config)
 
     pretrained.save(artifacts / checkpoint, model, config)
     keep_if_best(report(model, validation, extra, args, config))

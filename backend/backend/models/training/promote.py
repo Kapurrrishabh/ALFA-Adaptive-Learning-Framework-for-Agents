@@ -13,14 +13,35 @@ wins on the first and collapses on the second is a candidate the record has to s
 from backend.paths import ARTIFACTS
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 import numpy as np
+from backend.models.agent import finance  # noqa: E402
 from backend.models.serving import registry  # noqa: E402
 from backend.models.training.check_answers import answer_rows, load_model, report, tally  # noqa: E402
+from backend.models.training.prepare_stock_qa import V3_DATASET  # noqa: E402
 from backend.models.networks.generator import ANSWER_TEMPERATURE, ANSWER_TOP_P  # noqa: E402
 from backend.models.training.train_generator import load_split  # noqa: E402
+
+
+# Every dataset a generator here trains on. Free text let "stock_qa", the name its arrays carry, leave the facts route off.
+DATASETS = ("advisory_casual", "wide", finance.STOCK_QA, V3_DATASET)
+
+
+def trained_on(checkpoint, given):
+    """What `checkpoint` trained on: the MANIFEST.json of the set it was trained in, or `given` when it has none."""
+    manifest = checkpoint.parent / "MANIFEST.json"
+    if manifest.exists() == bool(given):
+        raise SystemExit(f"give --trained-on exactly when there is no {manifest}, which records what training read")
+    if not manifest.exists():
+        return given
+    recorded = json.loads(manifest.read_text()).get("trained_on", [])
+    if not recorded or set(recorded) - set(DATASETS):
+        raise SystemExit(f"{manifest} records trained_on {recorded or 'nothing'}, and must name some of {DATASETS}; "
+                         "rebuild the set with prepare_alfa_v2")
+    return recorded
 
 
 def measure(artifacts, dataset, checkpoint, splits, rows, batch_size):
@@ -54,14 +75,18 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--role", default=registry.GENERATOR)
     parser.add_argument("--registry", default=str(registry.DEFAULT_PATH))
+    parser.add_argument("--trained-on", nargs="+", choices=DATASETS,
+                        help=f"every dataset the checkpoint trained on, when no MANIFEST.json beside it says; "
+                             f"{finance.STOCK_QA} turns the facts route on")
     args = parser.parse_args()
 
     artifacts = Path(args.artifacts)
+    datasets = trained_on(artifacts / args.checkpoint, args.trained_on)
     measured, sampler = measure(artifacts, args.dataset, args.checkpoint, args.splits, args.rows,
                                 args.batch_size)
     try:
         entry = registry.promote(args.role, artifacts / args.checkpoint, measured, sampler,
-                                 args.registry)
+                                 args.registry, trained_on=datasets)
     except registry.Refused as refused:
         print(f"\nREFUSED  {refused}")
         return 1

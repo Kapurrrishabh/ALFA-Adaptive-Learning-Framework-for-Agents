@@ -21,13 +21,13 @@ FINANCIAL_SECTORS = {"Financial Services", "Financial", "Banks"}
 PLAUSIBLE = {"forward_pe": (0, 500), "price_to_book": (0, 100),
              "ev_to_ebitda": (-100, 200), "ev_to_sales": (0, 100)}
 STATEMENT_BASED = {"ev_to_ebitda", "ev_to_sales"}
+TRAILING_PE = "info.trailingPE"      # yahoo's P/E over the last twelve months, not a financial year
 
 # Yahoo line-item aliases; first match wins.
 LINES = {
     "revenue": ("Total Revenue", "Operating Revenue", "Revenue"),
     "gross_profit": ("Gross Profit",),
     "operating_income": ("Operating Income", "EBIT"),
-    "ebit": ("EBIT", "Operating Income"),
     "net_income": ("Net Income", "Net Income Common Stockholders",
                    "Net Income From Continuing Operation Net Minority Interest"),
     "eps": ("Diluted EPS", "Basic EPS"),
@@ -126,7 +126,8 @@ def analyze(symbol: str, info: Dict[str, Any], statements: Dict[str, pd.DataFram
     if not statements and not info:
         return unavailable(DOMAIN, f"no fundamentals available for {symbol}")
     price_ccy = info.get("currency")
-    stmt_ccy = info.get("financialCurrency") or price_ccy
+    reported = info.get("financialCurrency") or price_ccy       # the currency of yahoo's own totals, EBITDA among them
+    stmt_ccy = statement_currency(info, statements)
     # Some issuers (e.g. Infosys) report statements in USD while trading in INR;
     # price-based ratios would mix currencies, so they come from the provider.
     mixed_ccy = bool(price_ccy and stmt_ccy and price_ccy != stmt_ccy)
@@ -139,7 +140,6 @@ def analyze(symbol: str, info: Dict[str, Any], statements: Dict[str, pd.DataFram
     eps = line(statements, "income", "eps")
     gp = line(statements, "income", "gross_profit")
     op = line(statements, "income", "operating_income")
-    ebit = line(statements, "income", "ebit")
     interest = line(statements, "income", "interest_expense")
     pretax = line(statements, "income", "pretax_income")
     tax = line(statements, "income", "tax")
@@ -184,58 +184,59 @@ def analyze(symbol: str, info: Dict[str, Any], statements: Dict[str, pd.DataFram
               f"quarter ending {qni.index[0].date()}", "quarterly_income_stmt", "growth", None, "")
 
     # Profitability
-    def ratio(num: pd.Series, den: pd.Series, i: int = 0) -> Optional[float]:
+    def ratio(num: pd.Series, den: pd.Series, i: int = 0) -> Tuple[Optional[float], str]:
+        """num/den in the i-th newest year the two share, and that year, which is the one the figure is dated by."""
         if len(num) <= i or len(den) <= i:
-            return None
+            return None, ""
         both = pd.concat([num, den], axis=1, join="inner").sort_index(ascending=False)
         if len(both) <= i or both.iloc[i, 1] == 0:
-            return None
-        return float(both.iloc[i, 0] / both.iloc[i, 1])
+            return None, ""
+        return float(both.iloc[i, 0] / both.iloc[i, 1]), _period(both, i)
 
     if not rev.empty:
-        p = _period(rev)
         if not is_financial:
-            gm = ratio(gp, rev)
-            c.add("gross_margin", gm, p, "income_stmt", "profitability", None, "")
-        om = ratio(op, rev)
-        c.add("operating_margin", om, p, "income_stmt", "profitability",
+            gm, when = ratio(gp, rev)
+            c.add("gross_margin", gm, when, "income_stmt", "profitability", None, "")
+        om, when = ratio(op, rev)
+        c.add("operating_margin", om, when, "income_stmt", "profitability",
               None if om is None else _band(om, [(0.20, 0.6), (0.10, 0.3), (0.0, -0.1)], -0.6),
               "Operating margin is {v:.1f}%.")
-        nm = ratio(ni, rev)
+        nm, when = ratio(ni, rev)
         pair = pd.concat([ni, rev], axis=1, join="inner").sort_index(ascending=False)
-        nm_prev = (ratio(ni, rev, 1) if len(pair) >= 2 and _one_year_apart(pair.index[0], pair.index[1])
-                   else None)
-        c.add("net_margin", nm, p, "income_stmt", "profitability",
+        nm_prev, before = (ratio(ni, rev, 1) if len(pair) >= 2 and _one_year_apart(pair.index[0], pair.index[1])
+                           else (None, ""))
+        c.add("net_margin", nm, when, "income_stmt", "profitability",
               None if nm is None else _band(nm, [(0.15, 0.6), (0.08, 0.3), (0.0, -0.1)], -0.8),
               "Net margin is {v:.1f}%.")
         if nm is not None and nm_prev is not None:
             delta = nm - nm_prev
-            c.add("net_margin_change", delta, f"{_period(rev, 0)} vs {_period(rev, 1)}",
+            c.add("net_margin_change", delta, f"{when} vs {before}",
                   "income_stmt", "profitability", clamp(delta * 20, -0.6, 0.6),
                   "Net margin moved {v:+.1f} percentage points year on year.")
     else:
         c.missing.extend(["gross_margin", "operating_margin", "net_margin"])
 
-    roe = ratio(ni, equity)
-    c.add("roe", roe, _period(ni) if not ni.empty else "", "income_stmt+balance_sheet",
+    roe, when = ratio(ni, equity)
+    c.add("roe", roe, when, "income_stmt+balance_sheet",
           "profitability",
           None if roe is None else _band(roe, [(0.18, 1.0), (0.12, 0.5), (0.08, 0.0), (0.0, -0.4)], -1.0),
           "Return on equity is {v:.1f}%.")
-    roa = ratio(ni, assets)
-    c.add("roa", roa, _period(ni) if not ni.empty else "", "income_stmt+balance_sheet",
+    roa, when = ratio(ni, assets)
+    c.add("roa", roa, when, "income_stmt+balance_sheet",
           "profitability", None, "")
-    if not ebit.empty:
-        rate = ratio(tax, pretax)
+    if not op.empty:
+        # As interest cover: the operating margin's profit line, not yahoo's "EBIT" (176 of 186 snapshot shares with both
+        # differ), in that line's latest year with that year's tax rate and capital: NESTLEIND's FY 2025 ROIC read as 2026's.
+        latest = op.iloc[:1]
+        rate, _ = ratio(tax[tax.index.isin(latest.index)], pretax)
         rate = min(max(rate, 0.0), 0.5) if rate is not None else None
         capital = ic
         if capital.empty and not debt.empty and not equity.empty:
             capital = (debt + equity - (cash if not cash.empty else 0)).dropna()
-        roic = None
-        if rate is not None and not capital.empty:
-            r = ratio(ebit, capital)
-            roic = None if r is None else r * (1 - rate)
+        r, when = ratio(latest, capital)
+        roic = None if r is None or rate is None else r * (1 - rate)
         if not is_financial:
-            c.add("roic", roic, _period(ebit), "income_stmt+balance_sheet", "profitability",
+            c.add("roic", roic, when, "income_stmt+balance_sheet", "profitability",
                   None if roic is None else _band(roic, [(0.15, 0.6), (0.10, 0.3), (0.06, 0.0)], -0.5),
                   "Return on invested capital is {v:.1f}%.")
 
@@ -249,20 +250,22 @@ def analyze(symbol: str, info: Dict[str, Any], statements: Dict[str, pd.DataFram
             c.add("shareholders_equity", float(equity.iloc[0]), _period(equity), "balance_sheet",
                   "health", -1.0, "Shareholders' equity is negative ({v:,.0f}).", unit="abs")
         else:
-            de = ratio(debt, equity)
-            c.add("debt_to_equity", de, _period(equity) if not equity.empty else "",
+            de, when = ratio(debt, equity)
+            c.add("debt_to_equity", de, when,
                   "balance_sheet", "health",
                   None if de is None else -_band(de, [(2.0, 0.8), (1.0, 0.3), (0.5, 0.0)], -0.5),
                   "Debt/equity is {v:.2f}.", unit="x")
-        if not ebit.empty and not interest.empty:
-            icov = ratio(ebit, interest.abs())
-            c.add("interest_coverage", icov, _period(ebit), "income_stmt", "health",
+        # From the operating margin's profit line, in its latest year: yahoo's "EBIT" holds one-off charges (RHIM read -7.7
+        # beside a +6.8% margin), and an older year's interest gave SHOP 2022's -597 under FY 2025.
+        if not op.empty and op.index[0] in interest.index:
+            icov, when = ratio(op, interest.abs())
+            c.add("interest_coverage", icov, when, "income_stmt", "health",
                   None if icov is None else _band(icov, [(8, 0.6), (4, 0.2), (2, -0.3)], -0.9),
                   "EBIT covers interest {v:.1f} times.", unit="x")
         else:
             c.missing.append("interest_coverage")
-        cr = ratio(ca, cl)
-        c.add("current_ratio", cr, _period(ca) if not ca.empty else "", "balance_sheet", "health",
+        cr, when = ratio(ca, cl)
+        c.add("current_ratio", cr, when, "balance_sheet", "health",
               None if cr is None else _band(cr, [(1.5, 0.3), (1.0, 0.0)], -0.4),
               "Current ratio is {v:.2f}.", unit="x")
     if not cash.empty:
@@ -274,18 +277,13 @@ def analyze(symbol: str, info: Dict[str, Any], statements: Dict[str, pd.DataFram
               "Latest free cash flow is {v:,.0f} " + (stmt_ccy or "(currency unknown)") + ".",
               unit="abs")
 
-    # Valuation: snapshot fields are provider-reported; P/E is also recomputed.
+    # Valuation: snapshot fields are provider-reported. P/E is yahoo's over the last twelve months, the one the stock header
+    # and quote pages show; price over the last FY's EPS, as 189 of 200 snapshot shares had it, put NYKAA at 515.5 to 322.2.
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     snap = f"snapshot retrieved {pd.Timestamp.now(tz='UTC').date()}"
-    pe = None
-    if price and not eps.empty and eps.iloc[0] > 0 and not mixed_ccy:
-        pe = float(price) / float(eps.iloc[0])
-        origin = "price/annual_diluted_eps"
-    elif info.get("trailingPE"):
-        pe = float(info["trailingPE"])
-        origin = "info.trailingPE"
-    if pe is not None:
-        c.add("pe", pe, snap, origin, "valuation",
+    pe = info.get("trailingPE")
+    if isinstance(pe, (int, float)) and pe > 0:
+        c.add("pe", float(pe), snap, TRAILING_PE, "valuation",
               _band(-pe, [(-15, 0.5), (-30, 0.0), (-50, -0.3)], -0.6),
               "P/E is {v:.1f} (absolute bands; not sector-adjusted).", unit="x")
     elif not eps.empty and eps.iloc[0] <= 0:
@@ -298,8 +296,8 @@ def analyze(symbol: str, info: Dict[str, Any], statements: Dict[str, pd.DataFram
                         ("ev_to_ebitda", "enterpriseToEbitda"), ("ev_to_sales", "enterpriseToRevenue")):
         v = info.get(field_)
         lo, hi = PLAUSIBLE[key]
-        if isinstance(v, (int, float)) and mixed_ccy and key in STATEMENT_BASED:
-            c.skip(key, f"provider value mixes {stmt_ccy} statements with {price_ccy} market value; not used")
+        if isinstance(v, (int, float)) and price_ccy and reported != price_ccy and key in STATEMENT_BASED:
+            c.skip(key, f"provider value mixes {reported} figures with {price_ccy} market value; not used")
         elif isinstance(v, (int, float)) and not lo < v < hi:
             c.skip(key, f"implausible provider value {v:,.1f}; not used")
         else:
@@ -353,6 +351,18 @@ def analyze(symbol: str, info: Dict[str, Any], statements: Dict[str, pd.DataFram
                         confidence=round(0.4 + 0.6 * coverage, 2))
 
 
+def statement_currency(info: Dict[str, Any], statements: Dict[str, pd.DataFrame]) -> Optional[str]:
+    """Yahoo's `financialCurrency`, unless the last four quarters' EPS add up, to within 1%, to its trailing EPS, which is
+    in the price currency: HCLTECH.NS's own totals are in USD and its statements in INR. 90% of 295 one-currency shares
+    agree to 1%, and the nearest pair in use, ASML's euro statements and dollar price, is 16% apart."""
+    price_ccy, labelled = info.get("currency"), info.get("financialCurrency") or info.get("currency")
+    quarters, trailing = line(statements, "income_quarterly", "eps"), info.get("trailingEps")
+    if labelled != price_ccy and len(quarters) >= 4 and isinstance(trailing, (int, float)) and trailing \
+            and abs(quarters.iloc[:4].sum() / trailing - 1) <= 0.01:
+        return price_ccy
+    return labelled
+
+
 def _trend(metrics: Dict[str, Dict[str, Any]]) -> str:
     signals = []
     for key in ("revenue_growth", "eps_growth", "net_margin_change"):
@@ -363,6 +373,35 @@ def _trend(metrics: Dict[str, Dict[str, Any]]) -> str:
         return "Data unavailable"
     s = float(np.mean(signals))
     return "improving" if s > 0.3 else "deteriorating" if s < -0.3 else "stable/mixed"
+
+
+# The provider fields that move with the quote: as the quote (1), or against it (-1)
+QUOTED = {"marketCap": 1, "trailingPE": 1, "forwardPE": 1, "priceToBook": 1, "trailingPegRatio": 1, "pegRatio": 1,
+          "trailingAnnualDividendYield": -1}
+EV_MULTIPLES = ("enterpriseToEbitda", "enterpriseToRevenue")
+
+
+def priced_at(info: Dict[str, Any], close: float) -> Dict[str, Any]:
+    """`info` moved from its live quote to `close`, with every price-based field `analyze` reads.
+
+    With no quote to move them from they are dropped, not given a price they were not taken at. EV is market value plus
+    debt less cash and the like, so it moves by its market value alone, and without both its multiples are dropped.
+    """
+    live = info.get("currentPrice") or info.get("regularMarketPrice")
+    moved = {k: v for k, v in info.items() if k not in QUOTED and k not in EV_MULTIPLES and k != "enterpriseValue"}
+    moved.update(currentPrice=close, regularMarketPrice=close)
+    if not live:
+        return moved
+    for key, power in QUOTED.items():
+        if isinstance(info.get(key), (int, float)):
+            moved[key] = info[key] * (close / live) ** power
+    ev, cap = info.get("enterpriseValue"), info.get("marketCap")
+    if isinstance(ev, (int, float)) and ev and isinstance(cap, (int, float)):
+        moved["enterpriseValue"] = ev + cap * (close / live - 1)
+        for key in EV_MULTIPLES:
+            if isinstance(info.get(key), (int, float)):
+                moved[key] = info[key] * moved["enterpriseValue"] / ev
+    return moved
 
 
 def company_profile(info: Dict[str, Any]) -> Dict[str, Any]:

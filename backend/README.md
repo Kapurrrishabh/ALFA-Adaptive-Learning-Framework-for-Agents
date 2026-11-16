@@ -217,11 +217,11 @@ StockIntel finds it at `http://127.0.0.1:8010`; set `SELFAGENT_URL` if it runs e
   Mint, Hindu BusinessLine, NDTV Profit, SEBI) that `news` saves to `data/news/wire.jsonl`. Only feeds whose
   robots.txt allows a reader are used. A question about lately ("why did titan fall", "any news on tata
   steel") is answered from those headlines alone, or the agent says it found nothing recent.
-- `--phrase` has the language model reword each answer in plain English. ALFA's generator still drafts it
-  and still decides whether to speak; the rewording is served only when it keeps every figure and adds no
-  figure, cause, direction call or praise. Otherwise ALFA's words are served, and the chat says why.
+- `--phrase` has the language model summarise, in plain English, the dated news and filings that answer a recent
+  question; the price move is our own sentence. It never rewords ALFA's answers or our code's. The summary is
+  served only when it keeps every figure and adds no figure, cause, direction call or praise. Otherwise our
+  plain sentence is served, and the chat says why.
   Encyclopedia and forum passages are quoted rather than reworded, because the model misattributed them.
-  For a recent question it summarises the dated news and filings only; the price move is our own sentence.
 - `--router pretrained` places questions with a pretrained sentence encoder (bge-small): 96.8% routed right
   against 93.0% for ALFA's own, and 93.3% answered at 99.4% precision against 86.5% at 98.8%, still refusing
   all 12 off-topic questions (`python -m backend.models.external.route_encoders`).

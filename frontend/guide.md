@@ -71,7 +71,7 @@ On [Ask](#/chat), type a question in your own words, such as "Should I buy TCS?"
 The chat remembers the conversation, so you can follow up with "Why?" or "Compare it with HUL". Press New chat to start over.
 
 You can also ask about one stock in the box on its page, and read short lessons in [Lessons](#/learn).
-When the self-learning agent is running, you can tick a box to get its view as well. It stays quiet when it is not sure.
+When ALFA, our self-learning model, is running, its answer comes first and ours follows it. When it is not sure, it holds its answer back and says why, and our answer comes first. For a question about the price, a sentence our code writes from the same prices takes its place. Untick the box to get only ours.
 
 # Your daily AI answers
 

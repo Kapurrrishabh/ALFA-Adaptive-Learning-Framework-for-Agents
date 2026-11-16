@@ -5,6 +5,7 @@ judge, store, refit, and report what moved -- plus the two things a served surfa
 turn nobody has judged still gets stored, and no route hands one user another user's rows.
 """
 
+import json
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,12 +15,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.models import serving as models
-from backend.models.agent import PARAPHRASED, QUOTED, REFERENCE
+from backend.models.agent import PARAPHRASED, QUOTED, REFERENCE, finance
 from backend.models.agent.client import SelfAgentClient
-from backend.models.agent.core import Turn
+from backend.models.agent.core import BUILT, Turn
 from backend.database import BUY, SELL, Store
 from backend.api.agent_server import create_app
-from backend.models.learning import AGENT
+from backend.models.learning import AGENT, ORACLE, FeedbackLog
 from backend.models.learning.abstain import Abstainer
 
 
@@ -28,6 +29,8 @@ from backend.models.agent.run.chat import adapt  # noqa: E402
 HAND_PICKED = 0.9980
 EVIDENCE = "ticker AAPL ; close 337.00 ; rsi_14 65"
 ANSWER = "its 14 day rsi is 65 , which is neither overbought nor oversold ."
+# The served generator as `chat.generator_of` names it: a candidate, so only rows carrying its digest count.
+SERVED = {"digest": "f10a270801dd7164", "since": None}
 
 
 class Scripted:
@@ -89,8 +92,8 @@ def _app(tmp_path, agent=None, judge=None):
     agent = agent or Scripted()
     store = Store(tmp_path / "served.sqlite")
     app = create_app(agent, store, judge or _verdicts(),
-                     lambda feedback: adapt(feedback, 0.6, 2, AGENT),
-                     Path("artifacts/advisory_combined.npz"))
+                     lambda feedback: adapt(feedback, 0.6, 2, AGENT, SERVED),
+                     Path("artifacts/advisory_combined.npz"), SERVED["digest"])
     return TestClient(app), agent, store
 
 
@@ -126,19 +129,47 @@ def test_the_chat_loop_runs_over_the_socket_and_the_cut_moves(tmp_path):
     assert len(store.feedback.rows(labeller=AGENT)) == 4
 
 
-def test_the_conversations_instrument_is_carried_into_the_next_question(tmp_path):
-    """What makes "how is it doing" a question. The first turn names one, so the second is asked under it,
-    and a general question in between does not clear it -- the subject is only ever replaced."""
+def test_the_conversations_instrument_is_carried_only_into_a_question_pointing_back_to_it(tmp_path):
+    """What makes "and its volatility ?" a question. The first turn names one, so a follow-up is asked under it, and
+    general questions in between neither take it nor clear it: "how is your mom doing" was answered with its prices."""
     client, agent, store = _app(tmp_path, judge=_verdicts())
     token, headers = _signed_in(client)
 
     with client.websocket_connect("/chat") as socket:
         socket.send_json({"token": token})
         socket.receive_json()
-        for question in ("is AAPL overbought ?", "what is a stop loss ?", "hows it doing ?"):
+        for question in ("is AAPL overbought ?", "how is your mom doing ?", "what is a stop loss ?", "and its volatility ?"):
             _ask(socket, question)
 
-    assert [subject for _, subject in agent.asked] == ["", "AAPL", "AAPL"]
+    assert [subject for _, subject in agent.asked] == ["", "", "", "AAPL"]
+
+
+@pytest.mark.parametrize("reconnected", [False, True])
+@pytest.mark.parametrize("refusal", [finance.NO_PRICES, finance.NO_SUBJECT])
+def test_a_share_alfa_could_not_fetch_or_find_clears_the_subject_rather_than_keep_the_one_before(tmp_path, reconnected,
+                                                                                                 refusal):
+    """"should i buy it ?" after a failed fetch of nykaa's prices was asked about AAPL, the share before it, and so it
+    was after a share or index ALFA has no file for at all ("bank nifty", or any listed share without --live)."""
+    agent = Scripted()
+    asked = agent.answer
+    agent.answer = lambda question, as_of=None, subject="": (
+        asked(question, as_of, subject)._replace(ticker="", served=refusal, spoke=False)
+        if "nykaa" in question else asked(question, as_of, subject))
+    client, _, _ = _app(tmp_path, agent=agent, judge=_verdicts())
+    token, _ = _signed_in(client)
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": token})
+        conversation = socket.receive_json()["conversation"]
+        for question in ("is AAPL overbought ?", "how is nykaa doing ?") + (() if reconnected else ("should i buy it ?",)):
+            _ask(socket, question)
+    if reconnected:
+        with client.websocket_connect("/chat") as socket:
+            socket.send_json({"token": token, "conversation": conversation})
+            socket.receive_json()
+            _ask(socket, "should i buy it ?")
+
+    assert agent.asked[-2:] == [("how is nykaa doing ?", ""), ("should i buy it ?", "")]
 
 
 class _Socket:
@@ -155,7 +186,7 @@ class _Socket:
 
 
 def test_the_stockintel_client_keeps_one_conversation_per_session(tmp_path, monkeypatch):
-    """"Analyze RELIANCE" and then "Why?" lost the instrument, because every question opened a new conversation."""
+    """"Analyze RELIANCE" and then a follow-up lost the instrument, because every question opened a new conversation."""
     client, agent, _ = _app(tmp_path, judge=_verdicts())
     token, _ = _signed_in(client)
 
@@ -168,14 +199,17 @@ def test_the_stockintel_client_keeps_one_conversation_per_session(tmp_path, monk
     monkeypatch.setattr("websockets.sync.client.connect", connect)
     asking = SelfAgentClient("http://agent.test")
     asking.ask("is AAPL overbought ?", session="one")
-    asking.ask("why ?", session="one")
-    asking.ask("why ?", session="")
+    asking.ask("why is it overbought ?", session="one")
+    asking.ask("why is it overbought ?", session="")
     assert [subject for _, subject in agent.asked] == ["", "AAPL", ""]
     # the oldest session is forgotten past the cap, so the map cannot grow without end
     monkeypatch.setattr("backend.models.agent.client.CONVERSATIONS_KEPT", 1)
     asking.ask("is AAPL overbought ?", session="two")
-    asking.ask("why ?", session="one")
+    asking.ask("why is it overbought ?", session="one")
     assert [subject for _, subject in agent.asked[3:]] == ["", ""]
+    # the stock the app found in this question is what it is asked under, not the one its conversation carries
+    asking.ask("how has nykaa been doing ?", "NYKAA.NS", session="one")
+    assert agent.asked[-1] == ("how has nykaa been doing ?", "NYKAA.NS")
 
 
 def test_an_unjudged_turn_is_answered_and_stored_and_leaves_the_cut_alone(tmp_path):
@@ -194,6 +228,124 @@ def test_an_unjudged_turn_is_answered_and_stored_and_leaves_the_cut_alone(tmp_pa
     (message,) = store.recent(token, ready["conversation"])
     assert message.served == ANSWER and message.feedback_id is None
     assert store.feedback.rows(judged_only=False) == []
+
+
+def _serving(tmp_path, monkeypatch, *labellers):
+    """serve.app_from's app over a log of twelve rows of the served generator judged by each of `labellers`, built
+    with the cut fitted as ask.build fits it."""
+    from backend.models.agent.run import serve
+
+    def build(artifacts, checkpoint, prices, gate, log, wanted, warmup, *_, labeller, **__):
+        agent = Scripted()
+        with FeedbackLog(log) as feedback:
+            agent.abstainer, agent.calibrator, learned = adapt(feedback, wanted, warmup, labeller, SERVED)
+        return agent, agent.abstainer, learned, Path("advisory_combined.npz")
+
+    monkeypatch.setattr(serve, "build", build)
+    monkeypatch.setattr(serve, "generator_of", lambda path: SERVED)
+    monkeypatch.setattr(serve, "listed_names", dict)
+    (tmp_path / serve.SOURCES).write_text("{}")
+    with FeedbackLog(tmp_path / "served.sqlite") as feedback:
+        for labeller in labellers:
+            for index in range(12):
+                feedback.append("2026-09-24T10:00:00+00:00", f"q{index}", EVIDENCE, ANSWER, 0.99 - index / 100,
+                                index % 2 == 0, labeller, digest=SERVED["digest"])
+    args = SimpleNamespace(artifacts=str(tmp_path), checkpoint="", prices="", gate="",
+                           store=str(tmp_path / "served.sqlite"), wanted=0.6, warmup=10, price_head="",
+                           reference_index="", reference_checkpoint="", paraphrase=False, live=False, dense=False,
+                           symbols="", scenarios="", phrase=False, router="pretrained",
+                           verdicts=str(tmp_path / "verdicts.jsonl"))
+    return serve.app_from(args)[0]
+
+
+# ORACLE: a newly promoted generator's log holds only the oracle rows reseed_feedback appended.
+@pytest.mark.parametrize("labeller", [AGENT, ORACLE])
+def test_the_server_fits_its_first_cut_with_the_judge_it_refits_with(tmp_path, monkeypatch, labeller):
+    """A fresh server refused its first turn at the hand-picked cut and answered later ones at 0.971: it fitted
+    at start on the oracle's rows and after every turn on the agent's."""
+    client = TestClient(_serving(tmp_path, monkeypatch, labeller))
+    token, _ = _signed_in(client)
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": token})
+        ready = socket.receive_json()
+        *_, stored = _ask(socket, "is AAPL overbought ?")
+
+    assert stored["judged"] is None and stored["learned"]
+    assert ready["answer_cut"] == stored["answer_cut"] != HAND_PICKED
+
+
+def test_a_server_whose_log_cannot_teach_its_generator_a_cut_will_not_start(tmp_path, monkeypatch):
+    """It served the hand-picked 0.998 instead, so a deployment that forgot the reseed looked like a working one."""
+    with pytest.raises(LookupError, match="reseed_feedback"):
+        _serving(tmp_path, monkeypatch)
+
+
+def test_the_user_questions_eval_will_not_measure_at_a_cut_the_server_would_not_start_with(monkeypatch):
+    """It threw `learned` away, so with no rows of its generator it scored answers at the hand-picked 0.998."""
+    from backend import cli
+    from backend.models.agent.run import ask, chat
+    from backend.models.external import eval_user_questions
+
+    for name, stand_in in (("build", lambda *_, **__: (Scripted(), Abstainer(HAND_PICKED), False, Path("x.npz"))),
+                           ("writer_from", lambda phrase: None), ("reference_from", lambda *_, **__: None)):
+        monkeypatch.setattr(ask, name, stand_in)
+    monkeypatch.setattr(chat, "generator_of", lambda path: SERVED)
+    monkeypatch.setattr(cli, "_orchestrator", lambda *_: pytest.fail("measured at the hand-picked cut"))
+    monkeypatch.setattr(sys, "argv", ["main"])
+    with pytest.raises(LookupError, match="reseed_feedback"):
+        eval_user_questions.main()
+
+
+def test_the_user_questions_eval_answers_at_the_cut_the_server_serves(tmp_path, monkeypatch):
+    """It fitted its cut from chat.sqlite's oracle rows, 0.818, while the server served 0.971 from the agent's."""
+    from backend.models.agent.run import ask, serve
+    from backend.models.external import eval_user_questions
+
+    class Built(Exception):
+        pass
+
+    def build(artifacts, checkpoint, prices, gate, log, *_, labeller, **__):
+        raise Built(log, labeller)
+
+    fitted = []
+    for module, main, argv in ((serve, serve.main, ["--verdicts", str(tmp_path / "verdicts.jsonl")]),
+                               (ask, eval_user_questions.main, [])):
+        for name, stand_in in (("build", build), ("writer_from", lambda phrase: None),
+                               ("reference_from", lambda *_, **__: None)):
+            monkeypatch.setattr(module, name, stand_in)
+        monkeypatch.setattr(sys, "argv", ["main", *argv])
+        with pytest.raises(Built) as built:
+            main()
+        fitted.append(built.value.args)
+    assert fitted[0] == fitted[1] == (fitted[0][0], AGENT)
+
+
+def test_the_user_questions_eval_never_judges_our_codes_words_as_a_language_models(tmp_path, monkeypatch):
+    """It counted every answer whose `phrased_by` was set, our code's sentences and facts replies included."""
+    from backend import cli
+    from backend.models.agent.run import ask, chat
+    from backend.models.external import eval_user_questions
+
+    built = Turn("is AAPL overbought ?", "", "AAPL", "overbought", ANSWER, "", EVIDENCE, float("nan"), None, True, 0.49,
+                 [], "", "2026-09-17", BUILT)
+    for name, stand_in in (("build", lambda *_, **__: (SimpleNamespace(answer=lambda q: built), None, True, Path("x"))),
+                           ("writer_from", lambda phrase: None), ("reference_from", lambda *_, **__: None),
+                           ("listed_names", dict)):
+        monkeypatch.setattr(ask, name, stand_in)
+    monkeypatch.setattr(chat, "generator_of", lambda path: SERVED)
+    app = SimpleNamespace(hub=type("Hub", (), {})(), handle=lambda *_: SimpleNamespace(intent="any", text="Fine."))
+    monkeypatch.setattr(cli, "_orchestrator", lambda *_: app)
+    (tmp_path / "reference_sources.json").write_text("{}")
+    (tmp_path / "asked.json").write_text(json.dumps([{"q": built.question, "agent": "any", "app": "any"}]))
+    for name, value in (("ARTIFACTS", tmp_path), ("QUESTIONS", tmp_path / "asked.json"), ("OUT", tmp_path / "out.json")):
+        monkeypatch.setattr(eval_user_questions, name, value)
+    judge = SimpleNamespace(predict=lambda pairs: [0.0] * len(pairs))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(AutoModelForSequenceClassification=SimpleNamespace(
+        from_pretrained=lambda *_, **__: SimpleNamespace(eval=lambda: judge))))
+    monkeypatch.setattr(sys, "argv", ["main"])
+    eval_user_questions.main()
+    assert json.loads((tmp_path / "out.json").read_text())["summary"]["LM-worded answers"] == 0
 
 
 def test_a_turn_the_decoder_never_reached_is_stored_but_never_judged(tmp_path):
@@ -240,6 +392,64 @@ def test_a_reference_turn_is_stored_but_never_judged_into_the_advisory_log(tmp_p
 
     assert stored["judged"] is None and store.feedback.rows(judged_only=False) == []
     assert len(store.recent(token, ready["conversation"])) == 1
+
+
+def test_a_turn_answering_two_questions_is_stored_with_its_least_confidence_but_never_judged(tmp_path):
+    """Its text is two answers, so no verdict on it relates one generation's confidence to being right."""
+    agent = Scripted()
+    asked = agent.answer
+    agent.answer = lambda question, as_of=None, subject="": asked(question, as_of, subject)._replace(
+        intent="performance and buy", confidence=0.97)
+    client, _, store = _app(tmp_path, agent=agent, judge=_verdicts(True))
+    token, _ = _signed_in(client)
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": token})
+        ready = socket.receive_json()
+        stored = _ask(socket, "how is AAPL performing and should i buy it")[2]
+
+    assert stored["judged"] is None and store.feedback.rows(judged_only=False) == []
+    (message,) = store.recent(token, ready["conversation"])
+    assert (message.intent, message.confidence) == ("performance and buy", 0.97)
+
+
+def test_a_facts_turn_is_stored_with_its_intent_and_only_price_answers_are_judged_into_the_advisory_log(tmp_path):
+    """The cut refitted from this log gates price answers: facts rows near 0.95 judged wrong moved it toward 0.97-0.99."""
+    agent = Scripted()
+    asked = agent.answer
+    agent.answer = lambda question, as_of=None, subject="": asked(question, as_of, subject)._replace(
+        **({"intent": finance.FACTS, "confidence": 0.95} if "debt" in question else {}))
+    client, _, store = _app(tmp_path, agent=agent, judge=_verdicts(False, True))
+    token, _ = _signed_in(client)
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": token})
+        ready = socket.receive_json()
+        facts = _ask(socket, "how much debt does AAPL have ?")[2]
+        _ask(socket, "is AAPL overbought ?")
+
+    assert facts["judged"] is None
+    assert [row["extra"]["intent"] for row in store.feedback.rows(judged_only=False)] == ["overbought"]
+    assert [message.intent for message in store.recent(token, ready["conversation"])] == [finance.FACTS, "overbought"]
+
+
+def test_a_turn_our_code_answered_is_judged_as_the_answer_of_alfas_it_replaced_which_did_not_speak(tmp_path):
+    """The log relates ALFA's confidence to whether ALFA was right, so our sentence spoken in its place is not ALFA's."""
+    agent = Scripted()
+    asked = agent.answer
+    agent.answer = lambda question, as_of=None, subject="": asked(question, as_of, subject)._replace(
+        served="AAPL reads 65 on the 14 day rsi.", because="names another share: msft", phrased_by=BUILT)
+    client, _, store = _app(tmp_path, agent=agent, judge=_verdicts(False))
+    token, _ = _signed_in(client)
+
+    with client.websocket_connect("/chat") as socket:
+        socket.send_json({"token": token})
+        ready = socket.receive_json()
+        _, turn, stored = _ask(socket, "is AAPL overbought ?")
+
+    (row,) = store.feedback.rows()
+    assert (stored["judged"], row["answer"], row["extra"]["spoke"]) == (False, ANSWER, False)
+    assert (turn["spoke"], turn["phrased_by"], store.recent(token, ready["conversation"])[0].spoke) == (True, BUILT, 1)
 
 
 def test_a_guarded_answer_carries_what_the_model_wrote(tmp_path):
@@ -383,3 +593,20 @@ def test_the_scenarios_route_is_seeded_names_its_model_and_never_makes_a_call(tm
     assert first["model"]["name"] == "garch" and "not which way" in first["direction"]
     assert client.get("/instruments/aapl/scenarios?steps=999", headers=headers).status_code == 400
     assert client.get("/instruments/NOSUCH/scenarios", headers=headers).status_code == 404
+
+
+def test_the_agent_loads_the_checkpoint_where_the_registry_says_it_is(tmp_path, monkeypatch):
+    """A generator promoted from alfa_v2_data was loaded as artifacts/<its stem>.npz, a file that is not there."""
+    from backend.models.agent.run import ask
+    from backend.models.serving import registry
+
+    class Loaded(Exception):
+        pass
+
+    promoted = tmp_path / "alfa_v2_data" / "alfa_v2.step2000.npz"
+    monkeypatch.setattr(registry, "serving", lambda role: promoted)
+    monkeypatch.setattr(ask, "load_model", lambda artifacts, dataset, checkpoint: (_ for _ in ()).throw(Loaded(checkpoint)))
+    for checkpoint, expected in (("", promoted), ("alfa_v2_data/alfa_v2.step2000.npz", promoted)):
+        with pytest.raises(Loaded) as loaded:
+            ask.build(tmp_path, checkpoint, "", "", "", 0.6, 10, "", labeller=AGENT)
+        assert loaded.value.args[0] == expected

@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Dict, FrozenSet, List, Mapping, Optional, Sequence, Set, Tuple
 
-# Common names -> (symbol, market): indices, US stocks, and names people write unlike NSE (see name_index).
+from backend.advisory.domains import DAY_RANGE, named_domains
+from backend.advisory.sentiment.feeds.feed import ENGLISH_WORDS, is_name
+
+# Common names -> (symbol, market): indices, US stocks, names people write unlike NSE, and names of everyday words,
+# which name_index leaves out (see it).
 ALIASES = {
     "reliance": ("RELIANCE", "NSE"), "hdfc bank": ("HDFCBANK", "NSE"), "icici bank": ("ICICIBANK", "NSE"),
     "icici": ("ICICIBANK", "NSE"), "state bank": ("SBIN", "NSE"), "sbi": ("SBIN", "NSE"),
@@ -34,7 +38,7 @@ ALIASES = {
     "nifty": ("^NSEI", "NSE"), "sensex": ("^BSESN", "BSE"), "bank nifty": ("^NSEBANK", "NSE"),
     "nvidia": ("NVDA", "US"), "apple": ("AAPL", "US"), "microsoft": ("MSFT", "US"), "amd": ("AMD", "US"),
     "tesla": ("TSLA", "US"), "amazon": ("AMZN", "US"), "alphabet": ("GOOGL", "US"), "google": ("GOOGL", "US"),
-    "meta": ("META", "US"),
+    "meta": ("META", "US"), "happiest minds": ("HAPPSTMNDS", "NSE"), "indian hotels": ("INDHOTEL", "NSE"),
 }
 US_TICKERS = {"NVDA", "AAPL", "MSFT", "AMD", "TSLA", "AMZN", "GOOGL", "GOOG", "META", "NFLX", "INTC"}
 NOT_TICKERS = {"I", "A", "RSI", "PE", "EPS", "MACD", "ATR", "NSE", "BSE", "BUY", "SELL", "HOLD", "WATCH",
@@ -56,21 +60,6 @@ SECTOR_WORDS = {
     "Utilities": ("power", "utilit"),
     "Communication Services": ("telecom", "communication"),
     "Industrials": ("infra", "capital goods", "industrial", "defence", "defense"),
-}
-
-DOMAIN_WORDS = {
-    "candlestick": ("candle", "doji", "hammer", "engulfing"),
-    "pattern": ("pattern", "triangle", "head and shoulders", "double top", "double bottom",
-                "flag", "wedge", "channel", " forming"),
-    "fundamental": ("fundamental", "valuation", "earnings", "revenue", "margin", "debt", "p/e",
-                    " pe ", "roe", "balance sheet", "cash flow", "profit"),
-    "news_sentiment": ("news", "sentiment", "headline", "announcement"),
-    "forecast": ("forecast", "predict", "probability", "expected range", "outlook", "scenario"),
-    "historical": ("similar setup", "analogue", "analog", "historically similar", "past setups"),
-    "regime": ("regime", "market condition", "risk-on", "risk-off"),
-    "risk": ("risk", "volatil", "drawdown", "beta", "sharpe", "var "),
-    "technical": ("technical", "trend", "rsi", "macd", "moving average", "momentum", "support",
-                  "resistance", "breakout", "chart"),
 }
 
 
@@ -116,25 +105,38 @@ def _words(text: str) -> List[str]:
     return re.findall(r"[a-z0-9&]+", text.lower())
 
 
-def name_index(names: Mapping[str, str], english: Set[str]) -> Dict[str, str]:
+def proper_nouns() -> FrozenSet[str]:
+    """The dictionary's capitalised words in lower case ("india", "delhi", "monte"), which english_words() leaves out."""
+    return frozenset(w.lower() for w in ENGLISH_WORDS.read_text().split() if w.isalpha() and w[:1].isupper())
+
+
+def name_index(names: Mapping[str, str], english: Set[str], proper: Set[str]) -> Dict[str, str]:
     """What people write for each listed company -> its symbol: the symbol, the name without "Limited", and the
-    name's first word when no other company starts with it. A lone English word ("idea", "beta") is left out, so
-    that stock is found only in capitals (IDEA) or by more of its name (Vodafone Idea)."""
+    name's leading words when no other name starts with them ("happiest minds"). A lone English word ("idea", "beta") is
+    left out, so IDEA is found only in capitals or by more of its name, and so are leading words that are all dictionary
+    words, `proper` nouns too ("new delhi"). Each symbol is also its own key in capitals, which no lowercased phrase
+    matches, so the values are every listed share, "Eternal Ltd." among them."""
     index: Dict[str, str] = {}
     starts: Dict[str, Set[str]] = {}
     for sym, name in names.items():
         words = _words(re.sub(r"\s+(ltd\.?|limited)$", "", name.strip(), flags=re.I))
         index[" ".join(words)] = sym
-        starts.setdefault(words[0], set()).add(sym)
+        lead = words[1:] if words[0] == "the" and len(words) > 1 else words
+        for k in range(1, max(len(lead), 2)):
+            starts.setdefault(" ".join(lead[:k]), set()).add(sym)
     index.update({" ".join(_words(sym)): sym for sym in names})
-    index.update({w: next(iter(syms)) for w, syms in starts.items() if len(syms) == 1 and w not in index})
-    # a lone lowercase word of two letters ("gm", "hp") is too often not meant as a stock
-    return {p: sym for p, sym in index.items()
-            if " " in p or (len(p) > 2 and p not in english and p.upper() not in NOT_TICKERS)}
+    everyday = set(english) | set(proper)
+    # the dictionary has no plurals, and "indian metals" or "solar industries" in a question named a share
+    is_everyday = lambda w: any(form in everyday for form in ((w, w[:-1], w[:-2], w[:-3] + "y") if w.endswith("s") else (w,)))
+    index.update({w: next(iter(syms)) for w, syms in starts.items() if len(syms) == 1 and w not in index
+                  and (" " not in w or not all(map(is_everyday, w.split())))})
+    named = {p: sym for p, sym in index.items() if is_name(p, english) and p.upper() not in NOT_TICKERS}
+    return {**{sym: sym for sym in names}, **named}
 
 
 def extract_tickers(text: str, listings: Mapping[str, str]) -> List[Tuple[str, str]]:
-    known_set: Set[str] = set(listings.values())
+    # not a symbol's own key: then every word of "SHOULD I TAKE PROFITS NOW?" that is a symbol counted as one (TAKE)
+    known_set: Set[str] = {sym for phrase, sym in listings.items() if phrase != sym}
     found: List[Tuple[str, str]] = []
     rest = f" {text} "
     explicit = re.compile(r"(?<![\w&\-])([A-Za-z0-9&\-]{2,15})\.(ns|bo)\b", re.I)
@@ -176,17 +178,22 @@ def extract_tickers(text: str, listings: Mapping[str, str]) -> List[Tuple[str, s
 
 
 def extract_horizon(text: str) -> Optional[str]:
+    """The horizon someone says they hold or trade for. "the 50 day average", "short-term trend", "daily swings" and "the
+    intraday high" name a span a figure is measured over, and the horizon they set stayed for the rest of the chat."""
     t = text.lower()
-    m = re.search(r"(\d+(?:\.\d+)?)\s*(year|yr|month|week|day)", t)
+    m = re.search(r"\b(?:for|within|next)\s+(?:the\s+)?(?:next\s+)?(\d+(?:\.\d+)?)\s*(year|yr|month|week|day)", t) \
+        or re.search(r"\b(\d+(?:\.\d+)?)[- ]?(year|yr|month|week|day)s?\s+(?:horizon|hold)", t)
     if m:
         n, unit = float(m.group(1)), m.group(2)
         days = n * {"year": 365, "yr": 365, "month": 30, "week": 7, "day": 1}[unit]
         return "long" if days >= 365 else "medium" if days >= 45 else "short"
-    if re.search(r"long[- ]term|years|retire", t):
+    # "a long term investment", "buy it long term?"; not "long term debt"
+    term = r"[- ]term( (invest|hold|horizon|trad|buy|bet|view|play)|\s*([?.!,]|$))"
+    if re.search(rf"\b(for|in) (the )?long (term|run)|long{term}|\bfor years\b|retire", t):
         return "long"
-    if re.search(r"short[- ]term|swing|few weeks|intraday|quick", t):
+    if re.search(rf"\b(for|in) (the )?short (term|run)|short{term}|(swing|intraday) trad|\b(for|next) (a )?few weeks", t):
         return "short"
-    if re.search(r"medium[- ]term|few months", t):
+    if re.search(rf"\b(for|in) (the )?medium term|medium{term}|\b(for|next) (a )?few months", t):
         return "medium"
     return None
 
@@ -222,11 +229,8 @@ def extract_sectors(text: str) -> Tuple[List[str], List[str]]:
 
 
 def detect_domain(text: str) -> Optional[str]:
-    t = f" {text.lower()} "
-    for domain, words in DOMAIN_WORDS.items():
-        if any(w in t for w in words):
-            return domain
-    return None
+    found = named_domains(text)
+    return found[0] if found else None
 
 
 def _window_days(text: str) -> Optional[int]:
@@ -293,13 +297,19 @@ def classify(text: str, listings: Mapping[str, str], short_forms: Set[str], has_
         return intent("signals")
     if (symbols or has_session_symbol) and re.search(
             r"should i (buy|sell|invest|hold|exit|add)|(good|right) (time )?to (buy|sell|invest)|worth (buying|investing)|"
-            r"buy or (not|sell)|is (it|this) a (good )?buy|can i buy|time to exit", t):
-        return intent("should_buy")
+            r"buy or (not|sell)|is (it|this) a (good )?buy|can i buy|time to exit|(sell|hold) or (sell|hold)", t):
+        # a holder's question: "should i sell" got "DON'T BUY", which says nothing about a share already owned
+        holds = re.search(r"should i (sell|hold|exit)|(good|right) (time )?to sell|time to exit|(sell|hold) or (sell|hold)", t)
+        return intent("should_sell" if holds else "should_buy")
     # a verdict only when the one stock named is the subject: "TCS fell, is gold a good buy?" is not about TCS
     subject = re.search(r"\bis (.+?) a (good )?buy\b", text, re.I)
     if subject and len(symbols) == 1 and not symbols[0][0].startswith("^") \
             and extract_tickers(subject.group(1), listings) == symbols:
         return intent("should_buy")
+    if (symbols or has_session_symbol) and DAY_RANGE.search(t):
+        return intent("day_range")
+    if (symbols or has_session_symbol) and re.search(r"\bcorrect(ion|ing)\b|\bbear market\b", t):
+        return intent("correction")
     if re.search(r"\breport\b", t) and (symbols or has_session_symbol):
         return intent("report")
     mine = re.search(r"\b(my|i hold|i own)\b", t) and re.search(

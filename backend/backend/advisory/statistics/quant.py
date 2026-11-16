@@ -105,7 +105,8 @@ def analyze(df: pd.DataFrame, bench: Optional[pd.DataFrame], rf: float) -> Domai
     window = r.iloc[-A:]
     as_of = str(df.index[-1].date())
     span = f"{window.index[0].date()} to {window.index[-1].date()}"
-    prov = lambda name: Provenance(source=f"computed:{name}", as_of=as_of, period=span)
+    history = f"{df.index[0].date()} to {as_of}"
+    prov = lambda name, period: Provenance(source=f"computed:{name}", as_of=as_of, period=period)
 
     vol = ann_vol(window)
     dd = max_drawdown(close)
@@ -113,7 +114,7 @@ def analyze(df: pd.DataFrame, bench: Optional[pd.DataFrame], rf: float) -> Domai
     lr = np.log(close).diff().dropna()
     vr, vr_z = variance_ratio(lr.iloc[-A:].to_numpy(), 5)
     stats: Dict[str, object] = {
-        "period": span, "returns": period_returns(close),
+        "period": span, "history_period": history, "returns": period_returns(close),
         "cagr_pct": round(cagr(close) * 100, 2), "annualized_vol_pct": round(vol * 100, 2),
         "downside_deviation_pct": round(downside_deviation(window) * 100, 2),
         "sharpe": round(sharpe(window, rf), 2), "sortino": round(sortino(window, rf), 2),
@@ -128,23 +129,23 @@ def analyze(df: pd.DataFrame, bench: Optional[pd.DataFrame], rf: float) -> Domai
     }
     ev = []
 
-    def add(claim: str, score: float, name: str, value: float):
+    def add(claim: str, score: float, name: str, value: float, period: str):
         ev.append(Evidence(domain=DOMAIN, claim=claim, direction=int(np.sign(score)),
-                           strength=abs(score), provenance=prov(name), value=value))
+                           strength=abs(score), provenance=prov(name, period), value=value))
 
     vol_score = 0.4 if vol < 0.20 else 0.1 if vol < 0.30 else -0.3 if vol < 0.45 else -0.7
     add(f"Annualized volatility is {vol * 100:.1f}% over the last year.", vol_score,
-        "annualized_vol", vol * 100)
+        "annualized_vol", vol * 100, span)
     mdd = dd["max_drawdown_pct"]
     add(f"Maximum drawdown in the loaded history is {mdd:.1f}% "
         f"({dd['peak_date']} to {dd['trough_date']}).",
-        0.2 if mdd > -20 else -0.1 if mdd > -35 else -0.4, "max_drawdown", mdd)
+        0.2 if mdd > -20 else -0.1 if mdd > -35 else -0.4, "max_drawdown", mdd, history)
     cur = dd["current_drawdown_pct"]
     if cur < -20:
         add(f"Price is {abs(cur):.1f}% below its peak in the loaded history.", -0.3,
-            "current_drawdown", cur)
+            "current_drawdown", cur, history)
     add(f"Historical 1-day 95% CVaR is {cvar95 * 100:.2f}% (average loss on the worst 5% of days).",
-        -0.3 if cvar95 < -0.04 else 0.0 if cvar95 < -0.025 else 0.2, "cvar_95", cvar95 * 100)
+        -0.3 if cvar95 < -0.04 else 0.0 if cvar95 < -0.025 else 0.2, "cvar_95", cvar95 * 100, span)
 
     if bench is not None and len(bench) > 60:
         br = bench["close"].pct_change().dropna()
@@ -153,7 +154,7 @@ def analyze(df: pd.DataFrame, bench: Optional[pd.DataFrame], rf: float) -> Domai
         if ba:
             beta = ba["beta"]
             add(f"Beta to the benchmark is {beta:.2f} (correlation {ba['correlation']:.2f}).",
-                -0.3 if beta > 1.3 else 0.2 if beta < 0.8 else 0.0, "beta", beta)
+                -0.3 if beta > 1.3 else 0.2 if beta < 0.8 else 0.0, "beta", beta, span)
             roll = r.rolling(60).corr(br).dropna()
             if len(roll) >= 63:
                 stats["rolling_corr_60d_now"] = round(float(roll.iloc[-1]), 3)
@@ -167,7 +168,7 @@ def analyze(df: pd.DataFrame, bench: Optional[pd.DataFrame], rf: float) -> Domai
         stats["vol_percentile_now"] = round(pct, 0)
         if pct > 80:
             add(f"Current 20-day volatility is at percentile {pct:.0f} of its history.", -0.3,
-                "vol_percentile", pct)
+                "vol_percentile", pct, history)
 
     score = clamp(sum(e.direction * e.strength for e in ev) / max(1.0, len(ev) * 0.5))
     state = ("low" if score > 0.25 else "moderate" if score > -0.1 else

@@ -290,8 +290,9 @@ function candleChart(container, t, layers, selected, onPick) {
     fan.q50.forEach((v, k) => { const dot = s("circle", { cx: xs[k], cy: Y(v), r: Math.min(3.2, step * 0.4), fill: ai, stroke: css("--card"), "stroke-width": 1.5, cursor: "help" });
       dot.addEventListener("mousemove", (ev) => showTip(ev, [h("b", {}, `${name} median · ${fan.dates[k]}`), `${inr(v)} (50% range ${inr(fan.q25[k], 0)}–${inr(fan.q75[k], 0)})`, `80% range ${inr(fan.q10[k], 0)}–${inr(fan.q90[k], 0)}`]));
       dot.addEventListener("mouseleave", () => hideTip()); svg.append(dot); });
-    const last = fan.q50.length - 1;
-    txt(xs[last], side > 0 ? Y(fan.q10[last]) + 14 : Y(fan.q90[last]) - 8, `${name} median ${inr(fan.q50[last], 0)}`, { fill: ai, "text-anchor": "middle", "font-weight": 700 });
+    const last = fan.q50.length - 1, label = `${name} median ${inr(fan.q50[last], 0)}`;
+    // centred on the last day, it ran past the right edge: "Our model median ₹2,4"
+    txt(Math.min(xs[last], W - 4 - textW(label, 700) / 2), side > 0 ? Y(fan.q10[last]) + 14 : Y(fan.q90[last]) - 8, label, { fill: ai, "text-anchor": "middle", "font-weight": 700 });
   }
   if (gru) {
     const o = DI(gru.as_of), col = css("--series-1"), pts = [`${X(o)},${Y(t.close[o])}`, ...gru.close.map((v, k) => `${X(o + 1 + k)},${Y(v)}`)];
@@ -459,9 +460,9 @@ function analyticsSection(ctx, get, sym) {
   const gaugeCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "Signal strength"), skel(80));
   const votesCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "How the engines vote"), skel(120));
   const ladderCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "Plausible range ahead"), skel(120));
-  const rsiCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "RSI (14) — momentum oscillator"), h("div", { class: "rsi" }));
-  const macdCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "MACD histogram — trend acceleration"), h("div", { class: "macd" }));
-  const ddCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "Drawdown — % below the previous peak"), h("div", { class: "dd" }));
+  const rsiCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "RSI (14)"), h("div", { class: "rsi" }));
+  const macdCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "MACD histogram"), h("div", { class: "macd" }));
+  const ddCard = h("div", { class: "card" }, h("div", { class: "panel-title" }, "Drawdown"), h("div", { class: "dd" }));
   const root = h("div", { class: "grid" }, h("div", { class: "grid cols-3" }, gaugeCard, votesCard, ladderCard), h("div", { class: "grid cols-3" }, rsiCard, macdCard, ddCard));
   api(`/ui/stock/${encodeURIComponent(sym)}/indicators?bars=126`, { signal: ctx.signal }).then((k) => {
     const draw = () => {
@@ -470,9 +471,9 @@ function analyticsSection(ctx, get, sym) {
       miniPanel(ddCard.querySelector(".dd"), k.dates, [{ values: k.drawdown_pct, color: "--down" }], "Drawdown", { fill: "--down", zero: true, fmt: (v) => num(v, 1) + "%" });
     };
     draw(); ctx.redraw(draw);
-    rsiCard.append(h("div", { class: "chart-note" }, k.rsi[k.rsi.length - 1] > 70 ? "Above 70: stretched after a strong run." : k.rsi[k.rsi.length - 1] < 30 ? "Below 30: stretched after a sharp fall." : "Between 30 and 70: no extreme."));
-    macdCard.append(h("div", { class: "chart-note" }, k.hist[k.hist.length - 1] >= 0 ? "Green bars: short-term trend above its average." : "Red bars: short-term trend below its average."));
-    ddCard.append(h("div", { class: "chart-note" }, `Deepest fall in the loaded 5 years: ${num(k.max_drawdown_5y_pct, 1)}%.`));
+    rsiCard.append(h("div", { class: "chart-note" }, `RSI: ${k.meanings.RSI}. `, k.rsi[k.rsi.length - 1] > 70 ? "Above 70: stretched after a strong run." : k.rsi[k.rsi.length - 1] < 30 ? "Below 30: stretched after a sharp fall." : "Between 30 and 70: no extreme."));
+    macdCard.append(h("div", { class: "chart-note" }, `MACD histogram: ${k.meanings["MACD histogram"]}. `, k.hist[k.hist.length - 1] >= 0 ? "Green bars now: momentum is rising." : "Red bars now: momentum is falling."));
+    ddCard.append(h("div", { class: "chart-note" }, `Drawdown: ${k.meanings.Drawdown}. Deepest since ${new Date(k.history_from).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}: ${num(k.max_drawdown_pct, 1)}%.`));
   }).catch((e) => [rsiCard, macdCard, ddCard].forEach((card) => showCardError(card)(e)));
   get(`/stocks/${encodeURIComponent(sym)}/analysis`).then((a) => {
     const st = a.decision.domain_states, names = { technical: "Technicals", candlestick: "Candles", pattern: "Patterns", fundamental: "Fundamentals", news_sentiment: "News", risk: "Risk", regime: "Regime", forecast: "Forecast", historical: "Analogues" };
@@ -977,7 +978,7 @@ async function pageStock(view, ctx) {
     api(`/ui/stock/${encodeURIComponent(sym)}/analyst`, { signal: ctx.signal }).then((a) => analystCard.replaceChildren(h("div", { class: "panel-title" }, "Analyst note"),
       h("p", { class: "analyst-text" }, a.text),
       h("div", { class: "muted", style: "font-size:var(--fs-xs)" }, a.written_by ? `Written by ${a.written_by} from our models' numbers; every number was checked against them.`
-        : `Computed note: ${a.draft_rejected.join("; ")}.`)))
+        : `Computed note: ${a.draft_rejected.join("; ").replace(/\.$/, "")}.`)))
       .catch(showCardError(analystCard)); };
   view.append(h("div", { class: "grid stock-page" }, head, verdictCard, analystCard, chartCard, askCard(sym), tabsCard, analytics));
   let o; try { o = await api(`/ui/stock/${encodeURIComponent(sym)}`, { signal: ctx.signal }); } catch (e) { view.replaceChildren(ErrorState(e, route)); return; }
@@ -988,7 +989,7 @@ async function pageStock(view, ctx) {
       h("div", { class: "row" }, h("button", { class: "btn", onclick: () => addTxModal(ctx, o.symbol, o.price) }, "+ Add to portfolio"),
         h("button", { class: "btn", onclick: async (e) => { e.target.disabled = true; e.target.textContent = "Writing…"; try { const r = await api(`/reports/${encodeURIComponent(o.symbol)}`, { method: "POST" }); location.hash = `#/report/${r.id}`; } catch (err) { toast(errorWords(err)); e.target.disabled = false; e.target.textContent = "Research report"; } } }, "Research report"))),
     h("div", { class: "row", style: "margin-top:14px;align-items:baseline" }, h("div", { class: "price num" }, inr(o.price)),
-      h("div", { class: `num ${cls(o.change)}`, style: "font-size:var(--fs-md);font-weight:600" }, `${o.change > 0 ? "+" : ""}${num(o.change)} (${pct(o.change_pct)}) today`)),
+      h("div", { class: `num ${cls(o.change)}`, style: "font-size:var(--fs-md);font-weight:600" }, `${o.change > 0 ? "+" : ""}${num(o.change)} (${pct(o.change_pct)}) on ${new Date(o.as_of).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`)),
     h("div", { class: "chips-row" }, chip("1M", pct(o.returns["1M"], 1), cls(o.returns["1M"])), chip("1Y", pct(o.returns["1Y"], 1), cls(o.returns["1Y"])),
       chip("52W low", inr(o.low_52w, 0)), chip("52W high", inr(o.high_52w, 0)), chip("P/E", num(o.stats["P/E (TTM)"], 1)), chip("Mkt cap", compactInr(o.stats["Market cap"]))),
     h("div", { class: "muted", style: "font-size:var(--fs-xs);margin-top:8px" }, `Daily close ${o.as_of} · NSE`));
@@ -1206,7 +1207,8 @@ async function pageSignals(view, ctx) {
 }
 
 async function pageChat(view, ctx) {
-  const log = h("div", { class: "log" }); const input = h("input", { placeholder: "Ask anything: 'Should I buy TCS?', 'What is RSI?', 'Compare INFY and HCLTECH'" });
+  // focusable, so a keyboard can scroll back up a long reply to the answer above it
+  const log = h("div", { class: "log", role: "log", "aria-label": "Conversation", tabindex: "0" }); const input = h("input", { placeholder: "Ask anything: 'Should I buy TCS?', 'What is RSI?', 'Compare INFY and HCLTECH'" });
   const sid = sessionStorage.getItem("si-chat") || ("web-" + Math.random().toString(36).slice(2, 10)); sessionStorage.setItem("si-chat", sid);
   const history = JSON.parse(sessionStorage.getItem("si-chat-log") || "[]");
   const bubble = (who, text, meta) => { const b = h("div", { class: `bubble ${who}` }, who.startsWith("bot") ? md(text) : text, meta ? h("span", { class: "meta" }, meta) : null); log.append(b); log.scrollTop = log.scrollHeight; return b; };
@@ -1214,11 +1216,19 @@ async function pageChat(view, ctx) {
   const useAgent = h("input", { type: "checkbox" }); useAgent.checked = localStorage.getItem("si-agent") !== "0";
   useAgent.addEventListener("change", () => localStorage.setItem("si-agent", useAgent.checked ? "1" : "0"));
   const ALFA = "ALFA, our self-learning model";
+  // our code's sentence where a guard or the cut held back ALFA's draft, whose confidence it keeps; the reply says why
+  // (present.held_back). A facts or news reply our code writes has no reason, and a news reply's `because` is a source unread.
+  const oursInstead = (t) => !!t && t.spoke && t.phrased_by === "our code" && !!t.because && !t.intent?.startsWith("reference"), lane = (t) => oursInstead(t) ? "bot" : "bot agent";
+  // phrased_by names each part's words for two questions asked together: "ALFA, our code"
+  const alfaMeta = (t) => oursInstead(t) ? `Our code's sentence, where ALFA held back${t.as_of ? ` · data as of ${t.as_of}` : ""}`
+    : `${ALFA}${t.as_of ? ` · data as of ${t.as_of}` : ""}` + (t.spoke ? (t.phrased_by !== "our code" ? ` · ${t.confidence == null ? "from its sources" : `confidence ${num(t.confidence)}`}` : "") : t.because ? ` · held back: ${t.because}` : "")
+    + (t.phrased_by ? ` · worded by ${t.phrased_by.split(", ").map((by) => by.split("/").pop()).join(" and ")}` : "")
+    + (t.unphrased_because ? ` · the language model's wording ${t.asked_writer ? "was held back" : "was unavailable"}` : "");
   const agentRow = h("label", { class: "agent-toggle", hidden: true }, useAgent, `Ask ${ALFA} first (it stays quiet when unsure)`);
   api("/ui/agent/status", { signal: ctx.signal }).then((st) => { agentRow.hidden = !st.available; }).catch((e) => ctx.live() && toast(errorWords(e)));
   const send = async (q) => {
     q = (q || input.value).trim(); if (!q) return; input.value = "";
-    bubble("me", q); history.push({ who: "me", text: q });
+    const asked = bubble("me", q); history.push({ who: "me", text: q });
     const askAlfa = useAgent.checked && !agentRow.hidden;
     const top = bubble(askAlfa ? "bot agent" : "bot", askAlfa ? "Asking ALFA…" : "Thinking…");
     const show = (b, who, text, meta) => { b.className = `bubble ${who}`; b.replaceChildren(md(text), h("span", { class: "meta" }, meta)); history.push({ who, text, meta }); };
@@ -1226,21 +1236,22 @@ async function pageChat(view, ctx) {
     try { r = await api("/chat", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) }); }
     catch (e) { top.className = "bubble bot"; top.textContent = errorWords(e); }
     // ALFA's answer leads when it speaks; our tested reply follows it, or leads when ALFA holds back
-    if (r && r.intent === "agent") show(top, "bot agent", r.text, ALFA);
+    if (r && r.intent === "agent") show(top, lane(r.data?.agent), r.text, r.data?.agent?.spoke ? alfaMeta(r.data.agent) : ALFA);
     else if (r) {
       const ours = [r.text, `${r.intent}${r.tools_used.length ? " · " + r.tools_used.join(", ") : ""}`];
-      let t = null, failed = "";
-      if (askAlfa) try { t = await api("/ui/agent/ask", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) }); } catch (e) { failed = errorWords(e); }
-      const meta = t && `${ALFA}${t.as_of ? ` · data as of ${t.as_of}` : ""} · ` + (t.spoke ? (t.confidence == null ? "from its sources" : `confidence ${num(t.confidence)}`) : `held back: ${t.because}`)
-        + (t.phrased_by ? ` · worded by ${t.phrased_by.split("/").pop()}` : t.unphrased_because ? ` · in its own words (${t.unphrased_because})` : "");
-      if (t && t.spoke) { show(top, "bot agent", t.shown || t.served, meta); show(bubble("bot", ""), "bot", ...ours); }
+      // a question /chat handed to ALFA, which held back, carries ALFA's turn: it is not asked twice
+      let t = r.data?.agent ?? null, failed = "";
+      if (!t && askAlfa) try { t = await api("/ui/agent/ask", { method: "POST", body: JSON.stringify({ message: q, session_id: sid }) }); } catch (e) { failed = errorWords(e); }
+      const meta = t && alfaMeta(t);
+      if (t && t.spoke && !oursInstead(t)) { show(top, "bot agent", t.shown || t.served, meta); show(bubble("bot", ""), "bot", ...ours); }
       else {
         show(top, "bot", ...ours);
-        if (t) show(bubble("bot agent", ""), "bot agent", t.shown || t.served, meta);
+        if (t) show(bubble(lane(t), ""), lane(t), t.shown || t.served, meta);
         else if (askAlfa) show(bubble("bot agent", ""), "bot agent", `${ALFA}: ${failed}`, ALFA);
       }
     }
-    sessionStorage.setItem("si-chat-log", JSON.stringify(history.slice(-40))); log.scrollTop = log.scrollHeight;
+    // the question goes to the top: scrolled to the end, a long reply of ours hid the answer that leads above it
+    sessionStorage.setItem("si-chat-log", JSON.stringify(history.slice(-40))); log.scrollTop += asked.getBoundingClientRect().top - log.getBoundingClientRect().top;
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
   const chips = h("div", { class: "chips" }, ...["What should I buy with ₹1 lakh?", "Is the market in a downtrend?", "Analyze RELIANCE", "Why?", "Compare it with TCS", "How is my portfolio performing?", "What is a Sharpe ratio?", "Check my stops"]

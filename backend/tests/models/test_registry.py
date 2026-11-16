@@ -26,8 +26,8 @@ def _artifact(tmp_path, name="advisory_combined.npz", body=b"weights"):
     return path
 
 
-def _promote(tmp_path, artifact, measured, role=registry.GENERATOR):
-    return registry.promote(role, artifact, measured, SAMPLER, tmp_path / "registry.json")
+def _promote(tmp_path, artifact, measured, role=registry.GENERATOR, trained_on=("advisory_casual",)):
+    return registry.promote(role, artifact, measured, SAMPLER, tmp_path / "registry.json", trained_on=trained_on)
 
 
 def test_a_deliberately_bad_model_is_refused_and_the_promoted_one_keeps_serving(tmp_path):
@@ -82,6 +82,55 @@ def test_an_artifact_overwritten_after_its_promotion_is_not_served(tmp_path):
         registry.serving(registry.GENERATOR, tmp_path / "registry.json")
 
 
+def test_what_a_generator_was_trained_on_is_recorded_for_its_file_and_claimed_by_no_other(tmp_path):
+    """What it trained on decides which questions the agent routes to it, so a candidate inherits none of it."""
+    artifact = _artifact(tmp_path)
+    _promote(tmp_path, artifact, {"unseen": _tally()}, trained_on=["advisory_casual", "stock_qa/frozen_v1"])
+    path = tmp_path / "registry.json"
+    assert registry.trained_on(registry.GENERATOR, artifact, path) == ("advisory_casual", "stock_qa/frozen_v1")
+    assert registry.trained_on(registry.GENERATOR, _artifact(tmp_path, "candidate.npz", b"other"), path) == ()
+
+
 def test_a_role_with_nothing_promoted_serves_nothing(tmp_path):
     with pytest.raises(LookupError, match="scripts/promote.py"):
         registry.serving(registry.GENERATOR, tmp_path / "registry.json")
+
+
+@pytest.mark.parametrize("argv", [["--trained-on", "stock_qa"], ["--trained-on", "alfa_v2"]])
+def test_a_dataset_name_promotion_does_not_know_is_refused_before_anything_is_measured(monkeypatch, argv):
+    """Free text, "stock_qa" was recorded, and a generator trained on facts rows served with the facts route off."""
+    import sys
+    from backend.models.training import promote
+    monkeypatch.setattr(sys, "argv", ["promote.py", *argv])
+    monkeypatch.setattr(promote, "measure", lambda *_: pytest.fail("measured a candidate whose datasets are unknown"))
+    with pytest.raises(SystemExit):
+        promote.main()
+
+
+def _manifest(directory, **recorded):
+    import json
+    (directory / "MANIFEST.json").write_text(json.dumps(recorded))
+    return directory / "alfa_v2.best.npz"
+
+
+def test_what_a_checkpoint_trained_on_is_read_from_the_manifest_of_the_set_it_was_trained_in(tmp_path):
+    from backend.models.training import promote
+    datasets = ["advisory_casual", "wide", "stock_qa/frozen_v1"]
+    assert promote.trained_on(_manifest(tmp_path, trained_on=datasets), None) == datasets
+
+
+@pytest.mark.parametrize("recorded,given,said", [({"train": {"stock_qa": 283}}, None, "records trained_on nothing"),
+                                                 ({"trained_on": ["stock_qa"]}, None, "must name some of"),
+                                                 ({"trained_on": ["wide"]}, ["advisory_casual"], "exactly when there is no")],
+                         ids=["not recorded", "unknown name", "given as well"])
+def test_a_manifest_naming_no_known_dataset_or_contradicted_by_hand_is_refused(tmp_path, recorded, given, said):
+    from backend.models.training import promote
+    with pytest.raises(SystemExit, match=said):
+        promote.trained_on(_manifest(tmp_path, **recorded), given)
+
+
+def test_with_no_manifest_beside_it_what_a_checkpoint_trained_on_must_be_given(tmp_path):
+    from backend.models.training import promote
+    assert promote.trained_on(tmp_path / "advisory_combined.npz", ["advisory_casual"]) == ["advisory_casual"]
+    with pytest.raises(SystemExit, match="give --trained-on"):
+        promote.trained_on(tmp_path / "advisory_combined.npz", None)

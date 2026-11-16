@@ -19,6 +19,7 @@ from backend.advisory.calculators.screener import screen
 from backend.advisory.service import AnalysisService
 from backend.advisory.statistics.validation import event_study
 from backend.database.sources import synthetic
+from backend.models.agent.core import BUILT
 
 from .conftest import EMAIL, END, NOW, PASSWORD, PUBLIC_URL, sign_in
 from .test_funds import NAV_TEXT, growing, mfapi_json
@@ -31,6 +32,9 @@ OTHER = "ravi@example.com"
 UNAUTHORIZED = (401, {"detail": "Unauthorized"})    # fastapi-users' own refusal, not a 401 of ours
 SETUP = {"risk_profile": "moderate", "horizon": "medium"}
 FUND_BUY = {"scheme_code": 118989, "side": "BUY", "units": 10, "nav": 200.0, "trade_date": "2025-01-02"}
+# A turn as agent_server sends it, ALFA's own words with no writer asked
+TURN = {"stage": "turn", "phrased_by": "", "unphrased_because": "", "asked_writer": False}
+WORDED = {**TURN, "phrased_by": "microsoft/Phi-4-mini-instruct", "asked_writer": True}
 
 
 @pytest.fixture
@@ -42,7 +46,7 @@ def service(local_provider):
 def orch(local_provider, store, monkeypatch):
     monkeypatch.setenv("SELFAGENT_URL", "http://127.0.0.1:9")   # nothing listens on the discard port, so the agent reads as off
     o = Orchestrator(local_provider, store, use_rss_news=False, charges_model_calls=True)
-    o._listings = name_index({"TEST": "Test Industries Ltd.", "PEER": "Peer Power Ltd."}, set())
+    o._listings = name_index({"TEST": "Test Industries Ltd.", "PEER": "Peer Power Ltd."}, set(), set())
     return o
 
 
@@ -72,6 +76,15 @@ def test_full_analysis_produces_every_domain_with_provenance(service):
     assert a.decision.data_timestamp == "2026-09-25"
 
 
+def test_an_analysis_of_closed_bars_leaves_out_the_session_still_open(local_provider):
+    """The facts route quotes its last close, and at 10:00 IST the day's bar is the moving price, not a close."""
+    from datetime import datetime, timezone
+    ten_ist = datetime(2026, 9, 25, 4, 30, tzinfo=timezone.utc).astimezone().replace(tzinfo=None)    # naive, as datetime.now
+    morning = AnalysisService(local_provider, use_rss_news=False, now=lambda: ten_ist)
+    assert (morning.analyze("TEST", closed=True).quality["last_date"], morning.analyze("TEST").quality["last_date"]) == \
+        ("2026-09-24", END)
+
+
 def test_rendered_analysis_states_timestamps_and_labels_model_outputs(service):
     text = R.render_analysis(service.analyze("TEST"))
     assert "Analysis timestamp" in text and "Price data as of 2026-09-25" in text
@@ -84,6 +97,13 @@ def test_rendered_forecast_range_states_the_interval_it_was_built_for(service):
     for e in a.results["forecast"].details["horizons"].values():
         e["expected_range"]["probability"] = 0.9
     assert "90% range" in R.render_analysis(a)
+
+
+def test_rendered_risk_section_dates_the_drawdown_over_the_whole_history(service):
+    a = service.analyze("TEST")
+    s = a.results["risk"].details
+    assert s["history_period"] != s["period"]
+    assert f"max and current drawdown cover {R.TERM_MEANINGS['Loaded history']}, {s['history_period']}." in R.render_analysis(a)
 
 
 def test_a_drill_down_explains_the_jargon_its_own_lines_use(service):
@@ -122,7 +142,7 @@ def test_every_reply_that_explains_volatility_reads_the_one_meaning(orch, monkey
 
 @pytest.mark.parametrize("question, most", [("help", 8), ("Is the market in a downtrend?", 8),
                                             ("Analyze TEST", 9), ("how risky is TEST?", 9), ("Should I buy TEST?", 9)])
-def test_chat_replies_read_at_plain_language_grade(orch, monkeypatch, question, most):
+def test_chat_replies_read_at_plain_language_grade(app_client, orch, monkeypatch, question, most):
     from backend.models.external.eval_user_questions import grade, plain
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
     assert grade(plain(orch.handle(question, DEFAULT_PORTFOLIO, "plain").text)) <= most
@@ -135,26 +155,70 @@ class _Agent:
         self.turn, self.asked = turn, []
 
     def ask(self, question, subject, *, session):
-        self.asked.append(question)
+        self.asked.append((question, subject))
         return self.turn
 
 
 def test_a_question_none_of_our_handlers_fits_is_answered_by_the_self_learning_agent(orch, monkeypatch):
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
-    orch._agent = _Agent({"spoke": True, "served": "Its own words.", "shown": "Worded from its sources.",
+    orch._agent = _Agent({**TURN, "spoke": True, "served": "Its own words.", "shown": "Worded from its sources.",
                           "evidence": "RBI policy note, 2026-11-06: the repo rate stays at 5.50%.", "as_of": "2026-11-06"})
     r = orch.handle("what did the RBI say about rates?", DEFAULT_PORTFOLIO, "agent")
-    assert (r.intent, orch._agent.asked) == ("agent", ["what did the RBI say about rates?"])
-    assert r.text == ("Worded from its sources.\n\n**Source** · what ALFA retrieved, as of 2026-11-06:\n"
-                      "RBI policy note, 2026-11-06: the repo rate stays at 5.50%.")
+    assert (r.intent, orch._agent.asked) == ("agent", [("what did the RBI say about rates?", "")])
+    assert r.text == "Worded from its sources."      # not the raw evidence ALFA read: "prices ticker CAMPUS.NS ; ...;;"
 
 
-def test_when_the_agent_holds_back_the_reply_says_why_and_what_we_can_answer(orch, monkeypatch):
+def test_when_the_agent_holds_back_our_reply_is_ours_and_alfas_refusal_comes_with_it(orch, monkeypatch):
+    """Our list of questions was shown as ALFA's, after its internal reason ("not about money")."""
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
-    orch._agent = _Agent({"spoke": False, "served": "", "because": "its evidence does not carry the figures"})
-    r = orch.handle("what did the RBI say about rates?", DEFAULT_PORTFOLIO, "agent")
-    assert r.text.startswith("ALFA, our self-learning model, held back: its evidence does not carry the figures.")
-    assert "Analyze RELIANCE" in r.text
+    held = {**TURN, "spoke": False, "served": "i can only help with money and markets .", "because": "not about money"}
+    orch._agent = _Agent(held)
+    r = orch.handle("how is your mom doing", DEFAULT_PORTFOLIO, "agent")
+    assert (r.intent, r.text.startswith("Here are some things you can ask me"), r.data["agent"]) == ("help", True, held)
+
+
+def test_alfa_is_not_handed_the_chats_last_stock_for_a_question_naming_none(orch, monkeypatch):
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    orch._agent = _Agent({**TURN, "spoke": False, "served": "", "because": "its evidence does not carry the figures"})
+    orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "stale")
+    orch.handle("what did the RBI say about rates?", DEFAULT_PORTFOLIO, "stale")
+    assert orch._agent.asked == [("what did the RBI say about rates?", "")]
+
+
+@pytest.mark.parametrize("message,subject", [("how has nykaa been doing lately ?", "NYKAA.NS"),
+                                             ("is AAPL overbought?", "AAPL"), ("how has the nifty done ?", "^NSEI"),
+                                             ("what is a stop loss?", ""), ("How has it done YTD?", ""),
+                                             ("how has it done against the nifty ?", ""),
+                                             ("is the nifty above its 50 day average ?", "^NSEI"),
+                                             ("is it a good time to buy the nifty ?", "^NSEI"),
+                                             ("the nifty fell , is it oversold ?", "^NSEI"),
+                                             ("is nifty pharma overbought ?", ""), ("how is the nifty 50 doing ?", "^NSEI"),
+                                             ("is nifty next week going to fall ?", "^NSEI"),
+                                             ("has the nifty finally bottomed ?", "^NSEI"),
+                                             ("will the nifty 25000 level hold ?", "^NSEI")])
+def test_alfa_is_handed_the_stock_its_question_names_as_its_price_files_call_it(orch, accounts, message, subject):
+    """ALFA has no file for most NSE shares and must not guess one from a name, so the app says which it found. A word
+    in capitals nlu guesses is a share ("YTD") is not handed over: it displaced the share the conversation was about,
+    as the Nifty did for "it", and nlu reads "nifty pharma" as the Nifty 50."""
+    orch._listings["nykaa"] = "NYKAA"
+    orch._agent = _Agent(TURN)
+    signed_in_client(orch, accounts).post("/ui/agent/ask", json={"message": message})
+    assert orch._agent.asked == [(message, subject)]
+
+
+def test_alfa_is_handed_a_share_its_alias_names_though_all_its_own_names_are_english_words(orch):
+    """"how volatile is zomato" handed ALFA nothing, so it answered with the chat's last share."""
+    orch._listings = name_index({"ETERNAL": "Eternal Ltd."}, {"eternal"}, set())
+    assert orch.stock_named("how volatile is zomato") == "ETERNAL.NS"
+
+
+@pytest.mark.parametrize("turn, charged", [(WORDED, 2), (TURN, 1)], ids=["the writer's words", "ALFA's own words"])
+def test_a_question_the_chat_hands_to_alfa_is_charged_only_when_alfa_asked_the_language_model(orch, monkeypatch, turn,
+                                                                                              charged):
+    monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
+    orch._agent = _Agent({**turn, "spoke": True, "served": "Its own words."})
+    orch.handle("what did the RBI say about rates?", DEFAULT_PORTFOLIO, "agent")
+    assert orch.usage(DEFAULT_PORTFOLIO)["used"] == charged      # the routing call, and ALFA's if it asked the writer
 
 
 def test_an_unreachable_agent_is_named_and_its_call_refunded(orch, monkeypatch):
@@ -210,6 +274,21 @@ def test_why_a_negative_score_heads_its_evidence_as_negatives(orch, local_provid
     reply = orch.handle("why?", DEFAULT_PORTFOLIO, "fall")
     assert reply.data["payload"]["decision"]["score"] < 0
     assert "Main negatives:" in reply.text and "+ [FACT]" not in reply.text
+
+
+def test_the_chats_analysis_gives_the_last_close_not_a_price_while_the_session_is_open(orch, random_walk):
+    """AAPL's analysis read "Last close $351.76" at 14:33 ET, a price inside a session still open."""
+    from datetime import datetime, timezone
+    orch.service().now = lambda: datetime(2026, 9, 25, 4, 30, tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
+    text = orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "open").text
+    assert f"Last close **{R._money(random_walk['close'].iloc[-2])}**. Price data as of {random_walk.index[-2].date()}" in text
+
+
+def test_our_analysis_says_its_prices_are_adjusted_for_dividends_where_alfas_figures_are_not(orch):
+    """INFY's RSI read 53 in ALFA's figures and 55.5 in our technical card on one screen, with nothing to say why."""
+    assert f"{R.ADJUSTED}." in orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "adjusted").text
+    assert f"on prices {R.ADJUSTED}." in orch.handle("is TEST overbought?", DEFAULT_PORTFOLIO, "adjusted").text
+    assert R.ADJUSTED not in orch.handle("What about fundamentals?", DEFAULT_PORTFOLIO, "adjusted").text
 
 
 def test_budget_question_uses_the_session_stock(orch):
@@ -648,7 +727,7 @@ def test_one_users_chat_is_not_anothers_with_the_same_session_id(orch, accounts,
 def test_one_users_agent_conversation_is_not_anothers_with_the_same_session_id(orch, accounts, monkeypatch):
     from backend.models.agent.client import SelfAgentClient
     sessions = []
-    monkeypatch.setattr(SelfAgentClient, "ask", lambda self, question, subject="", *, session: sessions.append(session) or {})
+    monkeypatch.setattr(SelfAgentClient, "ask", lambda self, question, subject="", *, session: sessions.append(session) or TURN)
     app = create_app(orch, accounts)
     for email in (EMAIL, OTHER):
         signed_in_client(orch, accounts, email, app).post("/ui/agent/ask", json={"message": "Why?", "session_id": "s1"})
@@ -672,7 +751,7 @@ def count_rows(store, db_path):
 def asha_deleted(orch, accounts, db_path, asha_and_ravi, monkeypatch, funds_served):
     """Both users made one row of each kind, then asha deleted her account; returns the counts before and after."""
     from backend.models.agent.client import SelfAgentClient
-    monkeypatch.setattr(SelfAgentClient, "ask", lambda self, question, subject="", *, session: {})
+    monkeypatch.setattr(SelfAgentClient, "ask", lambda self, question, subject="", *, session: WORDED)
     alert = orch.store.save_alert("TEST", "price_move", "high", "TEST moved 6%", ["moved 6%"])
     for client, email in zip(asha_and_ravi, (EMAIL, OTHER)):
         for method, path, body in (("post", "/reports/TEST", None), ("post", f"/alerts/{alert}/ack", None),
@@ -1041,6 +1120,15 @@ def test_ui_verdict_explains_both_sides(app_client):
     assert v["evidence_note"].startswith("The buy/sell rule is NSE's momentum method.")
 
 
+def test_a_day_with_no_closes_stops_the_verdict_rather_than_putting_every_share_outside_the_nifty_200(app_client, orch):
+    """A cached panel ended on Yahoo's 16 Nov row with no closes: no share was ranked, and each read "NO SIGNAL"."""
+    p = orch.hub._panel
+    gap = p.close.index[-1] + pd.Timedelta(days=3)
+    p.close.loc[gap] = float("nan")
+    r = app_client.get("/ui/stock/TEST/verdict")
+    assert (r.status_code, f"no Nifty 200 share could be ranked on {gap.date()}" in r.json()["detail"]) == (404, True)
+
+
 def test_verdict_bands_say_which_portfolio_size_they_assume(app_client):
     """plan() sizes the portfolio from the capital, so a ₹2 lakh plan keeps only the top 20; bands set for 20 stocks
     gave the opposite advice on the same holding without saying why."""
@@ -1078,8 +1166,8 @@ def test_neutral_fundamentals_are_not_a_reason_to_buy(app_client, orch, monkeypa
     from backend.advisory.fusion.evidence import DomainResult
     analysis = orch.analysis
 
-    def neutral(s, sym):
-        a = analysis(s, sym)
+    def neutral(s, sym, **kw):
+        a = analysis(s, sym, **kw)
         a.results["fundamental"] = DomainResult("fundamental", "mixed", -0.05, details={"trend": trend})
         return a
     monkeypatch.setattr(orch, "analysis", neutral)
@@ -1112,13 +1200,64 @@ def test_a_reason_with_no_plain_form_is_shown_in_the_engines_own_words():
     assert plain_reason("Volume is 2.1x its 20-day average on a +3.0% day.") == "Volume is 2.1x its 20-day average on a +3.0% day."
 
 
-def test_the_buy_verdicts_reasons_are_list_items_the_chat_shows_one_per_line(orch):
+def test_the_buy_verdicts_reasons_are_list_items_the_chat_shows_one_per_line(app_client, orch):
     lines = orch.handle("Should I buy TEST?", DEFAULT_PORTFOLIO, "plain-verdict").text.splitlines()
     headings = [line for line in lines if line in ("**Good signs**", "**Risks**")]
     assert headings
     for heading in headings:
         block = lines[lines.index(heading) + 1:]
         assert all(line.startswith("- ") for line in block[:block.index("")])
+
+
+def test_a_sell_question_is_answered_with_the_signals_verdict_for_a_holder(app_client, orch, monkeypatch):
+    """"should I sell reliance", ranked 133, was answered "DON'T BUY", which says nothing about a share already owned."""
+    import backend.api.hub as hubmod
+    monkeypatch.setattr(hubmod, "BUY_RANK", 0)
+    monkeypatch.setattr(hubmod, "KEEP_RANK", 0)
+    text = orch.handle("should I sell TEST?", DEFAULT_PORTFOLIO, "sell").text
+    assert text.startswith("**Tested signal for TEST, if you own it: SELL AT REBALANCE**")
+    assert "our signal sells stocks like this at its next check" in text
+
+
+def test_a_sell_questions_wider_check_is_read_for_a_holder(app_client, orch, local_provider, monkeypatch):
+    """"should I sell campus" said "Our wider check, for 1–6 months, says AVOID", a buyer's word, where a holder's is HOLD."""
+    from backend.advisory.fusion import fusion
+    monkeypatch.setattr(fusion, "DECISION", replace(fusion.DECISION, mild=0.0, strong=10.0))   # any fall: HOLD or AVOID
+    local_provider.frames["FALL.NS"] = synthetic.ohlcv(900, seed=3, drift=-0.003, end=END)
+    orch._listings["fall"] = "FALL"
+    assert "Our wider check, for 1–6 months, says HOLD." in orch.handle("should I sell FALL?", DEFAULT_PORTFOLIO, "sell").text
+
+
+def test_the_wider_check_says_which_horizon_it_was_read_for(app_client, orch):
+    """CAMPUS's wider check read AVOID, then HOLD on the same close: an earlier question had set a short horizon."""
+    orch.hub._names["nifty200"] = [False, True]      # TEST outside the signal's universe, where the headline gives the check
+    text = orch.handle("I will hold TEST for 3 weeks. Should I buy it?", DEFAULT_PORTFOLIO, "horizon").text
+    assert "Our wider check, for 1–4 weeks, says" in text
+    assert "Our wider check of the chart, news and company accounts, for 1–4 weeks, says" in text
+
+
+def test_a_word_about_the_price_leaves_the_chats_horizon_alone(orch):
+    """"what is the intraday high of hdfc bank today" set a short horizon for the rest of the chat."""
+    orch.handle("what is the intraday high of TEST today", DEFAULT_PORTFOLIO, "intraday")
+    assert "looking 1–6 months ahead" in orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "intraday").text
+
+
+def test_the_day_high_is_answered_from_the_days_price_bar(orch, local_provider):
+    """It got the whole analysis, and ALFA a news headline, though the day's bar holds the high."""
+    bar = local_provider.frames["TEST.NS"].iloc[-1]
+    reply = orch.handle("what is the intraday high of TEST today", DEFAULT_PORTFOLIO, "high")
+    assert reply.intent == "day_range" and reply.text.startswith(f"TEST on {bar.name.date()}: high ₹{bar['high']:,.2f}, low")
+
+
+@pytest.mark.parametrize("left, called", [(0.95, "not in a correction"), (0.85, "in a correction"), (0.7, "in a bear market")])
+def test_a_correction_question_says_how_far_the_share_is_below_its_high_and_what_that_is_called(orch, local_provider, left,
+                                                                                               called):
+    """"is tcs in a correction" got its worst fall in 60 days and a full analysis, and neither said whether it was in one."""
+    frame = local_provider.frames["TEST.NS"]
+    frame.iloc[-1, frame.columns.get_indexer(["open", "high", "low", "close"])] = left * frame["close"].iloc[-252:].max()
+    reply = orch.handle("is TEST in a correction?", DEFAULT_PORTFOLIO, "correction")
+    assert reply.intent == "correction" and f"{(1 - left) * 100:.1f}% below its highest close of the past year" in reply.text
+    assert reply.text.endswith(f"so by that rule it is {called}.")
 
 
 def test_ui_verdict_that_gives_a_stop_says_the_track_record_left_it_out(app_client):
@@ -1275,6 +1414,25 @@ def test_ui_technical_chart_carries_geometry_markers_cone_and_records(app_client
     for p in t["patterns"]:
         assert "geometry" in p and "summary" in p["record"]
     assert "no model we tested predicted direction" in t["cone_note"]
+
+
+def test_the_grey_cone_explains_volatility_with_the_one_meaning(app_client, monkeypatch):
+    monkeypatch.setitem(R.TERM_MEANINGS, "Volatility", "a meaning only this test writes")
+    assert "volatility (a meaning only this test writes: " in app_client.get("/ui/stock/TEST/technical?bars=60").json()["cone_note"]
+
+
+@pytest.mark.parametrize("term, read", [("RSI", ".RSI"), ("MACD histogram", '["MACD histogram"]'), ("Drawdown", ".Drawdown")])
+def test_indicator_panels_define_their_terms_with_the_one_meaning(app_client, monkeypatch, term, read):
+    monkeypatch.setitem(R.TERM_MEANINGS, term, "a meaning only this test writes")
+    assert app_client.get("/ui/stock/TEST/indicators").json()["meanings"][term] == "a meaning only this test writes"
+    assert f"${{k.meanings{read}}}" in app_client.get("/static/app.js").text
+
+
+def test_drawdown_caption_states_the_span_the_indicators_cover(app_client, random_walk):
+    k = app_client.get("/ui/stock/TEST/indicators").json()
+    js = app_client.get("/static/app.js").text
+    assert k["history_from"] == str(random_walk.index[0].date()) and "k.history_from" in js
+    assert k["max_drawdown_pct"] is not None and "num(k.max_drawdown_pct" in js
 
 
 def test_pattern_geometry_points_are_the_swing_points_used():
@@ -1565,16 +1723,31 @@ def test_agent_ask_carries_the_chat_session_to_the_agent(orch, monkeypatch, acco
     """Every question opened a new agent conversation, so "Analyze RELIANCE" then "Why?" lost the instrument."""
     from backend.models.agent.client import SelfAgentClient
     sessions = []
-    monkeypatch.setattr(SelfAgentClient, "ask", lambda self, question, subject="", *, session: sessions.append(session))
+    monkeypatch.setattr(SelfAgentClient, "ask", lambda self, question, subject="", *, session: sessions.append(session) or TURN)
     client = signed_in_client(orch, accounts)
     client.post("/ui/agent/ask", json={"message": "Why?", "session_id": "web-1"})
     assert sessions == [f"{owner(accounts)}:web-1"]
 
 
-def _answering_agent(monkeypatch, orch, accounts):
+def _answering_agent(monkeypatch, orch, accounts, turn=WORDED):
     from backend.models.agent.client import SelfAgentClient
-    monkeypatch.setattr(SelfAgentClient, "ask", lambda self, question, subject="", *, session: {"stage": "turn"})
+    monkeypatch.setattr(SelfAgentClient, "ask", lambda self, question, subject="", *, session: turn)
     return signed_in_client(orch, accounts)
+
+
+@pytest.mark.parametrize("phrased_by, unphrased_because, asked_writer, charged", [
+    ("microsoft/Phi-4-mini-instruct", "", True, 1), (BUILT, "it leaves out 80%", True, 1), ("", "", False, 0),
+    (BUILT, "", False, 0), (BUILT, "the language model is unavailable: GPU quota exceeded", False, 0),
+    ("", "", True, 1)],
+    ids=["the writer's words", "the writer's words refused", "ALFA's own words", "our code's sentence",
+         "the writer not reached", "a refusal after the writer read the news"])
+def test_an_alfa_turn_is_charged_only_when_it_asked_the_language_model(orch, monkeypatch, accounts, phrased_by,
+                                                                      unphrased_because, asked_writer, charged):
+    """Every ask was charged, so the turns ALFA answered with no writer used up the 10 a day in about 9 questions. Then a
+    writer the Space could not run was charged, and one that read the news and found no answer was not."""
+    turn = {**TURN, "phrased_by": phrased_by, "unphrased_because": unphrased_because, "asked_writer": asked_writer}
+    _answering_agent(monkeypatch, orch, accounts, turn).post("/ui/agent/ask", json={"message": "Why?"})
+    assert orch.usage(owner(accounts))["used"] == charged
 
 
 def test_an_agent_question_over_the_daily_limit_is_a_429_saying_when_more_come(orch, monkeypatch, accounts):
@@ -1950,6 +2123,15 @@ def test_fetching_the_agent_keeps_the_feedback_this_deployment_has_learned(monke
     monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda repo, local_dir: str(held))
     assert weights.pull_agent("you/alfa-agent") == ["generator.npz", "prices/INFY.NS.csv"]
     assert (artifacts / "served.sqlite").read_text() == "learned since" and (data / "prices" / "INFY.NS.csv").exists()
+
+
+def test_the_agent_repo_carries_what_a_promoted_step36000_reads_and_not_the_templates_nothing_there_reads():
+    """Without them a VM promoting it has no checkpoint to load and no record of what it trained on. The router reads its
+    short price templates from package data, and the user's jsonl shipped beside them was read by nothing."""
+    from backend.models.serving import weights
+    held = {name for _, name in weights.agent_files()}
+    assert {"artifacts/alfa_v2_data/alfa_v2.step36000.npz", "artifacts/alfa_v2_data/MANIFEST.json"} <= held
+    assert not any("user_short_templates" in name for name in held)
 
 
 def test_the_app_reads_company_news_from_the_newswire_not_google(monkeypatch, tmp_path):
@@ -2364,7 +2546,7 @@ def test_a_question_about_another_subject_is_not_answered_for_the_stock_in_the_s
 
 
 @pytest.mark.parametrize("question", ["is it a good buy?", "is this a buy?"])
-def test_a_buy_question_about_the_stock_in_the_session_gets_its_verdict(orch, question):
+def test_a_buy_question_about_the_stock_in_the_session_gets_its_verdict(app_client, orch, question):
     orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "follow-up")
     reply = orch.handle(question, DEFAULT_PORTFOLIO, "follow-up")
     assert reply.intent == "should_buy" and reply.text.startswith("**Tested buy signal for TEST:")

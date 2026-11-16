@@ -34,7 +34,7 @@ from backend.database.sources.provider import DataUnavailable
 from backend.database.sources.quality import DataQualityError
 from backend.api.accounts import Accounts, owner_of
 from backend.api.jsonutil import sanitize
-from backend.api.quota import QuotaExceeded
+from backend.api.quota import QuotaExceeded, asked_language_model
 from backend.knowledge_base.lessons import knowledge_base
 from backend.paths import FRONTEND
 from backend.api.nlu import ALIASES
@@ -411,10 +411,15 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
     def ui_agent_ask(body: ChatIn, owner: str = Depends(auth)):
         from backend.models.agent.client import AgentUnavailable
         try:
-            with orch.model_call(owner):
-                return ok(agent_client.ask(body.message, "", session=owner + ":" + body.session_id))
+            with orch.model_call(owner) as refund:
+                turn = agent_client.ask(body.message, orch.stock_named(body.message),
+                                        session=owner + ":" + body.session_id)
         except AgentUnavailable as exc:
             raise HTTPException(503, str(exc)) from None
+        # charged before the ask, which is the only way to stop it at the limit; only ALFA knows if it asked the writer
+        if not asked_language_model(turn):
+            refund()
+        return ok(turn)
 
     @app.get("/ui/usage")
     def ui_usage(owner: str = Depends(auth)):

@@ -78,6 +78,7 @@ def refresh(session, archive=ARCHIVE, feeds=FEEDS, today=None):
     archive that stopped growing would go on answering "lately" with last month's news.
     """
     from backend.database.live.session import BlockedByHost
+    from backend.database.sources.provider import unavailable_from
     held = read(archive)
     seen = {row["link"] for row in held}
     fresh, failed = [], []
@@ -85,7 +86,7 @@ def refresh(session, archive=ARCHIVE, feeds=FEEDS, today=None):
         try:
             rows = parse(session.get_text(url), source)
         except (BlockedByHost, RuntimeError) as error:
-            failed.append(f"{source} ({url}): {error}")
+            failed.append(str(unavailable_from(error, f"{source} ({url})")))
             continue
         for row in rows:
             if row["link"] not in seen:
@@ -93,8 +94,6 @@ def refresh(session, archive=ARCHIVE, feeds=FEEDS, today=None):
                 fresh.append(row)
     if failed and len(failed) == len(feeds):
         raise RuntimeError("no news feed could be read: " + "; ".join(failed))
-    for message in failed:
-        log.warning("feed skipped: %s", message)
     oldest = ((today or date.today()) - timedelta(days=KEEP_DAYS)).isoformat()
     kept = sorted((row for row in fresh + held if row["day"] >= oldest and not FILLER.search(row["title"])),
                   key=lambda row: row["day"], reverse=True)

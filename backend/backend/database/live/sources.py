@@ -34,6 +34,7 @@ from urllib.parse import quote
 from backend.knowledge_base.retrieval.chunk import chunks as into_chunks
 from backend.knowledge_base.retrieval.chunk import deduplicate
 from backend.database.live.session import BlockedByHost
+from backend.database.sources.provider import unavailable_from
 
 EDGAR_SEARCH = "https://efts.sec.gov/LATEST/search-index"
 EDGAR_ARCHIVE = "https://www.sec.gov/Archives/edgar/data"
@@ -203,7 +204,7 @@ class Live:
             try:
                 pages = source.documents(query, terms, as_of, subject)
             except (BlockedByHost, RuntimeError) as error:
-                refused.append(f"{source.name}: {error}")
+                refused.append(str(unavailable_from(error, source.name)))
                 continue
             for page in pages:
                 found += into_chunks(page, self.tokenizer, self.chunk_tokens)

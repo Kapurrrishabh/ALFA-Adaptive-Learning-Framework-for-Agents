@@ -22,7 +22,7 @@ import uvicorn  # noqa: E402
 from backend.models.agent.run.ask import ROUTERS, build, listed_names, reference_from, writer_from  # noqa: E402
 from backend.database import Store  # noqa: E402
 from backend.api.agent_server import create_app  # noqa: E402
-from backend.models.agent.run.chat import adapt  # noqa: E402
+from backend.models.agent.run.chat import adapt, generator_of, require_learned_cut  # noqa: E402
 from backend.models.learning.teacher import AgentTeacher  # noqa: E402
 from backend.models.agent.present import present  # noqa: E402
 
@@ -36,21 +36,25 @@ def app_from(args):
     # it, and the cuts are refitted from that same log.
     artifacts = Path(args.artifacts)
     writer = writer_from(args.phrase)
-    agent, _, _, served = build(artifacts, args.checkpoint, args.prices, args.gate, args.store,
+    teacher = AgentTeacher(args.verdicts)
+    # The agent's labeller fits every cut, the first included: a first cut fitted on the oracle's rows once differed
+    # from every cut fitted after a turn. `adapt` reads the oracle's rows only while the agent's cannot teach a cut.
+    agent, _, learned, served = build(artifacts, args.checkpoint, args.prices, args.gate, args.store,
                                 args.wanted, args.warmup, args.price_head,
                                 reference_from(artifacts, args.reference_index,
                                                args.reference_checkpoint, args.paraphrase, args.live, writer,
                                                args.dense),
-                                args.symbols, args.scenarios, writer=writer, listed=listed_names(),
-                                router=args.router)
-    teacher = AgentTeacher(args.verdicts)
+                                args.symbols, args.scenarios, listed=listed_names(),
+                                router=args.router, live=args.live, labeller=teacher.name)
+    generator = generator_of(served)
+    require_learned_cut(learned, args.store, args.warmup, generator, served)
     store = Store(args.store)
     names, sources = listed_names(), json.loads((artifacts / SOURCES).read_text())
     app = create_app(agent, store,
                      lambda question, evidence, answer:
                          teacher.judge(question, evidence, answer) + (teacher.name,),
-                     lambda feedback: adapt(feedback, args.wanted, args.warmup, teacher.name),
-                     served, lambda turn: present(turn, names, sources))
+                     lambda feedback: adapt(feedback, args.wanted, args.warmup, teacher.name, generator),
+                     served, generator["digest"], lambda turn: present(turn, names, sources))
     return app, store, teacher
 
 
@@ -73,12 +77,14 @@ def main():
                         help="serve the reference generator's words rather than the passage it read")
     parser.add_argument("--live", action="store_true",
                         help="search SEC EDGAR for a company that files there and Wikipedia otherwise, "
-                             "before reading the corpus for the first and after it for the second; off by "
-                             "default, and off is what makes this deployment offline")
+                             "before reading the corpus for the first and after it for the second, and fetch "
+                             "the prices of an NSE share the app names; off by default, and off is what makes "
+                             "this deployment offline")
     parser.add_argument("--symbols", default=str(DATA / "raw/sec_edgar/company_tickers.json"),
                         help="SEC's symbol table: an instrument's company name and filing number")
     parser.add_argument("--phrase", action="store_true",
-                        help="reword each answer with the language model (the model Space's when one is set)")
+                        help="reword what the news and filings say with the language model (the model Space's "
+                             "when one is set)")
     parser.add_argument("--dense", action="store_true",
                         help="find reference passages by meaning rather than by shared words")
     parser.add_argument("--store", default=str(ARTIFACTS / "served.sqlite"),

@@ -22,11 +22,13 @@ PUBLISHED = (alfa_fan.WEIGHTS, alfa_fan.BACKTEST, gru_line.WEIGHTS)
 # What the agent server reads on start, traced from models/agent/run/serve.py: its two generators and their
 # tokenizer and registry, the routing cut, the week-ahead head, the return model, the retrieval index, and
 # the feedback its answer cut is refitted from. Then its price files, SEC's symbol table and the exchange's
-# constituent list its Indian company names come from.
+# constituent list its Indian company names come from. Promoted, step36000 also needs the MANIFEST promote.py reads
+# its trained sets from. The router's short price templates are package data, installed with the code.
 AGENT_ARTIFACTS = ("registry.json", "tokenizer.json", "advisory_combined.npz", "generator.npz", "route_gate.json",
                    "price_head.npz", "returns.npz", "reference_index.npz", "reference_sources.json",
                    "reference_vectors_bge.npy",
-                   "route_gate_bge.json", "served.sqlite", "served_verdicts.jsonl")
+                   "route_gate_bge.json", "served.sqlite", "served_verdicts.jsonl",
+                   "alfa_v2_data/alfa_v2.step36000.npz", "alfa_v2_data/MANIFEST.json")
 AGENT_DATA = ("prices", "raw/sec_edgar/company_tickers.json", "cache/nifty500.csv")
 
 

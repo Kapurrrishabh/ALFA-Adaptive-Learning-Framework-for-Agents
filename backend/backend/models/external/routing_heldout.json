@@ -1,0 +1,1236 @@
+{
+ "dev": [
+  {
+   "question": "why is wipro falling",
+   "label": "facts",
+   "why": "asks why it moved; the snapshot holds the move, only the news lines in the facts can give a cause"
+  },
+  {
+   "question": "infy going up?",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "how much has infy returned over six months",
+   "label": "facts",
+   "why": "a return over 3 months or more; only the facts lines hold returns that long"
+  },
+  {
+   "question": "is infosys's p/e too high",
+   "label": "facts",
+   "why": "a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "how deep is the dip in hcl tech",
+   "label": "drawdown",
+   "why": "asks how far it fell from a recent peak; the 60-day drawdown answers it"
+  },
+  {
+   "question": "is hindalco cheap on earnings",
+   "label": "facts",
+   "why": "a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "did dmart's price dip this week",
+   "label": "performance",
+   "why": "asks about this week's price move; the 5-day return answers it"
+  },
+  {
+   "question": "is the roe of bajaj finance high",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "how jumpy has tesla been during the selloff",
+   "label": "volatility",
+   "why": "asks how much it swings; 20-day volatility and the daily range (ATR) answer it"
+  },
+  {
+   "question": "roe of icici bank",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "what is zomato's business model",
+   "label": "facts",
+   "why": "asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "what is the average daily range of reliance",
+   "label": "volatility",
+   "why": "asks how much it swings; 20-day volatility and the daily range (ATR) answer it"
+  },
+  {
+   "question": "is asian paints in a slump",
+   "label": "performance",
+   "why": "asks about this month's price move; the 20-day return and trend answer it"
+  },
+  {
+   "question": "valuation aside, how has apple's share price moved this week",
+   "label": "performance",
+   "why": "valuation is set aside; asks about this week's price move; the 5-day return answers it"
+  },
+  {
+   "question": "did tcs hit an upper circuit today",
+   "label": "unsupported",
+   "why": "needs intraday or single-day bars; the evidence has only daily snapshot figures over 5 to 60 days"
+  },
+  {
+   "question": "how wild are the swings in paytm after the crash",
+   "label": "volatility",
+   "why": "asks how much it swings; 20-day volatility and the daily range (ATR) answer it"
+  },
+  {
+   "question": "tesla debt to equity",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "should i hold meta for the long term",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "how did sbin close yesterday versus the day before",
+   "label": "unsupported",
+   "why": "a one-day change is not held; the snapshot's shortest return is 5 days"
+  },
+  {
+   "question": "with growth slowing, should i exit asian paints",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "what caused the selloff in adani ports",
+   "label": "facts",
+   "why": "asks why it moved; the snapshot holds the move, only the news lines in the facts can give a cause"
+  },
+  {
+   "question": "what's the one year return on Bharti Airtel",
+   "label": "facts",
+   "why": "a return over 3 months or more; only the facts lines hold returns that long"
+  },
+  {
+   "question": "how is tcs's sector doing this week",
+   "label": "unsupported",
+   "why": "asks for the sector's move; no sector or index figures are held"
+  },
+  {
+   "question": "is hdfc bank's share price falling this week despite good profits",
+   "label": "performance",
+   "why": "the profit word is context; asks about this week's price move; the 5-day return answers it"
+  },
+  {
+   "question": "what range might tcs trade in over the next month",
+   "label": "facts",
+   "why": "the 20-day 80% scenario range is only in the facts lines"
+  },
+  {
+   "question": "how much did yes bank crash from its recent high",
+   "label": "drawdown",
+   "why": "asks how far it fell from a recent peak; the 60-day drawdown answers it"
+  },
+  {
+   "question": "with results due, how risky is the week ahead for msft",
+   "label": "risk",
+   "why": "results is context; asks how rough the coming week looks; the calm/normal/turbulent outlook answers it"
+  },
+  {
+   "question": "is tcs dropping",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "any news behind the plunge in indusind bank",
+   "label": "facts",
+   "why": "asks why it moved; the snapshot holds the move, only the news lines in the facts can give a cause"
+  },
+  {
+   "question": "is it the right time to sell wipro",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "price to book of kotak bank",
+   "label": "facts",
+   "why": "a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "what's the valuation of HDFC Bank",
+   "label": "facts",
+   "why": "a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "tcs peers",
+   "label": "facts",
+   "why": "peers are listed among the company facts"
+  },
+  {
+   "question": "is adani enterprises's debt high against its equity",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "is apple overbought after earnings",
+   "label": "overbought",
+   "why": "earnings is context; asks whether the move is stretched; the 14-day RSI answers it"
+  },
+  {
+   "question": "did adani enterprises crash this month",
+   "label": "performance",
+   "why": "asks about this month's price move; the 20-day return and trend answer it"
+  },
+  {
+   "question": "what was tcs's closing price on 1 october",
+   "label": "unsupported",
+   "why": "asks for a move anchored to a date or event; no figure in the evidence is measured from that date"
+  },
+  {
+   "question": "what does the 50 day average say about tcs",
+   "label": "performance",
+   "why": "the performance answer states the trend against the 20 and 50 day averages"
+  },
+  {
+   "question": "is wipro still sliding",
+   "label": "performance",
+   "why": "asks about the recent direction; 5- vs 20-day returns and trend answer it"
+  },
+  {
+   "question": "how is tcs trending",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "has irfc had a sharp rise this month",
+   "label": "performance",
+   "why": "asks about this month's price move; the 20-day return and trend answer it"
+  },
+  {
+   "question": "how big is the current dip in titan from its top",
+   "label": "drawdown",
+   "why": "asks how far it fell from a recent peak; the 60-day drawdown answers it"
+  },
+  {
+   "question": "after the earnings beat, is it time to buy infy",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "should i average down on vedanta after the plunge",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "dr reddy's margins",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "should i take profit on bel after the surge",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "is maruti above its 20 and 50 day averages",
+   "label": "performance",
+   "why": "the performance answer states the trend against the 20 and 50 day averages"
+  },
+  {
+   "question": "is the rally in HAL overdone",
+   "label": "overbought",
+   "why": "asks whether the move is stretched; the 14-day RSI answers it"
+  },
+  {
+   "question": "how profitable is hul",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "is the rsi of bel high",
+   "label": "overbought",
+   "why": "'high' is about the RSI; asks whether the move is stretched; the 14-day RSI answers it"
+  },
+  {
+   "question": "is tcs near its 52 week high",
+   "label": "unsupported",
+   "why": "52-week or all-time highs and lows are not held; the facts give the distance from the highest close in about 5 years, a different number"
+  },
+  {
+   "question": "should i sell ITC now that the dividend is paid",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "where are the bollinger bands for infy",
+   "label": "unsupported",
+   "why": "names an indicator the evidence does not compute (Bollinger levels)"
+  },
+  {
+   "question": "is infosys a better dividend payer than tcs",
+   "label": "unsupported",
+   "why": "compares with a second share or an index; a turn carries one share and no index figures"
+  },
+  {
+   "question": "how is the share price of bajaj finance growing this month",
+   "label": "performance",
+   "why": "'growing' is about the share price; asks about this month's price move; the 20-day return and trend answer it"
+  },
+  {
+   "question": "how has tcs done over the past year",
+   "label": "facts",
+   "why": "a return over 3 months or more; only the facts lines hold returns that long"
+  },
+  {
+   "question": "what is behind the rally in hal",
+   "label": "facts",
+   "why": "asks why it moved; the snapshot holds the move, only the news lines in the facts can give a cause"
+  },
+  {
+   "question": "how much has meta fallen from its peak in this selloff",
+   "label": "drawdown",
+   "why": "asks how far it fell from a recent peak; the 60-day drawdown answers it"
+  },
+  {
+   "question": "what does your model say about tcs for the coming week",
+   "label": "risk",
+   "why": "the model's own week-ahead read is the risk outlook"
+  },
+  {
+   "question": "is infosys's balance sheet strong",
+   "label": "facts",
+   "why": "'strong' is about the balance sheet, not the price; a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "what does the volatility look like for AMZN",
+   "label": "volatility",
+   "why": "asks how much it swings; 20-day volatility and the daily range (ATR) answer it"
+  },
+  {
+   "question": "what is the share price of tcs right now",
+   "label": "performance",
+   "why": "asks for the current share price; the close is in the performance answer"
+  },
+  {
+   "question": "what model does paytm use to make money",
+   "label": "facts",
+   "why": "asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "what does the recent price action say about tcs",
+   "label": "performance",
+   "why": "'what does' about price action; returns and trend answer it"
+  },
+  {
+   "question": "how did tcs trade in the last hour",
+   "label": "unsupported",
+   "why": "needs intraday or single-day bars; the evidence has only daily snapshot figures over 5 to 60 days"
+  },
+  {
+   "question": "should i book profits in trent",
+   "label": "buy",
+   "why": "'book profits' means sell; a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "is sbin oversold after the selloff",
+   "label": "overbought",
+   "why": "asks whether the move is stretched; the 14-day RSI answers it"
+  },
+  {
+   "question": "after the plunge, is nykaa oversold",
+   "label": "overbought",
+   "why": "asks whether the move is stretched; the 14-day RSI answers it"
+  },
+  {
+   "question": "is bel still rising",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "is a rough week ahead for yes bank after the crash",
+   "label": "risk",
+   "why": "asks how rough the coming week looks; the calm/normal/turbulent outlook answers it"
+  },
+  {
+   "question": "how big is the surge in suzlon this month",
+   "label": "performance",
+   "why": "asks about this month's price move; the 20-day return and trend answer it"
+  },
+  {
+   "question": "infy margins?",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "what is the adx on bel",
+   "label": "unsupported",
+   "why": "names an indicator the evidence does not compute (ADX)"
+  },
+  {
+   "question": "what does the rsi say about wipro",
+   "label": "overbought",
+   "why": "asks whether the move is stretched; the 14-day RSI answers it"
+  },
+  {
+   "question": "where is the support level for infosys",
+   "label": "facts",
+   "why": "support and resistance levels are only in the facts lines"
+  },
+  {
+   "question": "what business is jio financial in",
+   "label": "facts",
+   "why": "asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "tcs revenue",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "is ongc cheap",
+   "label": "facts",
+   "why": "a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "is it a good time to buy nvidia after the selloff",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "why did zomato spike",
+   "label": "facts",
+   "why": "asks why it moved; the snapshot holds the move, only the news lines in the facts can give a cause"
+  },
+  {
+   "question": "forget the business, how is pidilite's share price doing",
+   "label": "performance",
+   "why": "the business is set aside; returns and trend answer it"
+  },
+  {
+   "question": "ITC dividend",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "the valuation looks stretched, should i sell nykaa",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "is microsoft a buy at these levels",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "has the selloff made hdfcbank oversold",
+   "label": "overbought",
+   "why": "asks whether the move is stretched; the 14-day RSI answers it"
+  },
+  {
+   "question": "has TCS become cheaper this month",
+   "label": "performance",
+   "why": "'cheaper' means the price fell, not valuation; asks about this month's price move; the 20-day return and trend answer it"
+  },
+  {
+   "question": "what is the weekly chart of tcs showing",
+   "label": "unsupported",
+   "why": "weekly bars are not held"
+  },
+  {
+   "question": "how much has the selloff taken off kotak bank this week",
+   "label": "performance",
+   "why": "asks about this week's price move; the 5-day return answers it"
+  },
+  {
+   "question": "how much did tcs move today",
+   "label": "unsupported",
+   "why": "needs intraday or single-day bars; the evidence has only daily snapshot figures over 5 to 60 days"
+  },
+  {
+   "question": "should i hold tcs for the dividend or sell it",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "what does the profit booking mean for bel's price this week",
+   "label": "performance",
+   "why": "'profit booking' is selling; asks about this week's price move; the 5-day return answers it"
+  },
+  {
+   "question": "is asian paints a high margin business",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "how high is reliance's share price right now",
+   "label": "performance",
+   "why": "'how high' asks the current price, not a 52-week high; asks for the current share price; the close is in the performance answer"
+  },
+  {
+   "question": "what is wipro's revenue for one year",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "should i sell sbi into this rally",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "is tesla's valuation too high",
+   "label": "facts",
+   "why": "a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "how bad was the plunge in nykaa over the past two months",
+   "label": "drawdown",
+   "why": "asks how far it fell from a recent peak; the 60-day drawdown answers it"
+  },
+  {
+   "question": "who are hdfc bank's peers",
+   "label": "facts",
+   "why": "peers are listed among the company facts"
+  },
+  {
+   "question": "is tesla sinking",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "who competes with infosys",
+   "label": "facts",
+   "why": "peers are listed among the company facts"
+  },
+  {
+   "question": "AAPL revenue growth",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "how risky is tcs next week",
+   "label": "risk",
+   "why": "asks how rough the coming week looks; the calm/normal/turbulent outlook answers it"
+  },
+  {
+   "question": "why is nvidia up",
+   "label": "facts",
+   "why": "asks why it moved; the snapshot holds the move, only the news lines in the facts can give a cause"
+  },
+  {
+   "question": "how much cash does infosys get from its operations",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "how far has reliance slid from its recent peak",
+   "label": "drawdown",
+   "why": "asks how far it fell from a recent peak; the 60-day drawdown answers it"
+  },
+  {
+   "question": "what is the market cap of reliance right now",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "how is sbin trending",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "how volatile is tata steel",
+   "label": "volatility",
+   "why": "asks how much it swings; 20-day volatility and the daily range (ATR) answer it"
+  },
+  {
+   "question": "what's nvidia's business model",
+   "label": "facts",
+   "why": "asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "is tcs a buy right now",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "did tcs beat the nifty this year",
+   "label": "unsupported",
+   "why": "compares with a second share or an index; a turn carries one share and no index figures"
+  },
+  {
+   "question": "Tata Power valuation",
+   "label": "facts",
+   "why": "a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "is next week going to be turbulent for adani ent",
+   "label": "risk",
+   "why": "asks how rough the coming week looks; the calm/normal/turbulent outlook answers it"
+  },
+  {
+   "question": "did tcs get cheaper this week",
+   "label": "performance",
+   "why": "'cheaper' means the price fell; asks about this week's price move; the 5-day return answers it"
+  },
+  {
+   "question": "is the dip in itc a buying opportunity",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "did reliance gap up this morning",
+   "label": "unsupported",
+   "why": "needs intraday or single-day bars; the evidence has only daily snapshot figures over 5 to 60 days"
+  },
+  {
+   "question": "what does NTPC do",
+   "label": "facts",
+   "why": "asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "TCS pe ratio",
+   "label": "facts",
+   "why": "a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "what does tata steel make",
+   "label": "facts",
+   "why": "asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "what earnings per share does tcs have",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "how fast is trent's revenue growing",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "what is hdfc bank's 52 week low",
+   "label": "unsupported",
+   "why": "52-week or all-time highs and lows are not held; the facts give the distance from the highest close in about 5 years, a different number"
+  },
+  {
+   "question": "is nvidia expensive",
+   "label": "facts",
+   "why": "a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "growth stocks are sliding, is trent sliding too",
+   "label": "performance",
+   "why": "the ask is trent's own move; asks about this month's price move; the 20-day return and trend answer it"
+  },
+  {
+   "question": "did tcs's price rise on the profit news",
+   "label": "unsupported",
+   "why": "the profit news is context; asks for a move anchored to an event; no figure in the evidence is measured from that event"
+  },
+  {
+   "question": "is tcs's share price rising despite weak profits",
+   "label": "performance",
+   "why": "the profit word is context; asks about the recent direction; 5- vs 20-day returns and trend answer it"
+  },
+  {
+   "question": "is tcs's share price climbing despite good profits",
+   "label": "performance",
+   "why": "the profit word is context; asks about the recent direction; 5- vs 20-day returns and trend answer it"
+  },
+  {
+   "question": "is tcs's price going up on strong margins",
+   "label": "performance",
+   "why": "the margins are context; asks about the recent direction; 5- vs 20-day returns and trend answer it"
+  },
+  {
+   "question": "is tcs's price sliding on weak revenue",
+   "label": "performance",
+   "why": "the revenue is context; asks about the recent direction; 5- vs 20-day returns and trend answer it"
+  },
+  {
+   "question": "is tcs profitable for intraday",
+   "label": "unsupported",
+   "why": "needs intraday or single-day bars; the evidence has only daily snapshot figures over 5 to 60 days"
+  }
+ ],
+ "test": [
+  {
+   "question": "which industry is pidilite in",
+   "label": "facts",
+   "why": "asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "what is apple's price to book right now",
+   "label": "facts",
+   "why": "a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "is tcs's debt high",
+   "label": "facts",
+   "why": "'high' is about debt; a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "what does infosys's chart look like this month",
+   "label": "performance",
+   "why": "'what does' about the chart this month; asks about this month's price move; the 20-day return and trend answer it"
+  },
+  {
+   "question": "hdfc bank cash flow",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "msft operating margin",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "is NVDA overheated after the spike",
+   "label": "overbought",
+   "why": "asks whether the move is stretched; the 14-day RSI answers it"
+  },
+  {
+   "question": "will the coming week be calm for hdfc bank",
+   "label": "risk",
+   "why": "asks how rough the coming week looks; the calm/normal/turbulent outlook answers it"
+  },
+  {
+   "question": "what is the price to earnings ratio of sbin right now",
+   "label": "facts",
+   "why": "a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "did zomato spike today",
+   "label": "unsupported",
+   "why": "needs intraday or single-day bars; the evidence has only daily snapshot figures over 5 to 60 days"
+  },
+  {
+   "question": "is amazon a good buy for one year",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "is a sector rally a good reason to buy tata power",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "has apple outperformed the s&p 500 this month",
+   "label": "unsupported",
+   "why": "compares with a second share or an index; a turn carries one share and no index figures"
+  },
+  {
+   "question": "what is tcs's business model",
+   "label": "facts",
+   "why": "'model' means the business model; asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "AAPL going down?",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "is tcs better than infosys",
+   "label": "unsupported",
+   "why": "compares with a second share or an index; a turn carries one share and no index figures"
+  },
+  {
+   "question": "is infy's rsi too high right now",
+   "label": "overbought",
+   "why": "asks whether the move is stretched; the 14-day RSI answers it"
+  },
+  {
+   "question": "price overview for nvda",
+   "label": "performance",
+   "why": "an overview of the price, not the company; close, returns and trend answer it"
+  },
+  {
+   "question": "how much of its rally has BEL given back in this correction",
+   "label": "drawdown",
+   "why": "asks how far it fell from a recent peak; the 60-day drawdown answers it"
+  },
+  {
+   "question": "how is reliance's business doing",
+   "label": "facts",
+   "why": "the business, not the share price; revenue and profit figures are in the facts lines"
+  },
+  {
+   "question": "has microsoft rallied over the last week",
+   "label": "performance",
+   "why": "asks about this week's price move; the 5-day return answers it"
+  },
+  {
+   "question": "amazon's profit last year",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "the sector is weak, is LT's share falling too",
+   "label": "performance",
+   "why": "the ask is LT's own move, not the sector's; asks about this month's price move; the 20-day return and trend answer it"
+  },
+  {
+   "question": "why is hdfc bank sliding",
+   "label": "facts",
+   "why": "asks why it moved; the snapshot holds the move, only the news lines in the facts can give a cause"
+  },
+  {
+   "question": "give me an overview of how reliance's stock has moved this month",
+   "label": "performance",
+   "why": "an overview of the price move, not the company; asks about this month's price move; the 20-day return and trend answer it"
+  },
+  {
+   "question": "would you buy googl at this high price",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "sell or hold reliance after the results?",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "how did alphabet do over the last five days",
+   "label": "performance",
+   "why": "asks about this week's price move; the 5-day return answers it"
+  },
+  {
+   "question": "what is the rsi of tcs",
+   "label": "overbought",
+   "why": "asks whether the move is stretched; the 14-day RSI answers it"
+  },
+  {
+   "question": "why did trent see a sharp rise",
+   "label": "facts",
+   "why": "asks why it moved; the snapshot holds the move, only the news lines in the facts can give a cause"
+  },
+  {
+   "question": "has the long slide in asian paints got worse this week",
+   "label": "performance",
+   "why": "asks about this week's price move; the 5-day return answers it"
+  },
+  {
+   "question": "what is hdfc bank's roe right now",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "alphabet earnings per share",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "is dmart profitable",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "what is the p/e of tcs right now",
+   "label": "facts",
+   "why": "'right now' is everyday wording; a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "what margin does dmart get",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "what is the trading volume of sbin lately",
+   "label": "facts",
+   "why": "the snapshot holds no volume; only the facts lines do"
+  },
+  {
+   "question": "is irctc overbought",
+   "label": "overbought",
+   "why": "asks whether the move is stretched; the 14-day RSI answers it"
+  },
+  {
+   "question": "what is tcs's one year revenue growth",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "is nvidia's rally still going this month",
+   "label": "performance",
+   "why": "asks about this month's price move; the 20-day return and trend answer it"
+  },
+  {
+   "question": "is ultratech's debt a worry",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "why is ITC rising",
+   "label": "facts",
+   "why": "asks why it moved; the snapshot holds the move, only the news lines in the facts can give a cause"
+  },
+  {
+   "question": "will tcs go up next week",
+   "label": "buy",
+   "why": "asks which way it goes next; only the buy answer holds the honest no-direction statement (risk gives calm/turbulent, not up/down)"
+  },
+  {
+   "question": "how much did trent surge in today's session",
+   "label": "unsupported",
+   "why": "needs intraday or single-day bars; the evidence has only daily snapshot figures over 5 to 60 days"
+  },
+  {
+   "question": "what was the worst drop in tesla over the past two months",
+   "label": "drawdown",
+   "why": "asks how far it fell from a recent peak; the 60-day drawdown answers it"
+  },
+  {
+   "question": "how much long term debt does L&T carry",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "how does hal get its revenue",
+   "label": "facts",
+   "why": "asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "what is itc's dividend yield right now",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "after the sharp rise, is polycab overbought",
+   "label": "overbought",
+   "why": "asks whether the move is stretched; the 14-day RSI answers it"
+  },
+  {
+   "question": "is microsoft climbing",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "has nvidia beaten the nasdaq this year",
+   "label": "unsupported",
+   "why": "compares with a second share or an index; a turn carries one share and no index figures"
+  },
+  {
+   "question": "what is itc trading at",
+   "label": "performance",
+   "why": "asks for the current share price; the close is in the performance answer"
+  },
+  {
+   "question": "what did infy open at today",
+   "label": "unsupported",
+   "why": "needs intraday or single-day bars; the evidence has only daily snapshot figures over 5 to 60 days"
+  },
+  {
+   "question": "is reliance in for a calm week or a wild one",
+   "label": "risk",
+   "why": "asks how rough the coming week looks; the calm/normal/turbulent outlook answers it"
+  },
+  {
+   "question": "give me an overview of dabur",
+   "label": "facts",
+   "why": "an overview of the company, not the price; asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "what is the 20 day ema of tcs",
+   "label": "unsupported",
+   "why": "names an indicator the evidence does not compute (EMA)"
+  },
+  {
+   "question": "in one line, what does bharti airtel do",
+   "label": "facts",
+   "why": "asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "is it too late to buy hal after the rally",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "after the dividend cut, how far has vedanta fallen from its peak",
+   "label": "drawdown",
+   "why": "the dividend is context; asks how far it fell from a recent peak; the 60-day drawdown answers it"
+  },
+  {
+   "question": "is TCS in a correction",
+   "label": "drawdown",
+   "why": "a correction is a fall from the peak; asks how far it fell from a recent peak; the 60-day drawdown answers it"
+  },
+  {
+   "question": "why is paytm crashing",
+   "label": "facts",
+   "why": "asks why it moved; the snapshot holds the move, only the news lines in the facts can give a cause"
+  },
+  {
+   "question": "how shaky has bajaj finance been this month",
+   "label": "volatility",
+   "why": "asks how much it swings; 20-day volatility and the daily range (ATR) answer it"
+  },
+  {
+   "question": "should i exit kotak bank before the correction deepens",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "tcs going down?",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "is reliance's debt too high",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "how bad is the slump in INDUSINDBK over the last 60 days",
+   "label": "drawdown",
+   "why": "asks how far it fell from a recent peak; the 60-day drawdown answers it"
+  },
+  {
+   "question": "how has one 97 communications done this week",
+   "label": "performance",
+   "why": "Paytm by company name; asks about this week's price move; the 5-day return answers it"
+  },
+  {
+   "question": "how big are infy's daily swings",
+   "label": "volatility",
+   "why": "asks how much it swings; 20-day volatility and the daily range (ATR) answer it"
+  },
+  {
+   "question": "how much did infosys spike this week",
+   "label": "performance",
+   "why": "asks about this week's price move; the 5-day return answers it"
+  },
+  {
+   "question": "what is the macd reading for hdfc bank",
+   "label": "facts",
+   "why": "MACD is only in the facts lines"
+  },
+  {
+   "question": "how cheap is coal india",
+   "label": "facts",
+   "why": "'cheap' with no price move named is valuation; a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "how did infosys's share react to its q2 results",
+   "label": "unsupported",
+   "why": "asks for a move anchored to a date or event; no figure in the evidence is measured from that date"
+  },
+  {
+   "question": "is maruti's profit margin high",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "googl down?",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "nestle india profit growth",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "how strong has the rally in bel been this month",
+   "label": "performance",
+   "why": "asks about this month's price move; the 20-day return and trend answer it"
+  },
+  {
+   "question": "is the selloff in it stocks hurting wipro's price this week",
+   "label": "performance",
+   "why": "the ask is wipro's own move; asks about this week's price move; the 5-day return answers it"
+  },
+  {
+   "question": "how much does vedanta move in a typical day",
+   "label": "volatility",
+   "why": "asks how much it swings; 20-day volatility and the daily range (ATR) answer it"
+  },
+  {
+   "question": "will the crash in paytm continue",
+   "label": "buy",
+   "why": "asks which way it goes next; only the buy answer holds the honest no-direction statement (risk gives calm/turbulent, not up/down)"
+  },
+  {
+   "question": "how bumpy could infy be over the next few days",
+   "label": "risk",
+   "why": "asks how rough the coming week looks; the calm/normal/turbulent outlook answers it"
+  },
+  {
+   "question": "what is the risk outlook for nvidia this week",
+   "label": "risk",
+   "why": "asks how rough the coming week looks; the calm/normal/turbulent outlook answers it"
+  },
+  {
+   "question": "cipla net profit",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "is reliance above its 200 day average",
+   "label": "facts",
+   "why": "the snapshot holds the 20 and 50 day averages only; the 200-day is in the facts lines"
+  },
+  {
+   "question": "should i buy the dip in hdfc bank",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "should i sell my apple shares",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "reliance debt",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "what does ETERNAL do",
+   "label": "facts",
+   "why": "Zomato by its NSE symbol; asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "do i sell maruti on this spike",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "is ongc weakening",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "did hdfc bank rise on its results day",
+   "label": "unsupported",
+   "why": "asks for a move anchored to a date or event; no figure in the evidence is measured from that date"
+  },
+  {
+   "question": "is tcs cheap enough to buy after this dip",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "price to book of sbi",
+   "label": "facts",
+   "why": "a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "how much did meta fall on the day of its earnings",
+   "label": "unsupported",
+   "why": "asks for a move anchored to a date or event; no figure in the evidence is measured from that date"
+  },
+  {
+   "question": "is HDFCBANK weak",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "with earnings season on, how volatile has hdfc bank been lately",
+   "label": "volatility",
+   "why": "earnings is context; asks how much it swings; 20-day volatility and the daily range (ATR) answer it"
+  },
+  {
+   "question": "company overview of britannia",
+   "label": "facts",
+   "why": "asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "is L&T falling",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "how are tcs's earnings",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  },
+  {
+   "question": "how choppy has adani ports been during this slide",
+   "label": "volatility",
+   "why": "asks how much it swings; 20-day volatility and the daily range (ATR) answer it"
+  },
+  {
+   "question": "should i sell tcs before earnings",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "compare the returns of sbi and icici bank",
+   "label": "unsupported",
+   "why": "compares with a second share or an index; a turn carries one share and no index figures"
+  },
+  {
+   "question": "what is the option chain for reliance",
+   "label": "unsupported",
+   "why": "no options data is held"
+  },
+  {
+   "question": "is volatility high for adani enterprises",
+   "label": "volatility",
+   "why": "asks how much it swings; 20-day volatility and the daily range (ATR) answer it"
+  },
+  {
+   "question": "the business looks fine, but should i sell infosys after the slump",
+   "label": "buy",
+   "why": "the ask is sell or not; a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "which is cheaper, tcs or infy",
+   "label": "unsupported",
+   "why": "compares with a second share or an index; a turn carries one share and no index figures"
+  },
+  {
+   "question": "is titan's share price growing this month",
+   "label": "performance",
+   "why": "asks about this month's price move; the 20-day return and trend answer it"
+  },
+  {
+   "question": "is the p/e of dmart too high",
+   "label": "facts",
+   "why": "a valuation question about the company, not the price move; the facts lines hold the ratios"
+  },
+  {
+   "question": "did tesla plunge this week",
+   "label": "performance",
+   "why": "asks about this week's price move; the 5-day return answers it"
+  },
+  {
+   "question": "should i get into zomato now",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "what sector is polycab in",
+   "label": "facts",
+   "why": "asks what the company is or does; only the facts lines hold the company profile"
+  },
+  {
+   "question": "should i dump tesla after the crash",
+   "label": "buy",
+   "why": "a buy, sell or hold decision; the buy answer gives the measured no-direction view with close, 20-day return and volatility"
+  },
+  {
+   "question": "titan up or down?",
+   "label": "performance",
+   "why": "short direction shape; the 5- and 20-day returns and the trend against the 20/50-day averages answer it"
+  },
+  {
+   "question": "what is the biggest fall in tcs over the last two months",
+   "label": "drawdown",
+   "why": "asks how far it fell from a recent peak; the 60-day drawdown answers it"
+  },
+  {
+   "question": "has the surge in suzlon gone too far",
+   "label": "overbought",
+   "why": "asks whether the move is stretched; the 14-day RSI answers it"
+  },
+  {
+   "question": "what is tcs's all time high",
+   "label": "unsupported",
+   "why": "52-week or all-time highs and lows are not held; the facts give the distance from the highest close in about 5 years, a different number"
+  },
+  {
+   "question": "how much dividend do i get from coal india",
+   "label": "facts",
+   "why": "a company figure; only the facts lines hold it"
+  }
+ ]
+}

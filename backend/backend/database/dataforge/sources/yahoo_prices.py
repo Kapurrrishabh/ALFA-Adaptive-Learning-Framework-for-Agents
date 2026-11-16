@@ -4,24 +4,14 @@ yfinance manages its own HTTP session, so the shared PoliteSession is unused her
 is not consulted for this source. Tickers are fetched in batches to keep the request count low.
 """
 
-import pandas as pd
-import yfinance
-
 from backend.database.dataforge import config
+from backend.database.live import prices
 
 BATCH_SIZE = 10
-COLUMNS = ("open", "high", "low", "close", "adj_close", "volume")
+# yfinance's own default, which this collector has always run with
+TIMEOUT_S = 10
 LICENCE = "Yahoo Finance terms; personal and research use"
 SOURCE = "yahoo_prices"
-
-
-def _table_for(frame, ticker):
-    table = frame[ticker] if isinstance(frame.columns, pd.MultiIndex) else frame
-    table = table.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
-    table = table.rename(columns=str.lower).rename(columns={"adj close": "adj_close"})
-    table = table[list(COLUMNS)]
-    table.index.name = "date"
-    return table
 
 
 def collect(session, manifest, settings, log):
@@ -32,23 +22,14 @@ def collect(session, manifest, settings, log):
     tickers = config.TICKERS + config.INDIA_TICKERS
     for start in range(0, len(tickers), BATCH_SIZE):
         batch = tickers[start : start + BATCH_SIZE]
-        frame = yfinance.download(
-            batch,
-            period=price_range,
-            interval="1d",
-            auto_adjust=False,
-            actions=False,
-            progress=False,
-            threads=False,
-            group_by="ticker",
-        )
+        frame = prices.download(batch, price_range, TIMEOUT_S)
         if frame.empty:
             log(f"  {' '.join(batch)}: nothing returned")
             continue
 
         for ticker in batch:
             try:
-                table = _table_for(frame, ticker)
+                table = prices.table_for(frame, ticker)
             except KeyError:
                 log(f"  {ticker}: not in the response")
                 continue
@@ -59,7 +40,7 @@ def collect(session, manifest, settings, log):
             # Prices are rewritten rather than skipped, so each run picks up days that have
             # closed since the last one.
             destination = config.PRICES_DIR / f"{ticker}.csv"
-            table.to_csv(destination, date_format="%Y-%m-%d")
+            prices.write(table, destination)
             manifest.record(
                 f"yfinance://{ticker}?period={price_range}", destination, SOURCE, LICENCE
             )

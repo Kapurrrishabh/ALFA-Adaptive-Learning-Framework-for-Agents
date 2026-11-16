@@ -360,24 +360,193 @@ def test_the_learning_curve_never_scores_a_cut_on_a_row_it_was_fitted_on():
         draw(20, 20, 0)
 
 
-def test_the_chat_loop_keeps_the_hand_picked_cut_until_the_log_can_teach_one(tmp_path):
+PROMOTED = "2026-09-23T10:26:35+00:00"
+
+
+def generators(tmp_path, monkeypatch):
+    """The promoted generator and another build, under a registry that promoted the first at PROMOTED."""
+    from backend.models.agent.run.chat import generator_of
+    from backend.models.serving import registry
+
+    promoted, other = tmp_path / "promoted.npz", tmp_path / "other.npz"
+    promoted.write_bytes(b"the promoted weights")
+    other.write_bytes(b"another build's weights")
+    monkeypatch.setattr(registry, "promoted", lambda: {
+        registry.GENERATOR: {"digest": registry.digest(promoted), "promoted": PROMOTED}})
+    return generator_of(promoted), generator_of(other)
+
+
+def judged_rows(feedback, asked_at, **extra):
+    """Twelve oracle rows, half right, which is enough to teach a cut at a warmup of ten."""
+    for index in range(12):
+        feedback.append(asked_at, f"q{index}", TURN["evidence"], TURN["answer"], 0.9 + index / 1000,
+                        index % 2 == 0, ORACLE, **extra)
+
+
+def test_the_chat_loop_keeps_the_hand_picked_cut_until_the_log_can_teach_one(tmp_path, monkeypatch):
     """Two ways a session dies or lies on its first turns. Too few rows, and the cut it serves is three
     rows' worth of coincidence dressed as a learned threshold. All rows wrong — normal early, the model
     is right 31% of the time — and `Calibrator.fit` raises, which would end the conversation mid-turn."""
     from backend.models.agent.run.chat import adapt
+    served, _ = generators(tmp_path, monkeypatch)
 
     with log(tmp_path) as feedback:
         for index in range(12):
             feedback.append(TURN["asked_at"], f"q{index}", TURN["evidence"], TURN["answer"],
-                            0.9 + index / 1000, False, ORACLE)
-            abstainer, calibrator, learned = adapt(feedback, 0.6, warmup=10)
+                            0.9 + index / 1000, False, ORACLE, digest=served["digest"])
+            abstainer, calibrator, learned = adapt(feedback, 0.6, 10, ORACLE, served)
             assert not learned and calibrator is None
             assert abstainer.cut == pytest.approx(0.9980)
 
-        feedback.append(TURN["asked_at"], "right", TURN["evidence"], TURN["answer"], 0.999, True, ORACLE)
-        abstainer, calibrator, learned = adapt(feedback, 0.6, warmup=10)
+        feedback.append(TURN["asked_at"], "right", TURN["evidence"], TURN["answer"], 0.999, True, ORACLE,
+                        digest=served["digest"])
+        abstainer, calibrator, learned = adapt(feedback, 0.6, 10, ORACLE, served)
         assert learned and calibrator is not None
         assert abstainer.cut != pytest.approx(0.9980)
+
+
+def test_the_cut_is_not_fitted_on_another_builds_rows(tmp_path, monkeypatch):
+    """The served cut was once 0.999623, solved from 26 rows a retired checkpoint wrote. Those rows still
+    teach a cut to the build that wrote them, and must teach none to the one that serves."""
+    from backend.models.agent.run.chat import adapt
+    served, other = generators(tmp_path, monkeypatch)
+
+    with log(tmp_path) as feedback:
+        judged_rows(feedback, "2026-09-24T10:00:00+00:00", digest=other["digest"])
+        assert adapt(feedback, 0.6, 10, ORACLE, other)[2]
+        abstainer, _, learned = adapt(feedback, 0.6, 10, ORACLE, served)
+        assert not learned and abstainer.cut == pytest.approx(0.9980)
+
+
+def test_rows_from_before_digests_count_only_for_the_promoted_generator_after_its_promotion(tmp_path, monkeypatch):
+    """The log's first rows carry no digest. Those written before the promotion were another generator's, and a
+    candidate tried since wrote none of them."""
+    from backend.models.agent.run.chat import adapt
+    served, other = generators(tmp_path, monkeypatch)
+
+    with log(tmp_path) as feedback:
+        judged_rows(feedback, "2026-09-22T17:16:00+00:00")
+        assert not adapt(feedback, 0.6, 10, ORACLE, served)[2]
+        judged_rows(feedback, "2026-09-24T10:27:58+00:00")
+        assert adapt(feedback, 0.6, 10, ORACLE, served)[2]
+        assert not adapt(feedback, 0.6, 10, ORACLE, other)[2]
+
+
+def agent_rows(feedback, indices, **extra):
+    """Agent rows less sure than `judged_rows`' and right from the sixth on, so the cut they teach is their own."""
+    for index in indices:
+        feedback.append(TURN["asked_at"], f"a{index}", TURN["evidence"], TURN["answer"], 0.8 + index / 1000,
+                        index >= 5, AGENT, **extra)
+
+
+def test_the_agents_cut_is_fitted_on_the_oracles_rows_until_the_agents_can_teach_one(tmp_path, monkeypatch):
+    """A newly promoted generator has no agent verdicts, so the server served it the hand-picked 0.998 until ten
+    were written: 84.2% of step36000's held turns, against 99.1% at the cut its oracle rows teach."""
+    from backend.models.agent.run.chat import adapt
+    served, _ = generators(tmp_path, monkeypatch)
+
+    with log(tmp_path) as feedback:
+        judged_rows(feedback, "2026-09-24T10:00:00+00:00", digest=served["digest"])
+        oracle = adapt(feedback, 0.6, 10, ORACLE, served)[0].cut
+        agent_rows(feedback, range(9), digest=served["digest"])
+        abstainer, _, learned = adapt(feedback, 0.6, 10, AGENT, served)
+        assert learned and abstainer.cut == oracle
+        agent_rows(feedback, range(9, 10), digest=served["digest"])
+        abstainer, _, learned = adapt(feedback, 0.6, 10, AGENT, served)
+        assert learned and abstainer.cut == pytest.approx(0.802)
+
+
+def test_ten_agent_verdicts_all_right_leave_the_cut_to_the_oracles_rows(tmp_path, monkeypatch):
+    """They teach no cut either, and right about 95% of the time, the first ten are all right in about 60% of starts."""
+    from backend.models.agent.run.chat import adapt
+    served, _ = generators(tmp_path, monkeypatch)
+
+    with log(tmp_path) as feedback:
+        judged_rows(feedback, "2026-09-24T10:00:00+00:00", digest=served["digest"])
+        agent_rows(feedback, range(5, 15), digest=served["digest"])
+        abstainer, _, learned = adapt(feedback, 0.6, 10, AGENT, served)
+        assert learned and abstainer.cut == adapt(feedback, 0.6, 10, ORACLE, served)[0].cut
+
+
+def test_another_builds_rows_neither_stand_in_for_the_agents_nor_end_the_stand_in(tmp_path, monkeypatch):
+    """Either would fit the served cut on answers the served generator never gave."""
+    from backend.models.agent.run.chat import adapt
+    served, other = generators(tmp_path, monkeypatch)
+
+    with log(tmp_path) as feedback:
+        judged_rows(feedback, "2026-09-24T10:00:00+00:00", digest=other["digest"])
+        assert not adapt(feedback, 0.6, 10, AGENT, served)[2]
+        agent_rows(feedback, range(10), digest=other["digest"])
+        judged_rows(feedback, "2026-09-24T10:00:00+00:00", digest=served["digest"])
+        assert adapt(feedback, 0.6, 10, AGENT, served)[0].cut == adapt(feedback, 0.6, 10, ORACLE, served)[0].cut
+
+
+def test_with_nothing_promoted_no_cut_is_fitted_at_all(tmp_path, monkeypatch):
+    """Without a promoted generator no undigested row can be placed, so the fit stops rather than guess."""
+    from backend.models.agent.run.chat import generator_of
+    from backend.models.serving import registry
+
+    monkeypatch.setattr(registry, "promoted", lambda: {})
+    (tmp_path / "weights.npz").write_bytes(b"weights")
+    with pytest.raises(LookupError, match="nothing is promoted to generator"):
+        generator_of(tmp_path / "weights.npz")
+
+
+def reseeding(tmp_path, monkeypatch, digest, *flags):
+    """reseed_feedback's main, set to append --from a file of one row written under `digest` to a log holding one
+    agent row, and that row."""
+    from backend.models.serving import registry
+    from backend.models.training import reseed_feedback
+
+    monkeypatch.setattr(registry, "serving", lambda role: tmp_path / "promoted.npz")
+    row = dict(TURN, is_right=True, why="matches the gold answer",
+               extra=dict(digest=digest, source="reseed", intent="overbought", as_of="2026-09-21", spoke=True))
+    (tmp_path / "rows.json").write_text(json.dumps([row]))
+    with log(tmp_path) as feedback:
+        feedback.append(**TURN, is_right=True, labeller=AGENT)
+    monkeypatch.setattr(sys, "argv", ["reseed_feedback", "--from", str(tmp_path / "rows.json"),
+                                      "--log", str(tmp_path / "feedback.sqlite"), *flags])
+    return reseed_feedback.main, row
+
+
+def test_reseeding_from_rows_another_generator_wrote_raises_and_appends_none(tmp_path, monkeypatch):
+    """They would sit in the log and never be fitted on, since a fit keeps only the promoted generator's rows."""
+    _, other = generators(tmp_path, monkeypatch)
+    main, _ = reseeding(tmp_path, monkeypatch, other["digest"])
+    with pytest.raises(ValueError, match=other["digest"]):
+        main()
+    with log(tmp_path) as feedback:
+        assert [row["labeller"] for row in feedback.rows(judged_only=False)] == [AGENT]
+
+
+def test_reseeding_from_the_promoted_generators_rows_appends_them_as_the_oracles_with_their_extra(tmp_path, monkeypatch):
+    served, _ = generators(tmp_path, monkeypatch)
+    main, row = reseeding(tmp_path, monkeypatch, served["digest"])
+    main()
+    with log(tmp_path) as feedback:
+        added = feedback.rows(judged_only=False)[1:]
+    assert [(added_row["labeller"], added_row["question"], added_row["is_right"], added_row["extra"])
+            for added_row in added] == [(ORACLE, row["question"], True, row["extra"])]
+
+
+def test_a_reseed_cut_off_part_way_appends_none_of_its_rows(tmp_path, monkeypatch):
+    """Rows left by a cut-off run were appended again by the next, so the first shares counted twice in every fit."""
+    served, _ = generators(tmp_path, monkeypatch)
+    main, row = reseeding(tmp_path, monkeypatch, served["digest"])
+    (tmp_path / "rows.json").write_text(json.dumps([row, dict(row, confidence=None)]))
+    with pytest.raises(TypeError):
+        main()
+    with log(tmp_path) as feedback:
+        assert [kept["labeller"] for kept in feedback.rows(judged_only=False)] == [AGENT]
+
+
+def test_reseeding_a_named_candidates_rows_appends_them_though_it_is_not_promoted(tmp_path, monkeypatch):
+    """A candidate has no rows until reseeded, so ask.py --checkpoint would serve it the hand-picked cut."""
+    _, other = generators(tmp_path, monkeypatch)
+    main, row = reseeding(tmp_path, monkeypatch, other["digest"], "--checkpoint", str(tmp_path / "other.npz"))
+    main()
+    with log(tmp_path) as feedback:
+        assert [added["extra"] for added in feedback.rows(judged_only=False)[1:]] == [row["extra"]]
 
 
 def test_a_cut_that_swings_either_side_of_the_bar_is_not_reported_as_hitting_it():

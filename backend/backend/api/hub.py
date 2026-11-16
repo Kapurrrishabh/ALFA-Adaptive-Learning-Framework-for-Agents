@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 from backend.advisory.calculators import performance
-from backend.advisory.report import plain_reason
+from backend.advisory.report import TERM_MEANINGS, plain_reason
 from backend.config import BUILDER_STOCKS, BUSY_WAIT_S, FORECAST_DAYS
 from backend.database.sources.panel import CACHE_DIR, index_constituents, listed_shares, universe_panel
 from backend.database.sources.provider import DataUnavailable
@@ -102,6 +102,10 @@ class Hub:
             n = self.names()
             uni = pd.Index([s for s in n.loc[n["nifty200"], "symbol"] if s in p.close.columns])
             mom = F.momentum_score(p.close, asof, uni)
+            if mom.empty:       # or every share would read as outside the Nifty 200
+                raise DataUnavailable(f"no Nifty 200 share could be ranked on {asof.date()}, when the price panel has "
+                                      f"{p.close.loc[asof, uni].notna().sum()} of {len(uni)} closes; reload it with "
+                                      "universe_panel(refresh=True) once Yahoo has that day's closes")
             mom["rank"] = np.arange(1, len(mom) + 1)
             self._rank = {"asof": asof, "table": mom}
         return self._rank["table"]
@@ -254,7 +258,8 @@ class Hub:
             "support": tech.details.get("support_levels", []), "resistance": tech.details.get("resistance_levels", []),
             "markers": markers, "patterns": pats, "projections": projections,
             "cone": cone, "cone_note": (f"Grey band: where {horizon} trading days could plausibly end, from current "
-                                        f"volatility ({sigma * np.sqrt(252) * 100:.0f}% a year). {held} It shows size of move, not direction: "
+                                        f"volatility ({TERM_MEANINGS['Volatility']}: {sigma * np.sqrt(252) * 100:.0f}%). "
+                                        f"{held} It shows size of move, not direction: "
                                         f"historically this stock was up after {horizon} days {base_up:.0%} of the time, "
                                         "and no model we tested predicted direction better than that."),
             "base_rate_up": round(base_up, 3), "horizon": horizon, "held_note": held,
@@ -317,7 +322,8 @@ class Hub:
                 "close": clean(c), "rsi": clean(ind.rsi(c)), "macd": clean(macd), "signal": clean(sig), "hist": clean(hist),
                 "drawdown_pct": [round(float(x) * 100, 2) for x in dd.iloc[view]],
                 "vol20_pct": [None if np.isnan(x) else round(float(x) * 100, 2) for x in vol.iloc[view]],
-                "max_drawdown_5y_pct": round(float(dd.min()) * 100, 2)}
+                "max_drawdown_pct": round(float(dd.min()) * 100, 2), "history_from": str(c.index[0].date()),
+                "meanings": {t: TERM_MEANINGS[t] for t in ("RSI", "MACD histogram", "Drawdown")}}
 
     def insider(self, symbol: str, days: int = 365, limit: Optional[int] = 20) -> List[Dict[str, Any]]:
         from backend.database.sources import insider
@@ -361,14 +367,15 @@ class Hub:
                 "history_check": checked, "history": {"dates": [str(d.date()) for d in nav.index], "nav": [float(x) for x in nav]}}
 
     # --- verdict --------------------------------------------------------------------------
-    def verdict(self, symbol: str, s: Session) -> Dict[str, Any]:
+    def verdict(self, symbol: str, s: Session, as_holder: bool = False) -> Dict[str, Any]:
+        """`as_holder` for a question only a holder asks ("should i sell"), whatever the stored portfolio holds."""
         sym = symbol.upper()
-        a = self.orch.analysis(s, sym)
+        a = self.orch.analysis(s, sym, as_holder=as_holder)
         d = a.decision
         rank_tbl = self.ranking()
         m = market_state(self.bench(), self.bench().index[-1])
         positions, _, _ = self.orch.holdings(s.portfolio)
-        held = sym in positions and positions[sym].quantity > 0
+        held = as_holder or sym in positions and positions[sym].quantity > 0
         why_buy: List[str] = []
         why_not: List[str] = []
         in_uni = sym in rank_tbl.index
@@ -417,7 +424,7 @@ class Hub:
         if not in_uni:
             verdict, tone = "NO SIGNAL", "neutral"
             headline = ("It is outside the Nifty 200 (India's 200 largest companies), so our tested buy signal does not "
-                        f"cover it. Our wider check says {d.decision_support_label}.")
+                        f"cover it. Our wider check, for {d.time_horizon}, says {d.decision_support_label}.")
         elif rank <= BUY_RANK:
             if m["momentum_crash_risk"]:
                 verdict, tone = "BUY — HALF SIZE", "positive"
@@ -433,7 +440,8 @@ class Hub:
                         f"enough to buy now (top {BUY_RANK}).")
         else:
             verdict, tone = ("SELL AT REBALANCE" if held else "DON'T BUY"), "negative"
-            headline = f"It ranks {rank} of {total}: its price strength is weak, and our signal avoids stocks like this."
+            headline = (f"It ranks {rank} of {total}: its price strength is weak, and our signal "
+                        f"{'sells stocks like this at its next check' if held else 'avoids stocks like this'}.")
         if in_uni and rank <= KEEP_RANK:
             # plan() sizes the portfolio from the capital and owns that rule, so the verdict names the size it assumes
             headline += (f" This assumes a portfolio of {N_DEFAULT} stocks; with less money your plan holds fewer, so "
@@ -441,7 +449,8 @@ class Hub:
         return {
             "symbol": sym, "verdict": verdict, "tone": tone, "headline": headline, "held": held,
             "momentum_rank": rank, "universe_size": total, "buy_rank": BUY_RANK, "keep_rank": KEEP_RANK, "research_label": d.decision_support_label,
-            "research_score": d.score, "research_confidence": d.confidence, "conflict": d.conflict,
+            "research_horizon": d.time_horizon, "research_score": d.score, "research_confidence": d.confidence,
+            "conflict": d.conflict,
             "why_buy": why_buy[:7], "why_not": why_not[:7],
             "plan": {"stop_loss": self.stop_loss(sym) if tone == "positive" else None,
                      "next_review": next_rebalance(date.today()),

@@ -123,6 +123,24 @@ def test_short_histories_with_a_benchmark_do_not_crash(n, bench):
     assert quant.analyze(df, bench, 0.0).available
 
 
+def test_max_drawdown_is_dated_over_the_whole_history_not_the_last_year(random_walk):
+    r = quant.analyze(random_walk, None, 0.0)
+    whole = f"{random_walk.index[0].date()} to {random_walk.index[-1].date()}"
+    dd = next(e for e in r.evidence if e.provenance.source == "computed:max_drawdown")
+    assert dd.provenance.period == r.details["history_period"] == whole != r.details["period"]
+
+
+def test_current_drawdown_and_volatility_percentile_are_dated_over_the_whole_history(random_walk):
+    """Both lines only appear on a deep, wild fall, which a plain random walk never reaches."""
+    import numpy as np
+    path = np.linspace(1.0, 0.6, 60) * (1 + np.random.default_rng(0).normal(0, 0.05, 60))
+    falling = random_walk.copy()
+    falling.iloc[-60:, :4] = falling.iloc[-60:, :4].values * path[:, None]
+    r = quant.analyze(falling, None, 0.0)
+    periods = {e.provenance.source: e.provenance.period for e in r.evidence}
+    assert periods["computed:current_drawdown"] == periods["computed:vol_percentile"] == r.details["history_period"]
+
+
 def test_up_calls_take_their_cut_from_validation_and_score_on_test():
     from backend.models.learning.protocol import selective
     val = [{"horizon": h, "date": f"2022-{m:02d}-01", "p_up": p, "y": 0.0} for h in (5, 20) for m in range(1, 11)

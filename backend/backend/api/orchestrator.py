@@ -16,10 +16,10 @@ import re
 import time
 from collections import Counter
 from contextlib import contextmanager
+from functools import partial
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -27,12 +27,13 @@ from backend.api import quota
 from backend.advisory.calculators import performance
 from backend.advisory import report as R
 from backend.user.portfolio.alerts import evaluate as evaluate_alert
-from backend.config import RISK_MODE, RISK_PROFILES, canonical_symbol
+from backend.config import ANNUALIZATION_DAYS, RISK_MODE, RISK_PROFILES, canonical_symbol
 from backend.database.sources.provider import DataUnavailable, Provider
 from backend.database.sources.quality import DataQualityError
 from backend.advisory.fusion.evidence import utcnow_iso
+from backend.advisory.sentiment.feeds.feed import english_words
 from backend.knowledge_base.lessons import knowledge_base
-from backend.api.nlu import Intent, classify, name_index
+from backend.api.nlu import Intent, classify, extract_tickers, name_index, proper_nouns
 from backend.advisory.statistics.model_registry import ModelRegistry
 from backend.user.portfolio.portfolio import Position, Transaction, analyze as analyze_portfolio, build_positions, what_if
 from backend.advisory.calculators.screener import CRITERIA, research_query, screen
@@ -58,15 +59,17 @@ ASKS_WHY = re.compile(r"\b(why|how come|what('?s| is)? (made|mak(es|ing))|reason
                       r"behind)\b", re.I)
 # provisional: a week of headlines up to the last close counts as the latest; older means the archive stopped refreshing
 MARKET_NEWS_DAYS = 7
+# what the market usually calls a fall from a high of this size, a convention and not a measurement of ours
+CORRECTION_PCT, BEAR_MARKET_PCT = 10, 20
 MARKET_REPORTS = 5
-ENGLISH_WORDS = Path("/usr/share/dict/words")      # macOS ships it; on Debian and Ubuntu it is the wamerican package
-
-
-def english_words() -> Set[str]:
-    if not ENGLISH_WORDS.exists():
-        raise RuntimeError(f"{ENGLISH_WORDS} is missing; install it with `apt-get install wamerican`. The chat needs it "
-                           "to tell a stock named in lowercase from an ordinary word.")
-    return {w for w in ENGLISH_WORDS.read_text().split() if w.isalpha() and w.islower()}
+# NSE names most of its indices "nifty <word>" ("nifty pharma", "nifty next 50"), and nlu reads each as the Nifty 50
+OTHER_NIFTIES = re.compile(r"\bnifty\s+(it|bank|pharma|auto|fmcg|metal|realty|media|energy|infra|psu|private|financial|"
+                           r"fin\s+services?|healthcare|consumption|commodities|midcap|smallcap|microcap|next\s+50|"
+                           r"(100|150|200|250|500|750))\b", re.I)
+# A pronoun before an index's name points to the chat's share ("how has it done against the nifty"). "its", one after
+# the name, and the empty "it" of "is it a good time to buy the nifty" point to the index, so they are left out.
+INDEX_NAME = re.compile(r"\b(nifty|sensex)\b", re.I)
+NOT_BACK = re.compile(r"\bits\b|\b(it|this|that)(?=\s+(be\s+)?(a\s+)?(good|bad|right|wise|safe|smart|worth|time|too)\b)", re.I)
 
 
 def _split_note(symbol: str, lots: List[Tuple[str, float, float]], history: pd.DataFrame) -> Optional[str]:
@@ -165,8 +168,24 @@ class Orchestrator:
         """What people write for each NSE share -> its symbol, from the hub's copy of NSE's lists."""
         if self._listings is None:
             names = self.hub.names()
-            self._listings = name_index(dict(zip(names["symbol"], names["name"])), english_words())
+            self._listings = name_index(dict(zip(names["symbol"], names["name"])), english_words(), proper_nouns())
         return self._listings
+
+    def stock_named(self, message: str) -> str:
+        """The listed stock or index `message` names, as ALFA's price files call it: "NYKAA.NS", "AAPL", "^NSEI", or "".
+
+        Only a listed one: nlu guesses an unfamiliar word in capitals is a share ("YTD", "CAGR"), and that guess would
+        displace the share the conversation is about. So would an index in "how has it done against the nifty", and
+        only the Nifty 50 is ever handed over as ^NSEI."""
+        from backend.models.agent.finance import points_back
+        listed = set(self.listings().values())
+        index = INDEX_NAME.search(message)
+        found = [f"{sym}.NS" if market == "NSE" and sym in listed else sym
+                 for sym, market in extract_tickers(message, self.listings())
+                 if market == "NSE" and sym in listed or market == "US"
+                 or sym.startswith("^") and not points_back(NOT_BACK.sub("", message[:index.start()]))
+                 and not OTHER_NIFTIES.search(message)]
+        return found[0] if found else ""
 
     def session(self, portfolio: str, session_id: str) -> Session:
         key = (portfolio, session_id)
@@ -195,16 +214,18 @@ class Orchestrator:
 
     @contextmanager
     def model_call(self, portfolio: str):
-        """Charge one call to the Space, Claude or the agent to the portfolio's day; a call that fails is refunded."""
+        """Charge one call to the Space, Claude or the agent to the portfolio's day; a call that fails is refunded.
+        Yields the refund, for an ALFA turn that turns out to have asked no language model."""
         if not self.charges_model_calls:
-            yield
+            yield lambda: None
             return
         now = datetime.now(timezone.utc)
         quota.charge(self.store, portfolio, "lm", now)
+        refund = partial(quota.refund, self.store, portfolio, "lm", now)
         try:
-            yield
+            yield refund
         except Exception:
-            quota.refund(self.store, portfolio, "lm", now)
+            refund()
             raise
 
     def usage(self, portfolio: str) -> Dict[str, Any]:
@@ -245,12 +266,14 @@ class Orchestrator:
         positions, _, _ = self.holdings(portfolio)
         return self.store.alerts(portfolio, [sym for sym, p in positions.items() if p.quantity > 0], include_acknowledged)
 
-    def analysis(self, s: Session, symbol: str, market: str = "NSE", horizon: Optional[str] = None) -> StockAnalysis:
+    def analysis(self, s: Session, symbol: str, market: str = "NSE", horizon: Optional[str] = None,
+                 as_holder: bool = False) -> StockAnalysis:
+        """`as_holder` reads it for a holder, as a question only a holder asks does ("should i sell")."""
         if not SYMBOL_RE.match(symbol.upper()):
             raise ValueError(f"{symbol!r} is not a valid ticker symbol")
         positions, _, _ = self.holdings(s.portfolio)
         pos = positions.get(canonical_symbol(symbol, market))
-        held = pos is not None and pos.quantity > 0
+        held = as_holder or pos is not None and pos.quantity > 0
         key = f"{market}:{symbol.upper()}:{horizon or s.horizon}:{held}"
         with self._key_lock(key):
             hit = self._analyses.get(key)
@@ -266,7 +289,8 @@ class Orchestrator:
 
     def _compute_analysis(self, s: Session, key: str, symbol: str, market: str,
                           horizon: Optional[str], held: bool) -> StockAnalysis:
-        a = self.service(market).analyze(symbol, held=held, horizon=horizon or s.horizon)
+        # closed: the forecasts trained on closed bars, and the report calls the price a close
+        a = self.service(market).analyze(symbol, held=held, horizon=horizon or s.horizon, closed=True)
         now = time.time()
         with self._caches_guard:
             for old in [k for k, (at, _) in self._analyses.items() if now - at >= ANALYSIS_REUSE_S]:
@@ -349,17 +373,17 @@ class Orchestrator:
     def _agent_answer(self, s: Session, message: str, unanswered: Reply) -> Reply:
         from backend.models.agent.client import AgentUnavailable
         try:
-            with self.model_call(s.portfolio):
-                turn = self.agent.ask(message, "", session=f"{s.portfolio}:{s.session_id}")
+            with self.model_call(s.portfolio) as refund:
+                turn = self.agent.ask(message, self.stock_named(message), session=f"{s.portfolio}:{s.session_id}")
         except AgentUnavailable as exc:
             return Reply(f"{unanswered.text}\n\nALFA, our self-learning model, could not answer either: {exc}",
                          unanswered.intent, unanswered.data)
-        if not turn["spoke"]:
-            return Reply(f"ALFA, our self-learning model, held back: {turn['because']}.\n\n{unanswered.text}", "agent",
-                         {"no_answer": True, "agent": turn})
-        dated = f", as of {turn['as_of']}" if turn["as_of"] else ""
-        return Reply(f"{turn.get('shown') or turn['served']}\n\n**Source** · what ALFA retrieved{dated}:\n"
-                     f"{turn['evidence']}", "agent", {"agent": turn}, ["self_learning_agent"])
+        if not quota.asked_language_model(turn):
+            refund()
+        if not turn["spoke"]:       # our reply as ours, and ALFA's refusal beside it as the app shows any other
+            return Reply(unanswered.text, unanswered.intent, {**unanswered.data, "agent": turn}, unanswered.tools_used)
+        # `shown` already names the sources in plain words; the raw evidence is for judging the answer, not reading
+        return Reply(turn.get("shown") or turn["served"], "agent", {"agent": turn}, ["self_learning_agent"])
 
     def _deterministic(self, s: Session, intent: Intent) -> Reply:
         handler = getattr(self, f"_h_{intent.name}")
@@ -806,8 +830,9 @@ class Orchestrator:
         sym, mkt = self._target(s, i)
         if mkt != "NSE":
             raise ValueError("The buy/sell signal covers NSE stocks only; try 'Analyze' for other markets.")
-        v = self.hub.verdict(sym, s)
-        lines = [f"**Tested buy signal for {sym}: {v['verdict']}**", "", v["headline"]]
+        v = self.hub.verdict(sym, s, as_holder=i.name == "should_sell")
+        heading = f"Tested signal for {sym}, if you own it" if v["held"] else f"Tested buy signal for {sym}"
+        lines = [f"**{heading}: {v['verdict']}**", "", v["headline"]]
         for title, reasons in (("Good signs", v["why_buy"]), ("Risks", v["why_not"])):
             if reasons:
                 lines += ["", f"**{title}**", *(f"- {x}" for x in reasons)]
@@ -815,10 +840,41 @@ class Orchestrator:
             lines += ["", "**If you buy**", f"- Put in {v['plan']['position_size']}.",
                       f"- Sell if it closes below ₹{v['plan']['stop_loss']:,.2f}, 10% under the last close."]
         lines += ["", f"Next check of the signal: {v['plan']['next_review']}.",
-                  f"Our wider check of the chart, news and company accounts says {v['research_label']}"
+                  f"Our wider check of the chart, news and company accounts, for {v['research_horizon']}, says "
+                  f"{v['research_label']}"
                   + ("; those checks disagree with each other" if v["conflict"] else "") + ". Ask 'Why?' for the details.",
                   "", "**How well this rule has worked**", v["evidence_note"], "", "Decision support, not investment advice."]
-        return Reply("\n".join(lines), "should_buy", {"payload": v}, ["verdict"])
+        return Reply("\n".join(lines), i.name, {"payload": v}, ["verdict"])
+
+    _h_should_sell = _h_should_buy
+
+    def _h_day_range(self, s: Session, i: Intent) -> Reply:
+        """The high and low of the last daily bar, the finest prices we read."""
+        sym, mkt = self._target(s, i)
+        svc = self.service(mkt)
+        bar = svc.history(sym).iloc[-1]
+        figures = {k: float(bar[k]) for k in ("high", "low", "close")}
+        high, low, last = (R._money(v, svc.market.currency) for v in figures.values())
+        return Reply(f"{sym} on {bar.name.date()}: high {high}, low {low}, last {last}, from that day's price bar "
+                     f"({svc.provider.name}). While the market is open, the high and low can still move.", "day_range",
+                     {"payload": {"symbol": sym, "date": str(bar.name.date()), **figures}}, ["price_history"])
+
+    def _h_correction(self, s: Session, i: Intent) -> Reply:
+        """How far the last close is below the past year's highest close, and what a fall that size is usually called."""
+        sym, mkt = self._target(s, i)
+        svc = self.service(mkt)
+        close = svc.closed_history(sym)["close"].iloc[-ANNUALIZATION_DAYS:]
+        last, high = float(close.iloc[-1]), float(close.max())
+        below = (1 - last / high) * 100
+        called = ("in a bear market" if below >= BEAR_MARKET_PCT else "in a correction" if below >= CORRECTION_PCT
+                  else "not in a correction")
+        money = partial(R._money, ccy=svc.market.currency)
+        return Reply(f"{sym} closed at {money(last)} on {close.index[-1].date()}, {below:.1f}% below its highest close of "
+                     f"the past year, {money(high)} on {close.idxmax().date()}. A fall of {CORRECTION_PCT}% or more from a "
+                     f"high is usually called a correction, and {BEAR_MARKET_PCT}% or more a bear market, so by that rule "
+                     f"it is {called}.", "correction",
+                     {"payload": {"symbol": sym, "date": str(close.index[-1].date()), "close": last, "year_high": high,
+                                  "below_pct": round(below, 2)}}, ["price_history"])
 
     def _h_alerts(self, s: Session, i: Intent) -> Reply:
         alerts = self.alerts(s.portfolio)
