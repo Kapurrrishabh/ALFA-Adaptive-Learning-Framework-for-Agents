@@ -2204,6 +2204,14 @@ def test_a_turn_says_whether_its_request_reached_the_writer(market, router, writ
     assert turn.asked_writer is asked
 
 
+def test_a_question_not_about_money_is_refused_before_the_writer_is_asked(market, router):
+    """"how is your mom doing" found a headline saying "doing" and asked the writer before its refusal: 2 answers."""
+    writer = FakeWriter("Markets are doing well (Mint, 6 Oct 2026).")
+    doing = Chunk("Mint, 6 Oct 2026: Markets are doing well.", [], "https://n.test/doing", "2026-10-06")
+    turn = agent(market, router, reference=news_reference(writer, news=(doing,))).answer("how is your mom doing ?")
+    assert (turn.served, turn.asked_writer, writer.asked) == (finance.OFF_TOPIC, False, [])
+
+
 def test_a_refusal_after_the_writer_read_the_news_says_it_asked_the_writer(market, router):
     """"what happened in the markets today?" asked the writer, which found no answer, and was refunded as asking none."""
     turn = agent(market, router, gate_cut=1e9, reference=news_reference(FakeWriter("NONE"))).answer(
@@ -2446,6 +2454,28 @@ def test_a_question_about_a_stock_we_hold_no_prices_for_is_looked_up_not_refused
     assert (turn.served == finance.OFF_TOPIC) == off_topic and turn.spoke != off_topic and turn.ticker == subject
 
 
+NSE_LIST = Chunk("NSE: HAPPSTMNDS Happiest Minds Technologies Limited NSE: HARITASEAT Harita Seating Systems Limited "
+                 "NSE: HARRMALAYA Harrisons Malayalam Limited", [], "c931913ec51a747f", "")
+
+
+def test_a_passage_that_only_names_the_share_is_not_quoted_for_how_it_is_performing(tmp_path, router):
+    """"how is happstmnds performing and should I buy it" was quoted a stored Wikipedia list of 14 NSE companies."""
+    price_file(tmp_path, "HAPPSTMNDS.NS")
+    held = finance.Market(tmp_path, listed={"HAPPSTMNDS.NS": "Happiest Minds Technologies"})
+    turn = agent(held, router, gate_cut=1e9, model=ExplodingModel(),
+                 reference=infoboxes(NSE_LIST)).answer("how is happstmnds performing and should I buy it")
+    assert (turn.ticker, turn.spoke, turn.because) == ("HAPPSTMNDS.NS", False, "unclear question")
+
+
+def test_a_question_on_a_share_naming_no_area_is_still_quoted_the_passage_that_answers_it(tmp_path, router):
+    """"who owns TCS ?", which the router is sure our figures cannot answer, lost its infobox when a question about a
+    share had to name an area."""
+    price_file(tmp_path, "TCS.NS")
+    held = finance.Market(tmp_path, listed={"TCS.NS": "Tata Consultancy Services"})
+    turn = agent(held, router, model=ExplodingModel(), reference=infoboxes()).answer("who owns TCS ?")
+    assert (turn.intent, "Owner Tata Sons (71.74%)" in turn.served) == (f"reference {QUOTED}", True)
+
+
 class Unanswering:
     """Documents read and found not to answer, or a live search that could not be run when `fails`."""
 
@@ -2646,6 +2676,27 @@ def test_a_part_refused_by_its_own_guard_is_answered_by_our_code_in_the_turn_and
     assert turn.spoke and turn.served.endswith(" this is not a recommendation to trade .")
     assert (turn.because, turn.phrased_by) == ("performance: low confidence; buy: low confidence", core.BUILT)
     assert turn.confidence != turn.confidence and turn.stated is None
+
+
+@pytest.mark.parametrize("question,intent", [(ASKED_TOGETHER, "performance and buy"),
+                                             ("is TCS overbought and is it oversold ?", "overbought"),
+                                             ("how volatile is TCS and is that high ?", "volatility")])
+def test_a_question_the_router_is_sure_of_is_split_only_when_its_parts_are_placed_apart(tmp_path, router, question,
+                                                                                         intent):
+    """Sure of the whole, one route answered "what is the p/e of tcs and how volatile is it" with the P/E alone. "is that
+    high" asks about the volatility, and was split off as how far TCS.NS is below its high."""
+    _, turn = together(tmp_path, router, question, gate_cut=0.01)
+    assert (turn.intent, turn.spoke) == (intent, True)
+
+
+def test_two_facts_questions_the_router_is_sure_of_are_each_answered(tmp_path):
+    """A facts reply gives the first area asked: "what is the p/e of RELIANCE.NS and how much debt does it have" was
+    given the P/E alone."""
+    dividend = {"value": 0.4, "unit": "%", "source": "yahoo", "period": "FY ending 2026-03-31"}
+    turn = facts_agent(tmp_path, Analyses(analysis(roa=ROA, dividend_yield=dividend)), model=ExplodingModel(),
+                       asked=(PROFITABLE, DIVIDEND_ASKED)).answer(
+        "how profitable is RELIANCE.NS and what is the dividend yield of it ?")
+    assert ("Return on assets is 11.00%" in turn.served, "Dividend yield is 0.40%" in turn.served) == (True, True)
 
 
 def test_two_questions_asked_together_are_not_split_when_a_part_is_under_the_routing_cut(tmp_path, router):

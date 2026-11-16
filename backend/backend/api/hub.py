@@ -20,6 +20,8 @@ import numpy as np
 import pandas as pd
 
 from backend.advisory.calculators import performance
+from backend.advisory.report import ADJUSTED
+from backend.advisory.fundamental import fundamentals
 from backend.advisory.report import TERM_MEANINGS, plain_reason
 from backend.config import BUILDER_STOCKS, BUSY_WAIT_S, FORECAST_DAYS
 from backend.database.sources.panel import CACHE_DIR, index_constituents, listed_shares, universe_panel
@@ -103,9 +105,11 @@ class Hub:
             uni = pd.Index([s for s in n.loc[n["nifty200"], "symbol"] if s in p.close.columns])
             mom = F.momentum_score(p.close, asof, uni)
             if mom.empty:       # or every share would read as outside the Nifty 200
-                raise DataUnavailable(f"no Nifty 200 share could be ranked on {asof.date()}, when the price panel has "
-                                      f"{p.close.loc[asof, uni].notna().sum()} of {len(uni)} closes; reload it with "
-                                      "universe_panel(refresh=True) once Yahoo has that day's closes")
+                closes = p.close.loc[asof, uni].notna().sum()
+                log.error("no Nifty 200 share could be ranked on %s, when the price panel has %d of %d closes; reload it "
+                          "with universe_panel(refresh=True) once Yahoo has that day's closes", asof.date(), closes, len(uni))
+                raise DataUnavailable(f"no Nifty 200 share could be ranked on {asof.date()}, because we have that day's "
+                                      f"closing price for {closes} of its {len(uni)} shares. Please try again later.")
             mom["rank"] = np.arange(1, len(mom) + 1)
             self._rank = {"asof": asof, "table": mom}
         return self._rank["table"]
@@ -139,6 +143,8 @@ class Hub:
             info = {}
         c = df["close"]
         last, prev = float(c.iloc[-1]), float(c.iloc[-2])
+        # at the close the analysis reads: Yahoo's live quote can be a day after it, and `last` the session still moving
+        info = fundamentals.priced_at(info, float(svc.closed_history(symbol)["close"].iloc[-1]))
         yr = df.iloc[-252:]
 
         def ret(n: int) -> Optional[float]:
@@ -155,6 +161,8 @@ class Hub:
                         # providers return ~1,240 sessions for "5y"; use the full span when it's that close
                         "5Y": ret(min(1250, len(c) - 1)) if len(c) > 1200 else None},
             "high_52w": round(float(yr["high"].max()), 2), "low_52w": round(float(yr["low"].min()), 2),
+            # the chat's correction answer reads closes as traded, so a close above this high must not look wrong
+            "price_basis": ADJUSTED,
             "stats": {"Market cap": info.get("marketCap"), "P/E (TTM)": info.get("trailingPE"),
                       "P/B": info.get("priceToBook"),
                       # computed, not read: providers disagree on whether dividendYield is a fraction or a percent

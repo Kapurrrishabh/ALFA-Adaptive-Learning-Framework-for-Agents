@@ -992,7 +992,7 @@ async function pageStock(view, ctx) {
       h("div", { class: `num ${cls(o.change)}`, style: "font-size:var(--fs-md);font-weight:600" }, `${o.change > 0 ? "+" : ""}${num(o.change)} (${pct(o.change_pct)}) on ${new Date(o.as_of).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`)),
     h("div", { class: "chips-row" }, chip("1M", pct(o.returns["1M"], 1), cls(o.returns["1M"])), chip("1Y", pct(o.returns["1Y"], 1), cls(o.returns["1Y"])),
       chip("52W low", inr(o.low_52w, 0)), chip("52W high", inr(o.high_52w, 0)), chip("P/E", num(o.stats["P/E (TTM)"], 1)), chip("Mkt cap", compactInr(o.stats["Market cap"]))),
-    h("div", { class: "muted", style: "font-size:var(--fs-xs);margin-top:8px" }, `Daily close ${o.as_of} · NSE`));
+    h("div", { class: "muted", style: "font-size:var(--fs-xs);margin-top:8px" }, `Daily close ${o.as_of} · NSE · 52-week range on prices ${o.price_basis}`));
   const modes = { "Technical": () => technicalPanel(ctx, get, sym, { bars: CHART_BARS }), "Intraday": () => intradayPanel(ctx, sym), "Price & projection": () => technicalPanel(ctx, get, sym, { line: true, bars: 126 }) };
   const built = {}, chart = Tabs("mode-tabs", "Chart", Object.keys(modes), (k, panel) => { built[k] = built[k] || modes[k](); panel.replaceChildren(built[k]); built[k].redraw(); });
   chartCard.replaceChildren(chart.list, chart.panel); chart.show("Technical");
@@ -1029,7 +1029,7 @@ function overviewPane(o) {
     "ROE": (v) => v == null ? "—" : num(v * 100) + "%", "Debt to equity": (v) => v == null ? "—" : num(v / 100), "Beta": (v) => num(v), "Book value": (v) => inr(v) };
   return h("div", {},
     h("div", { class: "row", style: "gap:22px;margin-bottom:16px" }, ...Object.entries(o.returns).map(([k, v]) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: `v num ${cls(v)}` }, pct(v, 1))))),
-    h("div", { class: "spread muted", style: "font-size:var(--fs-xs)" }, h("span", {}, "52W low ", h("b", { class: "num" }, inr(o.low_52w))), h("span", {}, "52W high ", h("b", { class: "num" }, inr(o.high_52w)))),
+    h("div", { class: "spread muted", style: "font-size:var(--fs-xs)" }, h("span", {}, "52W low ", h("b", { class: "num" }, inr(o.low_52w))), h("span", {}, "52W high ", h("b", { class: "num" }, inr(o.high_52w))), h("span", {}, `on prices ${o.price_basis}`)),
     h("div", { class: "range-bar" }, h("i", { style: `left:${Math.max(0, Math.min(100, pos))}%` })),
     h("h3", { style: "margin-top:18px" }, "Fundamentals"),
     h("div", { class: "stats" }, ...Object.entries(st).map(([k, v]) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v num" }, (fmt[k] || num)(v))))),

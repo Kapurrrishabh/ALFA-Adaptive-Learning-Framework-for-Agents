@@ -81,7 +81,10 @@ LESSONS_RANKED = 6
 TOPICS = {**{area: words for area, words in FACTS_DOMAIN_WORDS.items() if area != "profile"},
           # "who runs reliance industries" was quoted the start of its infobox, which stopped short of "Key people"
           "management": ("who runs", "who leads", "who heads", "ceo", "chief executive", "chairman", "chairperson",
-                         "managing director", "key people")}
+                         "managing director", "key people"),
+          # "how is happstmnds performing" was quoted a stored list of 14 NSE companies. Not "doing": Nykaa's infobox
+          # says "doing business as"
+          "performance": ("perform",)}
 
 
 class SearchFailed(RuntimeError):
@@ -151,10 +154,12 @@ class Reference:
         self.top_p = top_p
         self.rng = rng
 
-    def look_up(self, question, as_of=None, subject=None, prices=None, lately=False):
+    def look_up(self, question, as_of=None, subject=None, prices=None, lately=False, on_topic=True):
         """A `Looked` for one question, or None when nothing we can read was about it.
 
-        None rather than a refusal, so the caller keeps owning what silence sounds like.
+        None rather than a refusal, so the caller keeps owning what silence sounds like. `on_topic` False says only a
+        lesson could put the question on topic, so the writer is not asked: "how is your mom doing" was charged a second
+        answer for a reply the caller then refused.
 
         `subject` is the instrument the conversation is about, from `finance.Market.subject`. It widens the
         search and it is what the passages are checked against -- the reader is still given the question as
@@ -176,7 +181,8 @@ class Reference:
         if news_first:
             # Filings are a network wait the price files do not need, so a question here for its window alone, with no
             # time or news word ("over the past month"), is answered without them, as it was before.
-            return self._recent(question, query, as_of, subject, prices, not lately or RECENT.search(question))
+            return self._recent(question, query, as_of, subject, prices, not lately or RECENT.search(question),
+                                on_topic)
         for arm in self._arms(subject, question):
             chunks = _on_topic(question, arm(query, as_of, subject) or [])
             if chunks:
@@ -205,7 +211,7 @@ class Reference:
         return self.news is not None and (moves and LOOK_BACK.search(question) is not None
                                           or NEWS.search(question) is not None)
 
-    def _recent(self, question, query, as_of, subject, prices, filed):
+    def _recent(self, question, query, as_of, subject, prices, filed, on_topic):
         """What happened lately, from everything dated: the price snapshot, SEC filings when `filed`, and headlines.
 
         An encyclopedia is not asked: read for "why is infosys falling" it gave "falling because it is a
@@ -227,7 +233,7 @@ class Reference:
         money = phrase.currency(subject.ticker) if subject else None
         # prices alone need no rewording: the plain answer already says all they do, and that nothing says why
         written = phrase.recent(question, subject, prices, found, self.writer, self.entails, money) \
-            if self.writer and found else None
+            if self.writer and found and on_topic else None
         unread = f"sec filings unread: {refused}" if refused else ""
         if written is not None and written.text:
             return Looked(written.text, evidence, RECENT_HOW, [], float("nan"), "", day, written.by, "", unread=unread,

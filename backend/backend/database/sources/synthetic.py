@@ -68,5 +68,9 @@ class SyntheticProvider(Provider):
     def news(self, symbol: str, limit: int = 25):
         raise DataUnavailable("synthetic provider has no news")
 
+    def splits(self, symbol: str) -> pd.DataFrame:
+        # its bars have no dividend, split or bonus issue, so their closes are as traded
+        return pd.DataFrame({"close": self.ohlcv(symbol)["close"], "ratio": 1.0})
+
     def upcoming_events(self, symbol: str):
         return []

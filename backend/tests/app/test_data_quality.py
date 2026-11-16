@@ -108,8 +108,10 @@ def test_yahoos_own_error_text_goes_to_the_log_not_to_the_user(monkeypatch, capl
         == (True, False, True)
 
 
-def test_the_price_panel_drops_a_day_yahoo_sent_with_no_closes(monkeypatch, tmp_path):
-    """Yahoo sent 16 Nov 2026 with each share's open, high and low but no close, and ranked on it no share had a rank."""
+@pytest.mark.parametrize("cached", [False, True])
+def test_the_price_panel_drops_a_day_yahoo_sent_with_no_closes(monkeypatch, tmp_path, cached):
+    """Yahoo sent 16 Nov 2026 with each share's open, high and low but no close, and ranked on it no share had a rank.
+    A panel the older code had cached kept that row, and stopped every verdict until the cache expired."""
     import yfinance
     from backend.database.sources import panel
     days = pd.bdate_range(end="2026-11-16", periods=3)
@@ -118,6 +120,13 @@ def test_the_price_panel_drops_a_day_yahoo_sent_with_no_closes(monkeypatch, tmp_
     fields["Close"].iloc[-1] = np.nan
     monkeypatch.setattr(panel, "CACHE_DIR", tmp_path)
     monkeypatch.setattr(yfinance, "download", lambda *a, **k: pd.concat(fields, axis=1))
+    if cached:
+        panel.load_panel(["TCS", "INFY"])
+        cache, = tmp_path.glob("panel_*.pkl")
+        old = {f: frame.rename(columns=lambda c: c[:-3]) for f, frame in fields.items()}
+        pd.to_pickle(panel.Panel(old["Close"], old["Open"], old["High"], old["Low"], old["Volume"],
+                                 {"TCS": "IT", "INFY": "IT"}, "yahoo"), cache)
+        monkeypatch.setattr(yfinance, "download", None)     # so only the cache can answer
     p = panel.load_panel(["TCS", "INFY"])
     assert [list(frame.index) for frame in (p.close, p.open, p.high, p.low, p.volume)] == [list(days[:-1])] * 5
 

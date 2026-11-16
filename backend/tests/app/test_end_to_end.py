@@ -1107,9 +1107,23 @@ def test_ui_search_matches_symbol_and_company_name(app_client):
 def test_ui_stock_overview_and_chart(app_client):
     o = app_client.get("/ui/stock/TEST").json()
     assert o["name"] == "Test Industries Limited" and o["low_52w"] <= o["price"] <= o["high_52w"]
+    assert o["price_basis"] == R.ADJUSTED
     c = app_client.get("/ui/stock/TEST/chart?range=1M").json()
     assert len(c["close"]) == 22
     assert app_client.get("/ui/stock/TEST/chart?range=7Y").status_code == 400
+
+
+@pytest.mark.parametrize("session_open", [False, True])
+def test_the_stock_header_gives_the_p_e_of_the_analysis(app_client, orch, local_provider, session_open):
+    """Yahoo's P/E is at its live quote. NYKAA's header showed it, 322.2, beside the 13 Nov close, and the analysis the
+    same P/E moved to that close, 326.1. At 10:00 IST the header read 20.2 at the moving price, the analysis 20.3."""
+    from datetime import datetime, timezone
+    local_provider.infos["TEST.NS"]["currentPrice"] *= 0.99
+    if session_open:
+        orch.service().now = lambda: datetime(2026, 9, 25, 4, 30, tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
+    header = app_client.get("/ui/stock/TEST").json()["stats"]["P/E (TTM)"]
+    analysis = app_client.get("/stocks/TEST/analysis").json()["results"]["fundamental"]["details"]["metrics"]["pe"]
+    assert round(header, 4) == analysis["value"]
 
 
 def test_ui_verdict_explains_both_sides(app_client):
@@ -1120,13 +1134,17 @@ def test_ui_verdict_explains_both_sides(app_client):
     assert v["evidence_note"].startswith("The buy/sell rule is NSE's momentum method.")
 
 
-def test_a_day_with_no_closes_stops_the_verdict_rather_than_putting_every_share_outside_the_nifty_200(app_client, orch):
-    """A cached panel ended on Yahoo's 16 Nov row with no closes: no share was ranked, and each read "NO SIGNAL"."""
+def test_a_day_with_no_closes_stops_the_verdict_rather_than_putting_every_share_outside_the_nifty_200(app_client, orch,
+                                                                                                         caplog):
+    """A cached panel ended on Yahoo's 16 Nov row with no closes: no share was ranked, and each read "NO SIGNAL".
+    The stop then showed users our instruction to reload the panel, which belongs in the log."""
     p = orch.hub._panel
     gap = p.close.index[-1] + pd.Timedelta(days=3)
     p.close.loc[gap] = float("nan")
     r = app_client.get("/ui/stock/TEST/verdict")
-    assert (r.status_code, f"no Nifty 200 share could be ranked on {gap.date()}" in r.json()["detail"]) == (404, True)
+    detail = r.json()["detail"]
+    assert (r.status_code, f"no Nifty 200 share could be ranked on {gap.date()}" in detail, "universe_panel" in detail,
+            "universe_panel(refresh=True)" in caplog.text) == (404, True, False, True)
 
 
 def test_verdict_bands_say_which_portfolio_size_they_assume(app_client):
@@ -1255,9 +1273,64 @@ def test_a_correction_question_says_how_far_the_share_is_below_its_high_and_what
     """"is tcs in a correction" got its worst fall in 60 days and a full analysis, and neither said whether it was in one."""
     frame = local_provider.frames["TEST.NS"]
     frame.iloc[-1, frame.columns.get_indexer(["open", "high", "low", "close"])] = left * frame["close"].iloc[-252:].max()
+    local_provider.split_histories["TEST.NS"] = _split_history(frame["close"])
     reply = orch.handle("is TEST in a correction?", DEFAULT_PORTFOLIO, "correction")
     assert reply.intent == "correction" and f"{(1 - left) * 100:.1f}% below its highest close of the past year" in reply.text
     assert reply.text.endswith(f"so by that rule it is {called}.")
+
+
+def test_a_correction_is_read_on_closes_as_traded_not_on_closes_adjusted_for_dividends(orch, local_provider):
+    """HDFC Bank's adjusted closes put it 19.0% below a high of ₹993.08, a correction. As traded, its high was ₹1,009.50
+    and its fall 20.4%, a bear market by the same rule."""
+    frame = local_provider.frames["TEST.NS"]
+    traded = pd.Series(900.0, index=frame.index)
+    traded.iloc[[-200, -1]] = 1009.50, 804.0
+    adjusted = traded.where(traded.index >= frame.index[-100], traded * 993.08 / 1009.50)    # a dividend went ex in between
+    for column in ("open", "high", "low", "close"):
+        frame[column] = adjusted
+    local_provider.split_histories["TEST.NS"] = _split_history(traded)
+    text = orch.handle("is TEST in a correction?", DEFAULT_PORTFOLIO, "dividend").text
+    assert "20.4% below its highest close of the past year, ₹1,009.50" in text and "on closes not adjusted for dividends" in text
+    assert text.endswith("it is in a bear market.")
+
+
+def test_a_correction_leaves_out_a_day_yahoo_lists_before_it_has_the_close(orch, local_provider):
+    """Yahoo listed 16 Nov 2026 with no close, and read as the last close it would put the share at ₹nan, nan% below."""
+    close = local_provider.frames["TEST.NS"]["close"]
+    gap = close.index[-1] + pd.offsets.BDay()
+    local_provider.split_histories["TEST.NS"] = _split_history(pd.concat([close, pd.Series([float("nan")], [gap])]))
+    text = orch.handle("is TEST in a correction?", DEFAULT_PORTFOLIO, "gap").text
+    assert text.startswith(f"TEST closed at ₹{close.iloc[-1]:,.2f} on {END},")
+
+
+def test_a_correction_is_answered_from_synthetic_prices_in_demo_mode(store, monkeypatch):
+    """`cli.py --demo` replied "I couldn't complete that: synthetic provider has no split history"."""
+    monkeypatch.setenv("SELFAGENT_URL", "http://127.0.0.1:9")
+    demo = Orchestrator(synthetic.SyntheticProvider(end=END), store, use_rss_news=False, charges_model_calls=False)
+    demo._listings = name_index({"TEST": "Test Industries Ltd."}, set(), set())
+    close = synthetic.SyntheticProvider(end=END).ohlcv("TEST.NS")["close"]
+    text = demo.handle("is TEST in a correction?", DEFAULT_PORTFOLIO, "demo").text
+    assert text.startswith(f"TEST closed at ₹{close.iloc[-1]:,.2f} on {END},")
+
+
+def test_a_correction_leaves_out_the_session_still_open(orch, local_provider):
+    """At 10:00 IST the day's bar is the moving price, not a close."""
+    from datetime import datetime, timezone
+    close = local_provider.frames["TEST.NS"]["close"]
+    local_provider.split_histories["TEST.NS"] = _split_history(close)
+    orch.service().now = lambda: datetime(2026, 9, 25, 4, 30, tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
+    text = orch.handle("is TEST in a correction?", DEFAULT_PORTFOLIO, "open").text
+    assert text.startswith(f"TEST closed at ₹{close.iloc[-2]:,.2f} on {close.index[-2].date()},")
+
+
+def test_a_buy_question_stopped_by_a_day_with_no_closes_tells_the_chat_what_is_missing_in_plain_words(app_client, orch):
+    """"should I sell reliance" read "reload it with universe_panel(refresh=True) once Yahoo has that day's closes"."""
+    p = orch.hub._panel
+    gap = p.close.index[-1] + pd.Timedelta(days=3)
+    p.close.loc[gap] = float("nan")
+    text = orch.handle("should I buy TEST?", DEFAULT_PORTFOLIO, "gap").text
+    assert (f"no Nifty 200 share could be ranked on {gap.date()}, because we have that day's closing price for 0 of" in text,
+            "try again later" in text.lower(), "universe_panel" in text) == (True, True, False)
 
 
 def test_ui_verdict_that_gives_a_stop_says_the_track_record_left_it_out(app_client):

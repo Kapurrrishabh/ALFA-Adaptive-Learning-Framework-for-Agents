@@ -131,7 +131,7 @@ def load_panel(symbols: List[str], sectors: Optional[Dict[str, str]] = None, per
     digest = hashlib.sha1(f"{sorted(symbols)}|{period}|{suffix}".encode()).hexdigest()[:12]
     path = CACHE_DIR / f"panel_{digest}.pkl"
     if path.exists() and not refresh and time.time() - path.stat().st_mtime < CACHE_TTL_S:
-        return pd.read_pickle(path)
+        return _with_closes(pd.read_pickle(path))      # one cached by older code can end on a day with no closes
     try:
         import yfinance as yf
     except ImportError as exc:  # pragma: no cover
@@ -152,17 +152,23 @@ def load_panel(symbols: List[str], sectors: Optional[Dict[str, str]] = None, per
     if not fields["Close"]:
         raise DataUnavailable("batch download returned no data")
     merged = {f: pd.concat(v, axis=1).sort_index() for f, v in fields.items()}
-    # Yahoo sent 16 Nov 2026 with no closes, and ranked on that row no share of the Nifty 200 had a rank
-    close = merged["Close"].dropna(how="all", axis=1).dropna(how="all")
-    keep, days = list(close.columns), close.index
-    panel = Panel(close=close, open=merged["Open"].loc[days, keep], high=merged["High"].loc[days, keep],
-                  low=merged["Low"].loc[days, keep], volume=merged["Volume"].loc[days, keep],
-                  sectors={s: (sectors or {}).get(s, "Unknown") for s in keep}, source="yahoo")
-    missing = sorted(set(symbols) - set(keep))
+    panel = _with_closes(Panel(close=merged["Close"], open=merged["Open"], high=merged["High"], low=merged["Low"],
+                               volume=merged["Volume"], source="yahoo",
+                               sectors={s: (sectors or {}).get(s, "Unknown") for s in merged["Close"].columns}))
+    missing = sorted(set(symbols) - set(panel.symbols))
     if missing:
         log.warning("%d symbols had no data: %s", len(missing), missing[:20])
     pd.to_pickle(panel, path)
     return panel
+
+
+def _with_closes(p: Panel) -> Panel:
+    """`p` without a share or a day that has no close at all."""
+    # Yahoo sent 16 Nov 2026 with no closes, and ranked on that row no share of the Nifty 200 had a rank
+    close = p.close.dropna(how="all", axis=1).dropna(how="all")
+    keep, days = list(close.columns), close.index
+    return Panel(close=close, open=p.open.loc[days, keep], high=p.high.loc[days, keep], low=p.low.loc[days, keep],
+                 volume=p.volume.loc[days, keep], sectors={s: p.sectors[s] for s in keep}, source=p.source)
 
 
 def universe_panel(index: str = "nifty500", period: str = "10y", refresh: bool = False) -> Panel:

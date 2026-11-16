@@ -136,7 +136,7 @@ class Agent:
         route = self.router.route(self.domain.without_subject(question, ticker))
         sure = bool(self.gate.answers([route.margin])[0])
         # Before the newswire, which reads a joined question's look-back word and answers its first part alone
-        if not sure and (together := self._together(question, as_of, ticker)) is not None:
+        if (together := self._together(question, as_of, ticker, sure)) is not None:
             return together
         # Before the newswire too: its "today" answered "what is the intraday high of hdfc bank today" with a headline
         if self.domain.asks_day_range(question):
@@ -235,8 +235,11 @@ class Agent:
                 else "wrong trend: " + ", ".join(f"says {said}, the figures say {truth or 'no averages'}"
                                                  for said, truth in trend) if trend else "")
 
-    def _together(self, question, as_of, ticker):
+    def _together(self, question, as_of, ticker, sure_of_whole):
         """One turn for a question asking two the router is sure of ("how is TCS doing and should i buy it"), else None.
+        When the router is `sure_of_whole`, it splits only parts placed apart: one route answered "what is the p/e of
+        tcs and how volatile is it" with the P/E alone. Two facts parts are apart too, as a facts reply gives the first
+        area asked: "what is the p/e of RELIANCE.NS and how much debt does it have" lost its debt.
 
         Each part is a turn of its own with every guard, and this speaks when any part does. Its confidence is the least
         of the parts ALFA's words answered, but `agent_server` never judges it into the answer cut: no one generation
@@ -252,10 +255,16 @@ class Agent:
                                                  or self.market.names_another(part, ticker))
                             for index, (part, named) in enumerate(zip(parts, found))):
             return None
+        # Sure of the whole, a part's "this" or "that" is the figure just asked about: "how volatile is TCS and is that
+        # high" was split into how far TCS.NS is below its high
+        if sure_of_whole and any(named != ticker and self.domain.points_back_only_by_this_or_that(part)
+                                 for part, named in zip(parts, found)):
+            return None
         parts = [part if named == ticker else self.domain.naming(part, ticker) for part, named in zip(parts, found)]
         routes = [self.router.route(self.domain.without_subject(part, ticker)) for part in parts]
         if not all(self.gate.answers([route.margin for route in routes])) \
-                or any(route.label == self.domain.UNANSWERABLE for route in routes):
+                or any(route.label == self.domain.UNANSWERABLE for route in routes) \
+                or sure_of_whole and len({route.label for route in routes}) == 1 and routes[0].label != self.domain.FACTS:
             return None
         turns = [self.answer(part, as_of, ticker) for part in parts]
         confidence = min((turn.confidence for turn in turns if alfa_spoke(turn) and turn.confidence == turn.confidence),
@@ -294,9 +303,10 @@ class Agent:
         if self.reference is None:
             return None
         about = ticker or stock
+        on_topic = bool(about) or self.domain.about_money(question)
         try:
             looked = self.reference.look_up(question, as_of, self.market.subject(about) if about else None,
-                                            self.market.snapshot(ticker, as_of) if ticker else None, lately)
+                                            self.market.snapshot(ticker, as_of) if ticker else None, lately, on_topic)
         except SearchFailed as error:
             # A refusal rather than nothing, and a different refusal from the trained one: the documents
             # would have been asked and were not, so saying "i am not sure what you are asking" would

@@ -494,6 +494,11 @@ def points_back(part):
     return _BACK.search(part) is not None
 
 
+def points_back_only_by_this_or_that(part):
+    back = [found.group(3) for found in _BACK.finditer(part)]
+    return bool(back) and all(back)
+
+
 def asks_day_range(text):
     return DAY_RANGE.search(text) is not None
 

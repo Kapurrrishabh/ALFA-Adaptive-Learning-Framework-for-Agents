@@ -236,6 +236,14 @@ def test_the_stock_headers_move_is_dated_by_its_bar_not_called_todays(browser, b
     assert tab.page.locator(".price + div").inner_text().endswith(") on 13 Nov")
 
 
+def test_the_stock_headers_52_week_range_says_its_prices_are_adjusted(browser, base_url):
+    """TCS showed a 52-week high of 3,270 beside the chat's highest close of 3,324.90, with nothing to say why."""
+    tab = Tab(browser, base_url, 1366)
+    tab.go("#/stock/TEST")
+    assert tab.page.locator(".stock-head ~ .chips-row + div").inner_text().endswith(
+        "52-week range on prices adjusted for dividends and splits")
+
+
 def test_a_computed_analyst_note_ends_with_one_full_stop(browser, base_url):
     """It read "More come at 00:00 India time on 17 Nov..": the page added a stop after the server's own."""
     allowance = "You have used your 10 AI answers for today. More come at 00:00 India time on 17 Nov."

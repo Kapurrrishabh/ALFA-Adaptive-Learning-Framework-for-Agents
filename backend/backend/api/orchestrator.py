@@ -28,7 +28,7 @@ from backend.advisory.calculators import performance
 from backend.advisory import report as R
 from backend.user.portfolio.alerts import evaluate as evaluate_alert
 from backend.config import ANNUALIZATION_DAYS, RISK_MODE, RISK_PROFILES, canonical_symbol
-from backend.database.sources.provider import DataUnavailable, Provider
+from backend.database.sources.provider import DataUnavailable, Provider, closed_bars
 from backend.database.sources.quality import DataQualityError
 from backend.advisory.fusion.evidence import utcnow_iso
 from backend.advisory.sentiment.feeds.feed import english_words
@@ -863,14 +863,18 @@ class Orchestrator:
         """How far the last close is below the past year's highest close, and what a fall that size is usually called."""
         sym, mkt = self._target(s, i)
         svc = self.service(mkt)
-        close = svc.closed_history(sym)["close"].iloc[-ANNUALIZATION_DAYS:]
+        # The 10% and 20% rules read closes as traded, like ALFA's evidence: on closes adjusted for dividends, HDFC Bank's
+        # 20.4% fall read 19.0%, a correction. Yahoo also lists a day before it has that day's close.
+        traded = closed_bars(svc.splits(sym).dropna(subset=["close"]), svc.market, svc.now())
+        close = traded["close"].iloc[-ANNUALIZATION_DAYS:]
         last, high = float(close.iloc[-1]), float(close.max())
         below = (1 - last / high) * 100
         called = ("in a bear market" if below >= BEAR_MARKET_PCT else "in a correction" if below >= CORRECTION_PCT
                   else "not in a correction")
         money = partial(R._money, ccy=svc.market.currency)
         return Reply(f"{sym} closed at {money(last)} on {close.index[-1].date()}, {below:.1f}% below its highest close of "
-                     f"the past year, {money(high)} on {close.idxmax().date()}. A fall of {CORRECTION_PCT}% or more from a "
+                     f"the past year, {money(high)} on {close.idxmax().date()}, on closes not adjusted for dividends. A fall "
+                     f"of {CORRECTION_PCT}% or more from a "
                      f"high is usually called a correction, and {BEAR_MARKET_PCT}% or more a bear market, so by that rule "
                      f"it is {called}.", "correction",
                      {"payload": {"symbol": sym, "date": str(close.index[-1].date()), "close": last, "year_high": high,
