@@ -5,6 +5,7 @@ Set STOCKINTEL_STATE_REPO (for example "you/stockintel-state") and HF_TOKEN (a w
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -21,6 +22,7 @@ from backend.database.sources.panel import CACHE_DIR
 log = logging.getLogger("stockintel.state")
 CACHE_PATTERNS = ("*.json", "*.csv", "*.txt", "panel_*.pkl")
 DB_NAME = "stockintel.db"
+SAVED_AT = "cache_saved_at.json"
 # provisional: bounds what a crash can lose while staying far below the Hub's commit limits
 PUSH_MINUTES = float(os.environ.get("STOCKINTEL_STATE_MINUTES", "10"))
 
@@ -53,6 +55,8 @@ def snapshot(db: Path, out: Path, cache_dir: Path = CACHE_DIR) -> None:
             dst.execute("VACUUM")   # deleted rows stay readable in free pages until the file is rebuilt
     for f in cache_files(cache_dir):
         shutil.copy2(f, out / "cache" / f.name)
+    # a download is dated when it lands, and the price panel's age is read from its file's date
+    (out / SAVED_AT).write_text(json.dumps({f.name: f.stat().st_mtime for f in (out / "cache").iterdir()}))
 
 
 def push(db: Path, cache_dir: Path = CACHE_DIR) -> str:
@@ -78,11 +82,17 @@ def pull(db: Path, cache_dir: Path = CACHE_DIR, overwrite: bool = False) -> List
             log.warning("no saved state at %s yet (first run, or HF_TOKEN cannot read it)", repo())
             return []
         pairs: List[Tuple[Path, Path]] = [(src / DB_NAME, db)] + [(f, cache_dir / f.name) for f in (src / "cache").glob("*")]
+        if not (src / SAVED_AT).exists():
+            log.warning("%s was saved by older code, with no %s, so each cache file restored counts as saved now",
+                        repo(), SAVED_AT)
+        saved_at = json.loads((src / SAVED_AT).read_text()) if (src / SAVED_AT).exists() else {}
         restored = []
         for a, b in pairs:
             if a.exists() and (overwrite or not b.exists()):
                 b.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(a, b)
+                if a.name in saved_at:
+                    os.utime(b, (saved_at[a.name], saved_at[a.name]))
                 restored.append(b.name)
     log.info("restored %s from %s", ", ".join(restored) or "nothing", repo())
     return restored

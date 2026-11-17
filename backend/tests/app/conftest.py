@@ -1,4 +1,8 @@
+import os
+import threading
+import time
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -82,6 +86,82 @@ def bars(closes, spread=0.01, volume=1e6, end=END):
     idx = pd.bdate_range(end=end, periods=len(closes))
     return pd.DataFrame({"open": opens, "high": hi, "low": lo, "close": closes,
                          "volume": np.full(len(closes), volume)}, index=idx)
+
+
+PANEL_SHARES = ["TCS", "INFY"]
+
+
+class FakeYahoo:
+    """yfinance.download for PANEL_SHARES, every price at `close`. A download waits for `gate`, and with `down` it
+    sends nothing, which is how Yahoo fails."""
+
+    def __init__(self, close):
+        self.close, self.down, self.calls, self.gate = close, False, 0, threading.Event()
+        self.gate.set()
+
+    def __call__(self, tickers, **kw):
+        self.calls += 1
+        self.gate.wait(10)
+        if self.down:
+            return pd.DataFrame()
+        prices = pd.DataFrame({f"{s}.NS": [self.close] * 2 for s in PANEL_SHARES},
+                              index=pd.bdate_range(end="2026-11-13", periods=2))
+        return pd.concat({f: prices for f in ("Open", "High", "Low", "Close", "Volume")}, axis=1)
+
+
+def cached_panel(monkeypatch, tmp_path, age_s):
+    """A panel of PANEL_SHARES at 1.0 saved `age_s` ago on a clock held still, and the fake Yahoo, now at 2.0."""
+    import yfinance
+    from backend.database.sources import panel
+    yahoo = FakeYahoo(1.0)
+    monkeypatch.setattr(panel, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(yfinance, "download", yahoo)
+    panel.load_panel(PANEL_SHARES)
+    now = time.time()
+    monkeypatch.setattr(panel, "time", SimpleNamespace(time=lambda: now))
+    cache, = tmp_path.glob("panel_*.pkl")
+    os.utime(cache, (now - age_s, now - age_s))
+    yahoo.close, yahoo.calls = 2.0, 0
+    return yahoo
+
+
+def refreshes():
+    """The background refreshes of the panel still running."""
+    return [t for t in threading.enumerate() if t.name == "panel-refresh"]
+
+
+def settled():
+    """Waits for every background refresh of the panel, so none outlives the test's fakes."""
+    for refresh in refreshes():
+        refresh.join(10)
+
+
+def until(happened):
+    """Waits up to 10 s for `happened()`, so a test opens Yahoo's gate only once the threads it races are in place."""
+    deadline = time.monotonic() + 10
+    while not happened():
+        assert time.monotonic() < deadline, "the threads never got there"
+        time.sleep(0.01)
+
+
+@pytest.fixture(autouse=True)
+def no_real_price_panel(monkeypatch, tmp_path):
+    """Tests read the real cached panel and passed on it, and once it was 12 hours old each started a real Yahoo
+    download into it, in a thread that outlived the test. An empty cache sends them to the fakes or to these errors."""
+    import httpx
+    import yfinance
+    from backend.database.sources import panel
+
+    def offline(asked, *args, **kwargs):
+        raise AssertionError(f"a test went to the network for {asked}: fake it")
+    get = httpx.get
+    monkeypatch.setattr(panel, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(yfinance, "download", offline)
+    monkeypatch.setattr(httpx, "get", lambda url, **kw: offline(url) if "nseindia.com" in url else get(url, **kw))
+    yield
+    alive = refreshes()
+    settled()       # before the fakes are undone
+    assert not alive, f"{len(alive)} background panel refreshes outlived the test: call settled() before it ends"
 
 
 def statements(revenue, net_income, eps, equity, debt, assets, ebit, interest,

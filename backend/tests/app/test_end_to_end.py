@@ -21,7 +21,7 @@ from backend.advisory.statistics.validation import event_study
 from backend.database.sources import synthetic
 from backend.models.agent.core import BUILT
 
-from .conftest import EMAIL, END, NOW, PASSWORD, PUBLIC_URL, sign_in
+from .conftest import EMAIL, END, NOW, PASSWORD, PUBLIC_URL, cached_panel, settled, sign_in
 from .test_funds import NAV_TEXT, growing, mfapi_json
 from .test_nlu_llm import _Picker
 from .test_portfolio_backtest import HOLDING, PASSWORD as PDF_PASSWORD, PDF, casparser, nse_directory, zerodha_holdings  # noqa: F401
@@ -1134,6 +1134,35 @@ def test_ui_verdict_explains_both_sides(app_client):
     assert v["evidence_note"].startswith("The buy/sell rule is NSE's momentum method.")
 
 
+def test_the_verdict_names_the_day_its_rank_was_read_on(app_client, orch):
+    """The rank reads the price panel, which is served stale while it refreshes. The card's "Data as of" is the share's
+    own prices, and the chat's verdict gave no date, so a rank days old looked current."""
+    p = orch.hub._panel
+    orch.hub._panel = replace(p, close=p.close.iloc[:-3])
+    v = app_client.get("/ui/stock/TEST/verdict").json()
+    rank_line, = [x for x in v["why_buy"] + v["why_not"] if "it ranks" in x]
+    assert (rank_line.startswith(f"On prices to {p.close.index[-4].date()}, it ranks"), v["data_as_of"]) \
+        == (True, str(p.close.index[-1].date()))
+
+
+def test_the_hub_reads_the_refreshed_panel_once_its_background_refresh_ends(orch, accounts, monkeypatch, tmp_path):
+    """The hub keeps the panel it read for PANEL_TTL_S, so it kept serving the stale one for 6 hours after the refresh.
+    The real panel takes seconds to read, so a refresh can end during the read, as it does here."""
+    from backend.api import hub as hub_mod
+    from backend.database.sources.panel import CACHE_TTL_S, universe_panel
+    cached_panel(monkeypatch, tmp_path, CACHE_TTL_S + 60)
+    (tmp_path / "nifty500.csv").write_text("Symbol,Industry,Company Name\nTCS,IT,Tata Consultancy Services Ltd.\n"
+                                           "INFY,IT,Infosys Ltd.\n")
+
+    def read_outlasting_its_refresh(*args, **kwargs):
+        read = universe_panel(*args, **kwargs)
+        settled()
+        return read
+    monkeypatch.setattr(hub_mod, "universe_panel", read_outlasting_its_refresh)
+    hub = create_app(orch, accounts).state.hub
+    assert [float(hub.panel().close.iloc[-1, 0]) for _ in range(2)] == [1.0, 2.0]
+
+
 def test_a_day_with_no_closes_stops_the_verdict_rather_than_putting_every_share_outside_the_nifty_200(app_client, orch,
                                                                                                          caplog):
     """A cached panel ended on Yahoo's 16 Nov row with no closes: no share was ranked, and each read "NO SIGNAL".
@@ -1471,7 +1500,7 @@ def test_a_basket_must_say_whether_it_was_paid_from_cash(app_client):
     assert app_client.post("/ui/builder/apply", json=body).status_code == 422
 
 
-def test_a_risk_level_said_in_chat_outlives_a_save_that_keeps_the_stored_answers(orch):
+def test_a_risk_level_said_in_chat_outlives_a_save_that_keeps_the_stored_answers(orch, signal_inputs):
     orch.save_portfolio(DEFAULT_PORTFOLIO, 100000.0, "conservative", "medium", [])
     orch.handle("I'm aggressive", DEFAULT_PORTFOLIO, "c")
     orch.save_portfolio(DEFAULT_PORTFOLIO, 500.0, "conservative", "medium", [])
@@ -2097,6 +2126,25 @@ def test_state_pull_keeps_local_files_unless_told_to_overwrite(tmp_path, monkeyp
     assert hfstate.pull(db, cache, overwrite=True) == ["local.db", "performance.json"] and db.read_text() == "remote db"
 
 
+def test_a_restored_cache_file_keeps_the_time_it_was_saved(tmp_path, monkeypatch):
+    """A download is dated when it lands, so a panel saved days before was restored as new: served for 12 hours with
+    no refresh, and never refused at 3 days old."""
+    import os
+    import huggingface_hub
+    from backend.database import hfstate
+    cache, saved, restored = tmp_path / "cache", tmp_path / "saved", tmp_path / "restored"
+    cache.mkdir()
+    (cache / "panel_x.pkl").write_bytes(b"p")
+    os.utime(cache / "panel_x.pkl", (1e9, 1e9))
+    hfstate.snapshot(tmp_path / "s.db", saved, cache)
+    os.utime(saved / "cache" / "panel_x.pkl")       # now, as the download leaves it
+    monkeypatch.setenv("STOCKINTEL_STATE_REPO", "you/stockintel-state")
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda *a, **k: str(saved))
+    hfstate.pull(tmp_path / "local.db", restored)
+    assert (restored / "panel_x.pkl").stat().st_mtime == 1e9
+
+
 def test_state_autosave_pushes_only_when_something_changed(tmp_path, monkeypatch):
     from backend.database import hfstate
     pushes = []
@@ -2576,6 +2624,7 @@ def test_the_cli_still_routes_questions_past_the_daily_limit(monkeypatch):
     from backend import cli
     from backend.api import quota
     orch, writer = cli._orchestrator(Namespace(db=":memory:", demo=True)), _Picker("market_regime")
+    orch._listings = name_index({}, set(), set())
     monkeypatch.setitem(quota.USER_LIMITS, "lm", 0)
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: writer)
     orch.handle("what is going on out there?", DEFAULT_PORTFOLIO, "route")
@@ -2611,7 +2660,8 @@ def test_a_question_the_language_model_cannot_place_gets_the_help_list_instead_o
     "how does a buy stop order work?", "is a buy-back good for shareholders?", "should I invest in ELSS?", "is PEER a good buy?",
     "PEER dropped 8% today. Is it a good buy?", "should I hold on to PEER?", "is PEER overbought?",
 ])
-def test_a_question_about_another_subject_is_not_answered_for_the_stock_in_the_session(orch, monkeypatch, question):
+def test_a_question_about_another_subject_is_not_answered_for_the_stock_in_the_session(app_client, orch, monkeypatch,
+                                                                                       question):
     monkeypatch.setattr(type(orch.hub), "writer", lambda self: _Picker("NONE"))
     orch.handle("Analyze TEST", DEFAULT_PORTFOLIO, "other")
     text = orch.handle(question, DEFAULT_PORTFOLIO, "other").text

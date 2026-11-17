@@ -291,9 +291,8 @@ def test_a_failed_download_leaves_the_network_librarys_words_to_the_log(tmp_path
 def test_saved_app_state_never_carries_a_fund_download(tmp_path):
     """A restored copy gets today's file time, so it would pass for today's download."""
     from backend.database import hfstate
-    from backend.database.sources.panel import CACHE_DIR
     for path in (amfi.NAV_FILE, amfi.HISTORY_DIR / "118989.json"):
-        copy = tmp_path / path.relative_to(CACHE_DIR)
+        copy = tmp_path / path.relative_to(amfi.CACHE_DIR)
         copy.parent.mkdir(parents=True, exist_ok=True)
         copy.write_text("x")
     assert hfstate.cache_files(tmp_path) == []

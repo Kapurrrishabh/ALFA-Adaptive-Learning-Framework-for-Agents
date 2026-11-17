@@ -1,3 +1,5 @@
+import multiprocessing
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -9,7 +11,7 @@ from backend.database.sources.provider import DataUnavailable, normalize_ohlcv
 from backend.database.sources.quality import DataQualityError, check_ohlcv
 from backend.database.sources.local import LocalProvider
 
-from .conftest import bars
+from .conftest import PANEL_SHARES, FakeYahoo, bars, cached_panel, refreshes, settled, until
 
 NOW = datetime(2026, 9, 26)
 
@@ -129,6 +131,125 @@ def test_the_price_panel_drops_a_day_yahoo_sent_with_no_closes(monkeypatch, tmp_
         monkeypatch.setattr(yfinance, "download", None)     # so only the cache can answer
     p = panel.load_panel(["TCS", "INFY"])
     assert [list(frame.index) for frame in (p.close, p.open, p.high, p.low, p.volume)] == [list(days[:-1])] * 5
+
+
+def last_close(p):
+    return float(p.close.iloc[-1, 0])
+
+
+@pytest.mark.parametrize("yahoo_down", [False, True])
+def test_a_stale_panel_is_served_at_once_while_one_background_download_replaces_it(monkeypatch, tmp_path, yahoo_down):
+    """Each request after the 12 hours waited 1.5 to 3 minutes for the download. Had each refresh waited its turn
+    instead, with Yahoo down each would try the failing download again."""
+    from backend.database.sources import panel
+    yahoo = cached_panel(monkeypatch, tmp_path, panel.CACHE_TTL_S + 60)
+    yahoo.gate.clear()
+    yahoo.down = yahoo_down
+    with ThreadPoolExecutor(8) as pool:
+        served = [last_close(p) for p in pool.map(lambda _: panel.load_panel(PANEL_SHARES, serve_stale=True), range(8))]
+    until(lambda: len(refreshes()) == 1)
+    yahoo.gate.set()
+    settled()
+    assert (served, yahoo.calls) == ([1.0] * 8, 1)
+
+
+def test_a_one_off_job_waits_for_the_download_rather_than_take_a_stale_panel(monkeypatch, tmp_path):
+    """Calibration fitted on a panel up to 3 days old without a word, then exited and killed the refresh it started."""
+    from backend.database.sources import panel
+    cached_panel(monkeypatch, tmp_path, panel.CACHE_TTL_S + 60)
+    assert (last_close(panel.load_panel(PANEL_SHARES)), refreshes()) == (2.0, [])
+
+
+def test_a_refresh_asked_for_downloads_even_when_the_cached_panel_is_fresh(monkeypatch, tmp_path):
+    """The hub's error log tells the operator to recover a bad panel with universe_panel(refresh=True)."""
+    from backend.database.sources import panel
+    yahoo = cached_panel(monkeypatch, tmp_path, 60)
+    assert (last_close(panel.load_panel(PANEL_SHARES, refresh=True)), yahoo.calls) == (2.0, 1)
+
+
+def test_with_no_cached_panel_two_readers_wait_for_one_download(monkeypatch, tmp_path):
+    """On a first boot the hub's preload and a buy plan both downloaded: 6 minutes instead of 3."""
+    import yfinance
+    from backend.database.sources import panel
+    yahoo = FakeYahoo(1.0)
+    yahoo.gate.clear()
+    monkeypatch.setattr(panel, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(yfinance, "download", yahoo)
+    with ThreadPoolExecutor(2) as pool:
+        readers = [pool.submit(panel.load_panel, PANEL_SHARES) for _ in range(2)]
+        until(lambda: yahoo.calls == 1)
+        yahoo.gate.set()
+        served = [last_close(r.result()) for r in readers]
+    assert (served, yahoo.calls) == ([1.0, 1.0], 1)
+
+
+def write_the_panel_with_another_process(cache_dir, both_written):
+    """Writes the panel, as the prices job does beside the app, and replaces the cache only once both have written."""
+    import yfinance
+    from backend.database.sources import panel
+    write = pd.to_pickle
+
+    def write_then_wait(obj, path):
+        write(obj, path)
+        both_written.wait()
+    panel.CACHE_DIR, yfinance.download, pd.to_pickle = cache_dir, FakeYahoo(2.0), write_then_wait
+    panel.load_panel(PANEL_SHARES, refresh=True)
+
+
+def test_two_processes_writing_the_panel_at_once_both_finish_and_leave_it_whole(tmp_path):
+    """Each process has its own lock, and they shared one temp file: the second replace found none, and a reader
+    between the two writes opened half a file."""
+    from backend.database.sources import panel
+    spawn = multiprocessing.get_context("spawn")
+    both_written = spawn.Barrier(2, timeout=60)
+    writers = [spawn.Process(target=write_the_panel_with_another_process, args=(tmp_path, both_written))
+               for _ in range(2)]
+    for w in writers:
+        w.start()
+    for w in writers:
+        w.join(120)
+    assert ([w.exitcode for w in writers], last_close(panel.load_panel(PANEL_SHARES))) == ([0, 0], 2.0)
+
+
+def test_a_failed_refresh_is_logged_and_the_stale_panel_keeps_serving(monkeypatch, tmp_path, caplog):
+    from backend.database.sources import panel
+    yahoo = cached_panel(monkeypatch, tmp_path, panel.CACHE_TTL_S + 60)
+    yahoo.down = True
+    panel.load_panel(PANEL_SHARES, serve_stale=True)
+    settled()
+    served = last_close(panel.load_panel(PANEL_SHARES, serve_stale=True))
+    settled()
+    failed = [r for r in caplog.records if r.levelname == "ERROR" and "is still served" in r.getMessage()]
+    assert (served, len(failed), str(failed[0].exc_info[1])) == (1.0, 2, "batch download returned no data")
+
+
+@pytest.mark.parametrize("yahoo_down", [False, True])
+def test_a_panel_past_the_stale_limit_is_refused_and_the_reader_waits_for_a_download(monkeypatch, tmp_path,
+                                                                                     yahoo_down):
+    from backend.database.sources import panel
+    yahoo = cached_panel(monkeypatch, tmp_path, panel.STALE_LIMIT_S + 60)
+    yahoo.down = yahoo_down
+    if yahoo_down:
+        with pytest.raises(DataUnavailable, match="batch download returned no data"):
+            panel.load_panel(PANEL_SHARES, serve_stale=True)
+    else:
+        assert last_close(panel.load_panel(PANEL_SHARES, serve_stale=True)) == 2.0
+
+
+def test_a_refresh_that_fails_while_writing_leaves_the_cached_panel_whole(monkeypatch, tmp_path):
+    """Readers open the cache while a refresh writes it, so a half-written file would stop every one of them."""
+    from backend.database.sources import panel
+    cached_panel(monkeypatch, tmp_path, panel.CACHE_TTL_S + 60)
+
+    def disk_full(obj, path, *a, **kw):
+        with open(path, "wb") as half:
+            half.write(b"\x80\x05half a pickle")
+        raise OSError("No space left on device")
+    monkeypatch.setattr(pd, "to_pickle", disk_full)
+    panel.load_panel(PANEL_SHARES, serve_stale=True)
+    settled()
+    assert (list(tmp_path.glob("*.part")), last_close(panel.load_panel(PANEL_SHARES, serve_stale=True))) == ([], 1.0)
+    settled()
 
 
 def test_adjusted_close_adjusts_the_whole_bar_through_a_split():

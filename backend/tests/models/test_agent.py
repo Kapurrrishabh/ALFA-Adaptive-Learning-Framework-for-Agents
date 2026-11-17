@@ -2680,7 +2680,9 @@ def test_a_part_refused_by_its_own_guard_is_answered_by_our_code_in_the_turn_and
 
 @pytest.mark.parametrize("question,intent", [(ASKED_TOGETHER, "performance and buy"),
                                              ("is TCS overbought and is it oversold ?", "overbought"),
-                                             ("how volatile is TCS and is that high ?", "volatility")])
+                                             ("how volatile is TCS and is that high ?", "volatility"),
+                                             # "it" is how users name the share, so this is two questions
+                                             ("how volatile is TCS and is it high ?", "volatility and drawdown")])
 def test_a_question_the_router_is_sure_of_is_split_only_when_its_parts_are_placed_apart(tmp_path, router, question,
                                                                                          intent):
     """Sure of the whole, one route answered "what is the p/e of tcs and how volatile is it" with the P/E alone. "is that

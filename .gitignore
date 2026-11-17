@@ -35,3 +35,6 @@ reference/
 
 # Claude Code session files and its temporary worktrees
 /.claude/
+
+# the team's Q&A source dataset stays out of this public repo
+/stock_qa_1000.csv

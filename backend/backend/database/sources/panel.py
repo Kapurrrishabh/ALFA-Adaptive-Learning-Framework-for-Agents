@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
+import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional
@@ -40,7 +43,12 @@ ISIN_COLUMNS = {"equity_l": ("SYMBOL", "ISIN NUMBER"), "etf": ("Symbol", "ISINNu
                 "sme": ("SYMBOL", "ISIN_NUMBER"), "nifty500": ("Symbol", "ISIN Code")}
 CACHE_DIR = DATA / "cache"
 CACHE_TTL_S = 12 * 3600
+# provisional: three days spans a weekend the VM is off. How often the Nifty 200 buy list differs between panels
+# that many days apart, over past dates, would confirm it
+STALE_LIMIT_S = 3 * 86400
 BATCH = 50
+_downloading = threading.Lock()
+_refreshes_ended = 0
 
 
 @dataclass
@@ -126,12 +134,52 @@ def _constituents_file(name: str, lists: Dict[str, str]) -> pd.DataFrame:
 
 
 def load_panel(symbols: List[str], sectors: Optional[Dict[str, str]] = None, period: str = "10y",
-               suffix: str = ".NS", refresh: bool = False) -> Panel:
+               suffix: str = ".NS", refresh: bool = False, serve_stale: bool = False) -> Panel:
+    """The cached panel, or a new download once it is CACHE_TTL_S old. With `serve_stale`, for the server, one up to
+    STALE_LIMIT_S old is served at once while one background download replaces it: a one-off job would exit before
+    that download ends, and use the stale panel without a word."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha1(f"{sorted(symbols)}|{period}|{suffix}".encode()).hexdigest()[:12]
     path = CACHE_DIR / f"panel_{digest}.pkl"
-    if path.exists() and not refresh and time.time() - path.stat().st_mtime < CACHE_TTL_S:
+    download = (path, symbols, sectors, period, suffix)
+    age = _age(path)
+    if not refresh and (age < CACHE_TTL_S or serve_stale and age < STALE_LIMIT_S):
+        if age >= CACHE_TTL_S:
+            threading.Thread(target=_refresh, args=download, daemon=True, name="panel-refresh").start()
         return _with_closes(pd.read_pickle(path))      # one cached by older code can end on a day with no closes
+    with _downloading:
+        if not refresh and _age(path) < CACHE_TTL_S:      # downloaded by another caller while this one waited
+            return _with_closes(pd.read_pickle(path))
+        return _download(*download)
+
+
+def refreshes_ended() -> int:
+    """How many background refreshes have ended, so a holder of a stale panel knows when to read it again."""
+    return _refreshes_ended
+
+
+def _age(path: Path) -> float:
+    return time.time() - path.stat().st_mtime if path.exists() else float("inf")
+
+
+def _refresh(path: Path, symbols: List[str], sectors: Optional[Dict[str, str]], period: str, suffix: str) -> None:
+    """Replace the stale panel at `path`, unless a download is running already. One that fails leaves it serving."""
+    global _refreshes_ended
+    if not _downloading.acquire(blocking=False):
+        return
+    try:
+        if _age(path) >= CACHE_TTL_S:      # a download that ended after the caller looked has replaced it already
+            _download(path, symbols, sectors, period, suffix)
+    except Exception:
+        log.exception("refreshing the price panel %s failed, so its copy saved %.1f hours ago is still served. The next "
+                      "read tries again; past %.0f hours old it is refused and the reader waits for a download",
+                      path.name, _age(path) / 3600, STALE_LIMIT_S / 3600)
+    finally:
+        _downloading.release()
+        _refreshes_ended += 1      # after the release, so a holder that reads again can start the next try
+
+
+def _download(path: Path, symbols: List[str], sectors: Optional[Dict[str, str]], period: str, suffix: str) -> Panel:
     try:
         import yfinance as yf
     except ImportError as exc:  # pragma: no cover
@@ -158,7 +206,14 @@ def load_panel(symbols: List[str], sectors: Optional[Dict[str, str]] = None, per
     missing = sorted(set(symbols) - set(panel.symbols))
     if missing:
         log.warning("%d symbols had no data: %s", len(missing), missing[:20])
-    pd.to_pickle(panel, path)
+    # a name for each writer: the app and the prices job share this folder, each with its own lock, and as they run
+    # in separate containers their process ids can be the same
+    part = path.with_name(f"{path.name}.{uuid.uuid4().hex}.part")
+    try:
+        pd.to_pickle(panel, part)
+        os.replace(part, path)
+    finally:
+        part.unlink(missing_ok=True)
     return panel
 
 
@@ -171,10 +226,11 @@ def _with_closes(p: Panel) -> Panel:
                  volume=p.volume.loc[days, keep], sectors={s: p.sectors[s] for s in keep}, source=p.source)
 
 
-def universe_panel(index: str = "nifty500", period: str = "10y", refresh: bool = False) -> Panel:
+def universe_panel(index: str = "nifty500", period: str = "10y", refresh: bool = False,
+                   serve_stale: bool = False) -> Panel:
     cons = index_constituents(index)
     return load_panel(list(cons["symbol"]), dict(zip(cons["symbol"], cons["sector"])), period,
-                      refresh=refresh)
+                      refresh=refresh, serve_stale=serve_stale)
 
 
 def panel_from_frames(frames: Dict[str, pd.DataFrame], sectors: Optional[Dict[str, str]] = None) -> Panel:

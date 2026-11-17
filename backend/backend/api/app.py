@@ -257,7 +257,7 @@ def create_app(orch: Orchestrator, accounts: Accounts, preload: bool = False) ->
 
     from backend.api.hub import Hub
     agent_client = orch.agent
-    hub = Hub(orch, preload=preload)
+    hub = Hub(orch, preload=preload, serve_stale=True)
     app.state.hub = orch._hub = hub      # one hub (and one cached panel) for the API and chat
     app.mount("/static", StaticFiles(directory=FRONTEND), name="static")
 

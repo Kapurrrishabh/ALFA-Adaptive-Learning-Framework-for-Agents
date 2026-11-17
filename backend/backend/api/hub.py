@@ -24,7 +24,8 @@ from backend.advisory.report import ADJUSTED
 from backend.advisory.fundamental import fundamentals
 from backend.advisory.report import TERM_MEANINGS, plain_reason
 from backend.config import BUILDER_STOCKS, BUSY_WAIT_S, FORECAST_DAYS
-from backend.database.sources.panel import CACHE_DIR, index_constituents, listed_shares, universe_panel
+from backend.database.sources.panel import (CACHE_DIR, index_constituents, listed_shares, refreshes_ended,
+                                            universe_panel)
 from backend.database.sources.provider import DataUnavailable
 from backend.knowledge_base.lessons import knowledge_base
 from backend.api.nlu import ALIASES
@@ -64,11 +65,12 @@ def _fan_test_words(days: int) -> str:
 
 
 class Hub:
-    def __init__(self, orch: Orchestrator, preload: bool = False):
-        self.orch = orch
+    def __init__(self, orch: Orchestrator, preload: bool = False, serve_stale: bool = False):
+        self.orch, self.serve_stale = orch, serve_stale
         self._lock = threading.Lock()
         self._panel = None
         self._panel_at = 0.0
+        self._refreshes_seen = refreshes_ended()
         self._rank: Dict[str, Any] = {}
         self._names: Optional[pd.DataFrame] = None
         if preload:
@@ -91,9 +93,10 @@ class Hub:
 
     def panel(self):
         with self._lock:
-            if self._panel is None or time.time() - self._panel_at > PANEL_TTL_S:
-                self._panel = universe_panel("nifty500", "10y")
-                self._panel_at = time.time()
+            if self._panel is None or time.time() - self._panel_at > PANEL_TTL_S or self._refreshes_seen != refreshes_ended():
+                seen = refreshes_ended()       # before the read, so a refresh that ends during it is read next time
+                self._panel = universe_panel("nifty500", "10y", serve_stale=self.serve_stale)
+                self._panel_at, self._refreshes_seen = time.time(), seen
                 self._rank = {}
             return self._panel
 
@@ -110,7 +113,7 @@ class Hub:
                           "with universe_panel(refresh=True) once Yahoo has that day's closes", asof.date(), closes, len(uni))
                 raise DataUnavailable(f"no Nifty 200 share could be ranked on {asof.date()}, because we have that day's "
                                       f"closing price for {closes} of its {len(uni)} shares. Please try again later.")
-            mom["rank"] = np.arange(1, len(mom) + 1)
+            mom["rank"], mom["as_of"] = np.arange(1, len(mom) + 1), asof
             self._rank = {"asof": asof, "table": mom}
         return self._rank["table"]
 
@@ -391,7 +394,9 @@ class Hub:
         total = len(rank_tbl)
         if in_uni:
             r = rank_tbl.loc[sym]
-            line = (f"It ranks {rank} of {total} on steady price gains among India's 200 largest companies (the Nifty 200): "
+            # the rank reads the price panel, which can be days older than this share's own prices while it refreshes
+            line = (f"On prices to {r.as_of.date()}, it ranks {rank} of {total} on steady price gains among India's 200 "
+                    f"largest companies (the Nifty 200): "
                     f"{r.r6 * 100:+.1f}% in 6 months and {r.r12 * 100:+.1f}% in a year, allowing for its "
                     f"{r.sigma * 100:.0f}% yearly swings.")
             (why_buy if rank <= KEEP_RANK else why_not).append(line)

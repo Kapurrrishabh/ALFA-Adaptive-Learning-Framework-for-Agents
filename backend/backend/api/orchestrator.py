@@ -701,7 +701,7 @@ class Orchestrator:
     def _signal_plan(self, s: Session, i: Intent, risk_mode: str):
         from backend.database.sources.panel import index_constituents, universe_panel
         from backend.advisory.signals.advisor import plan
-        panel = universe_panel("nifty500", "10y")
+        panel = universe_panel("nifty500", "10y", serve_stale=self.hub.serve_stale)
         bench = self.service().history("^NSEI")["close"]
         holdings, cash, split_warnings = self.signal_holdings(s.portfolio)
         capital = i.amount if i.amount else cash
